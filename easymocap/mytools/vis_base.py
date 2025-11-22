@@ -120,7 +120,7 @@ def plot_bbox(img, bbox, pid, scale=1, vis_id=True):
         font_scale = img.shape[0]/1000
         cv2.putText(img, '{}'.format(pid), (x1, y1+int(25*font_scale)), cv2.FONT_HERSHEY_SIMPLEX, font_scale, color, 2)
 
-def plot_keypoints(img, points, pid, config, vis_conf=False, use_limb_color=True, lw=2, fliplr=False):
+def plot_keypoints(img, points, pid, config, vis_conf=False, use_limb_color=True, lw=4, fliplr=False):
     lw = max(lw, 2)
     H, W = img.shape[:2]
     for ii, (i, j) in enumerate(config['kintree']):
@@ -150,7 +150,7 @@ def plot_keypoints(img, points, pid, config, vis_conf=False, use_limb_color=True
         if c > 0.01:
             text_size = img.shape[0]/1000
             col = get_rgb(pid)
-            radius = int(lw/1.5)
+            radius = int(lw*2)
             if i > 25 and config['nJoints'] != 42:
                 radius = max(int(radius/4), 1)
             cv2.circle(img, (int(x+0.5), int(y+0.5)), radius, col, -1)

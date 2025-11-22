@@ -14,6 +14,14 @@ import subprocess
 import time
 import datetime
 
+
+LOG_FILE = "/mnt/yubo/emily/motion/output/smpl/easymocap.log"
+os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
+def write_log(text):
+    with open(LOG_FILE, "a") as f:
+        f.write(text + "\n")
+
+    
 def toc():
     return time.time() * 1000
 

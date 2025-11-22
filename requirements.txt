@@ -6,7 +6,7 @@ yacs
 tabulate
 termcolor
 git+https://github.com/mattloper/chumpy.git
-mediapipe==0.10.0
+mediapipe==0.10.18
 func_timeout
 ultralytics
 gdown

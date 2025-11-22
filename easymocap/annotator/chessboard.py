@@ -41,8 +41,8 @@ def get_lines_chessboard(pattern=(9, 6)):
 def _findChessboardCorners(img, pattern, debug):
     "basic function"
     criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
-    retval, corners = cv2.findChessboardCorners(img, pattern, 
-        flags=cv2.CALIB_CB_ADAPTIVE_THRESH + cv2.CALIB_CB_FAST_CHECK + cv2.CALIB_CB_FILTER_QUADS)
+    retval, corners = cv2.findChessboardCorners(img, pattern)
+
     if not retval:
         return False, None
     corners = cv2.cornerSubPix(img, corners, (11, 11), (-1, -1), criteria)
@@ -53,6 +53,7 @@ def _findChessboardCornersAdapt(img, pattern, debug):
     "Adapt mode"
     img = cv2.adaptiveThreshold(img, 255,cv2.ADAPTIVE_THRESH_GAUSSIAN_C,\
                 cv2.THRESH_BINARY, 21, 2)
+    cv2.imwrite("/mnt/yubo/emily/debug/adaptive_threshold.jpg", img)
     return _findChessboardCorners(img, pattern, debug)
 
 @func_set_timeout(5)

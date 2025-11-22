@@ -5,6 +5,9 @@
   @ LastEditTime: 2021-06-13 17:56:25
   @ FilePath: /EasyMocap/apps/demo/mv1p.py
 '''
+import os
+os.environ['PYOPENGL_PLATFORM'] = 'osmesa'
+
 from tqdm import tqdm
 from easymocap.smplmodel import check_keypoints, load_model, select_nf
 from easymocap.mytools import simple_recon_person, Timer, projectN3
@@ -12,6 +15,7 @@ from easymocap.pipeline import smpl_from_keypoints3d2d
 import os
 from os.path import join
 import numpy as np
+
 
 def check_repro_error(keypoints3d, kpts_repro, keypoints2d, P, MAX_REPRO_ERROR):
     square_diff = (keypoints2d[:, :, :2] - kpts_repro[:, :, :2])**2 
@@ -22,7 +26,9 @@ def check_repro_error(keypoints3d, kpts_repro, keypoints2d, P, MAX_REPRO_ERROR):
     if vv.shape[0] > 0:
         keypoints2d[vv, jj, -1] = 0.
         keypoints3d, kpts_repro = simple_recon_person(keypoints2d, P)
-    return keypoints3d, kpts_repro
+    mean_repro_error = (dist[conf[..., 0] > 0]).mean() if np.any(conf[..., 0] > 0) else 0
+    return keypoints3d, kpts_repro, mean_repro_error
+
 
 def mv1pmf_skel(dataset, check_repro=True, args=None):
     MIN_CONF_THRES = args.thres2d
@@ -31,19 +37,31 @@ def mv1pmf_skel(dataset, check_repro=True, args=None):
     kp3ds = []
     start, end = args.start, min(args.end, len(dataset))
     kpts_repro = None
+
+    repro_errors = []
+
     for nf in tqdm(range(start, end), desc='triangulation'):
         images, annots = dataset[nf]
         check_keypoints(annots['keypoints'], WEIGHT_DEBUFF=1, min_conf=MIN_CONF_THRES)
         keypoints3d, kpts_repro = simple_recon_person(annots['keypoints'], dataset.Pall)
         if check_repro:
-            keypoints3d, kpts_repro = check_repro_error(keypoints3d, kpts_repro, annots['keypoints'], P=dataset.Pall, MAX_REPRO_ERROR=args.MAX_REPRO_ERROR)
+            keypoints3d, kpts_repro, repro_error = check_repro_error(
+                keypoints3d, kpts_repro, annots['keypoints'],
+                P=dataset.Pall, MAX_REPRO_ERROR=args.MAX_REPRO_ERROR
+            )
+            log_time(f"[Frame {nf:04d}] mean reprojection error = {repro_error:.2f}px")
+            repro_errors.append(repro_error)
+        else:
+            repro_error = np.nan
         # keypoints3d, kpts_repro = robust_triangulate(annots['keypoints'], dataset.Pall, config=config, ret_repro=True)
         kp3ds.append(keypoints3d)
         if args.vis_det:
             dataset.vis_detections(images, annots, nf, sub_vis=args.sub_vis)
         if args.vis_repro:
             dataset.vis_repro(images, kpts_repro, nf=nf, sub_vis=args.sub_vis)
-    # smooth the skeleton
+
+    np.save(join(args.out, "reprojection_error.npy"), np.array(repro_errors))
+    log_time(f"Average reprojection error over sequence: {np.nanmean(repro_errors):.2f}px")    # smooth the skeleton
     if args.smooth3d > 0:
         kp3ds = smooth_skeleton(kp3ds, args.smooth3d)
     for nf in tqdm(range(len(kp3ds)), desc='dump'):
@@ -91,28 +109,37 @@ def mv1pmf_smpl(dataset, args, weight_pose=None, weight_shape=None):
             kpts_repro = projectN3(keypoints, dataset.Pall)
             dataset.vis_repro(images, kpts_repro, nf=nf, sub_vis=args.sub_vis, mode='repro_smpl')
 
+
 if __name__ == "__main__":
     from easymocap.mytools import load_parser, parse_parser
     from easymocap.dataset import CONFIG, MV1PMF
+    from easymocap.mytools.debug_utils import log, log_time, mywarn, myerror
+
     parser = load_parser()
     parser.add_argument('--skel', action='store_true')
     args = parse_parser(parser)
-    help="""
-  Demo code for multiple views and one person:
 
-    - Input : {} => {}
-    - Output: {}
-    - Body  : {}=>{}, {}
-""".format(args.path, ', '.join(args.sub), args.out, 
-    args.model, args.gender, args.body)
-    print(help)
-    skel_path = join(args.out, 'keypoints3d')
-    dataset = MV1PMF(args.path, annot_root=args.annot, cams=args.sub, out=args.out,
-        config=CONFIG[args.body], kpts_type=args.body,
-        undis=args.undis, no_img=False, verbose=args.verbose)
-    dataset.writer.save_origin = args.save_origin
+    log_time("Starting EasyMocap mv1p pipeline...")
+    log(f"Input path: {args.path}")
+    log(f"Output directory: {args.out}")
+    log(f"Model: {args.model}, Gender: {args.gender}, Body type: {args.body}")
 
-    if args.skel or not os.path.exists(skel_path):
-        mv1pmf_skel(dataset, check_repro=True, args=args)
-    mv1pmf_smpl(dataset, args)
+    try:
+        skel_path = join(args.out, 'keypoints3d')
+        dataset = MV1PMF(args.path, annot_root=args.annot, cams=args.sub, out=args.out,
+                         config=CONFIG[args.body], kpts_type=args.body,
+                         undis=args.undis, no_img=False, verbose=args.verbose)
+        dataset.writer.save_origin = args.save_origin
+
+        if args.skel or not os.path.exists(skel_path):
+            log_time("Running 3D keypoint triangulation...")
+            mv1pmf_skel(dataset, check_repro=True, args=args)
+
+        log_time("Fitting SMPL model...")
+        mv1pmf_smpl(dataset, args)
+        log_time("All processing complete!")
+
+    except Exception as e:
+        myerror(f"Pipeline failed: {e}")
+        raise
     
