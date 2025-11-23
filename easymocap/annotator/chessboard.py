@@ -53,7 +53,6 @@ def _findChessboardCornersAdapt(img, pattern, debug):
     "Adapt mode"
     img = cv2.adaptiveThreshold(img, 255,cv2.ADAPTIVE_THRESH_GAUSSIAN_C,\
                 cv2.THRESH_BINARY, 21, 2)
-    cv2.imwrite("/mnt/yubo/emily/debug/adaptive_threshold.jpg", img)
     return _findChessboardCorners(img, pattern, debug)
 
 @func_set_timeout(5)

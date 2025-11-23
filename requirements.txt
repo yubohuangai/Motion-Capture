@@ -12,3 +12,4 @@ gdown
 setuptools
 tensorboard
 pytorch-lightning
+func_timeout
