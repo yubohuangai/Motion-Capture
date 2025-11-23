@@ -15,7 +15,7 @@ import time
 import datetime
 
 
-LOG_FILE = "easymocap.log"
+LOG_FILE = "./easymocap.log"
 os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
 def write_log(text):
     with open(LOG_FILE, "a") as f:
