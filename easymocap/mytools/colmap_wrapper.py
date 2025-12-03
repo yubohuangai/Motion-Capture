@@ -453,23 +453,15 @@ struct SiftMatchingOptions {
     cmd += f' >> {path}/log.txt'
     run_cmd(cmd)
 
+
 def colmap_feature_match(colmap, path, gpu=False):
-    cmd = f'{colmap} exhaustive_matcher --database_path {path}/database.db \
---SiftMatching.guided_matching 0 \
---SiftMatching.max_ratio 0.8 \
---SiftMatching.max_distance 0.5 \
---SiftMatching.cross_check 1 \
---SiftMatching.max_error 4 \
---SiftMatching.max_num_matches 32768 \
---SiftMatching.confidence 0.9999 \
---SiftMatching.max_num_trials 10000 \
---SiftMatching.min_inlier_ratio 0.25 \
---SiftMatching.min_num_inliers 30'
+    # modern COLMAP matching (new versions removed many SiftMatching.* options)
+    cmd = f"{colmap} exhaustive_matcher --database_path {path}/database.db"
     if gpu:
-        cmd += ' --SiftMatching.use_gpu 1'
-        cmd += ' --SiftMatching.gpu_index 0'
-    cmd += f' >> {path}/log.txt'
+        cmd += " --SiftMatching.use_gpu 1 --SiftMatching.gpu_index 0"
+    cmd += f" >> {path}/log.txt"
     run_cmd(cmd)
+
 
 def colmap_ba(colmap, path, with_init=False):
     if with_init:

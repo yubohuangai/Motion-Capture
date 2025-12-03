@@ -16,8 +16,8 @@ class CV_KEY:
     q = 113
     ESC = 27
     BACKSPACE = 8
-    WINDOW_WIDTH = int(1920*0.8)
-    WINDOW_HEIGHT = int(1080*0.8)
+    WINDOW_WIDTH = int(1920*2.5)
+    WINDOW_HEIGHT = int(1080*2.5)
     LEFT = ord('a')
     RIGHT = ord('d')
     UP = ord('w')

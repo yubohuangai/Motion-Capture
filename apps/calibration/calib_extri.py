@@ -74,6 +74,21 @@ def solvePnP(k3d, k2d, K, dist, flag, tryextri=False):
     # print(err)
     return err, rvec, tvec, kpts_repro
 
+
+def relative2world(R_rel, T_rel, R_prev, T_prev):
+    """
+    Convert relative camera extrinsics (R_rel, T_rel) w.r.t previous camera 
+    to world coordinates (same origin as first camera)
+    """
+    # R_prev, T_prev: previous camera in world coordinates
+    # R_rel, T_rel: current camera relative to previous camera
+    # World rotation and translation
+    R_world = R_rel @ R_prev
+    T_world = R_rel @ T_prev + T_rel
+    rvec_world = cv2.Rodrigues(R_world)[0]
+    return rvec_world, T_world
+
+
 def calib_extri(path, image, intriname, image_id):
     camnames = sorted(os.listdir(join(path, image)))
     camnames = [c for c in camnames if os.path.isdir(join(path, image, c))]
@@ -141,6 +156,49 @@ def calib_extri(path, image, intriname, image_id):
             focal = infos[0]['focal']
             intri[cam]['K'][0, 0] = focal
             intri[cam]['K'][1, 1] = focal
+
+        if args.stereo and ic > 0:
+            # print('Stereo calibration for camera {}'.format(cam))
+            K, dist = intri[cam]['K'], intri[cam]['dist']
+            # Use previous camera as stereo reference
+            prev_cam = camnames[ic-1]
+
+            chessname_prev = sorted(glob(join(path, 'chessboard', prev_cam, '*.json')))[image_id]
+            data_prev = read_json(chessname_prev)
+            k3d_prev = np.array(data_prev['keypoints3d'], dtype=np.float32)
+            k2d_prev = np.array(data_prev['keypoints2d'], dtype=np.float32)
+            valididx_prev = k2d_prev[:, 2] > 0
+            k3d_prev = k3d_prev[valididx_prev]
+            k2d_prev = k2d_prev[valididx_prev, :2]
+
+            # Current camera 2D points
+            valididx = k2d[:, 2] > 0
+            k2d_curr = k2d[valididx, :2]
+            k3d_curr = k3d[valididx]
+               
+            # Stereo calibration: get relative R, T (current relative to previous)
+            _, _, _, _, _, R_rel, T_rel, _, _ = cv2.stereoCalibrate(
+                [k3d_prev.reshape(-1,1,3)],
+                [k2d_prev.reshape(-1,1,2)],
+                [k2d_curr.reshape(-1,1,2)],
+                intri[prev_cam]['K'],
+                intri[prev_cam]['dist'],
+                K,
+                dist,
+                None,
+                flags=cv2.CALIB_FIX_INTRINSIC
+            )
+
+            # Convert to world coordinates
+            rvec, tvec = relative2world(
+                R_rel, T_rel, extri[prev_cam]['R'], extri[prev_cam]['T']
+            )
+            
+            # Reproject to compute error
+            points2d_repro, _ = cv2.projectPoints(k3d_curr, rvec, tvec, K, dist)
+            kpts_repro = points2d_repro.squeeze()
+            err = np.linalg.norm(kpts_repro - k2d_curr, axis=1).mean()
+
         else:
             K, dist = intri[cam]['K'], intri[cam]['dist']
             err, rvec, tvec, kpts_repro = solvePnP(k3d, k2d, K, dist, flag=cv2.SOLVEPNP_ITERATIVE)
@@ -152,6 +210,7 @@ def calib_extri(path, image, intriname, image_id):
         print('{} center => {}, err = {:.3f}'.format(cam, center.squeeze(), err))
     write_intri(join(path, 'intri.yml'), intri)
     write_extri(join(path, 'extri.yml'), extri)
+
 
 if __name__ == "__main__":
     import argparse
@@ -165,6 +224,7 @@ if __name__ == "__main__":
     parser.add_argument('--tryfocal', action='store_true')
     parser.add_argument('--tryextri', action='store_true')
     parser.add_argument('--image_id', type=int, default=0, help='Image id used for extrinsic calibration')
+    parser.add_argument('--stereo', action='store_true', help='Use stereo calibration for adjacent cameras')
 
     args = parser.parse_args()
     calib_extri(args.path, args.image, intriname=args.intri, image_id=args.image_id)

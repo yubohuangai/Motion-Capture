@@ -116,3 +116,13 @@ code
 lightning_logs
 models
 yolov5m.pt
+
+# output
+output/
+tmp/
+res/
+
+# MacOS
+.idea/
+.vscode/
+.DS_Store

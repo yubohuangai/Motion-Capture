@@ -63,7 +63,7 @@ if __name__ == "__main__":
     parser.add_argument('--annot', type=str, default='chessboard')
     parser.add_argument('--N', type=int)
     parser.add_argument('--N_group', type=int, default=5)
-    parser.add_argument('--grid', type=float, nargs=2, required=True, help='set the length of the grid')
+    parser.add_argument('--grid', type=float, nargs=2, required=False, help='set the length of the grid')
     parser.add_argument('--corner', action='store_true')
     parser.add_argument('--overwrite', action='store_true')
     parser.add_argument('--debug', action='store_true')

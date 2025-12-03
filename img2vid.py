@@ -1,6 +1,33 @@
+#!/usr/bin/env python3
 import os
 from glob import glob
 import cv2
+import argparse
+
+
+def collect_images(image_dir):
+    """Return sorted list of images in image_dir; if empty, search subdirectories."""
+    # Direct images first
+    imgs = sorted(
+        [p for p in glob(os.path.join(image_dir, '*.*'))
+         if p.lower().endswith(('.png', '.jpg', '.jpeg'))],
+        key=lambda x: x.lower()
+    )
+    if imgs:
+        return imgs
+
+    # Otherwise search immediate subdirectories
+    subdirs = [d for d in glob(os.path.join(image_dir, '*')) if os.path.isdir(d)]
+    combined = []
+    for sd in sorted(subdirs):
+        sd_imgs = sorted(
+            [p for p in glob(os.path.join(sd, '*.*'))
+             if p.lower().endswith(('.png', '.jpg', '.jpeg'))],
+            key=lambda x: x.lower()
+        )
+        combined.extend(sd_imgs)
+    return combined
+
 
 def create_video_from_images_cv2(image_dir, start_idx=None, end_idx=None, fps=30, output_path=None):
     image_dir = os.path.abspath(image_dir)
@@ -13,24 +40,27 @@ def create_video_from_images_cv2(image_dir, start_idx=None, end_idx=None, fps=30
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
     # Collect images
-    image_paths = sorted(glob(os.path.join(image_dir, '*.*')), key=lambda x: x.lower())
-    image_paths = [p for p in image_paths if p.lower().endswith(('.png', '.jpg', '.jpeg'))]
+    image_paths = collect_images(image_dir)
 
     if not image_paths:
-        print(f"No images found in {image_dir}")
+        print(f"No images found in {image_dir} or its subdirectories.")
         return
 
-    # Select frame range
+    # Frame selection
     if start_idx is not None or end_idx is not None:
         start_idx = start_idx or 0
         end_idx = end_idx or len(image_paths)
         image_paths = image_paths[start_idx:end_idx]
 
-    # Read the first image to get size
+    # Load first frame to get size
     frame = cv2.imread(image_paths[0])
-    height, width, channels = frame.shape
+    if frame is None:
+        print("Error: Could not read first frame:", image_paths[0])
+        return
 
-    # Define video writer
+    height, width, _ = frame.shape
+
+    # Video writer
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
 
@@ -42,10 +72,23 @@ def create_video_from_images_cv2(image_dir, start_idx=None, end_idx=None, fps=30
     print(f"Video written to: {output_path} (FPS={fps}, Frames={len(image_paths)})")
 
 
-if __name__ == '__main__':
-    image_dir = "/mnt/yubo/emily/motion/output/smpl/smpl"
-    output_path = "/mnt/yubo/emily/motion/output/smpl/smpl_31_1600.mp4"
-    fps = 30
+def parse_args():
+    parser = argparse.ArgumentParser(description="Create a video from a folder of images.")
+    parser.add_argument("--image_dir", type=str, required=True, help="Directory containing images or image subfolders.")
+    parser.add_argument("--output_path", type=str, help="Output MP4 file path.")
+    parser.add_argument("--fps", type=int, default=60, help="Frame rate for the output video.")
+    parser.add_argument("--start_idx", type=int, default=None, help="Start frame index (0-based).")
+    parser.add_argument("--end_idx", type=int, default=None, help="End frame index (exclusive).")
 
-    # Choose the range here:
-    create_video_from_images_cv2(image_dir, start_idx=31, end_idx=1600, fps=fps, output_path=output_path)
+    return parser.parse_args()
+
+
+if __name__ == "__main__":
+    args = parse_args()
+    create_video_from_images_cv2(
+        args.image_dir,
+        start_idx=args.start_idx,
+        end_idx=args.end_idx,
+        fps=args.fps,
+        output_path=args.output_path
+    )

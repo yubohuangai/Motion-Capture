@@ -48,7 +48,7 @@ class FileWriter:
                 else:
                     bbox = det['bbox']
                 plot_bbox(img, bbox, pid=pid, vis_id=vis_id)
-                plot_keypoints(img, keypoints, pid=pid, config=self.config, use_limb_color=False, lw=2)
+                plot_keypoints(img, keypoints, pid=pid, config=self.config, use_limb_color=False, lw=16)
             images_vis.append(img)
         if len(images_vis) > 1:
             images_vis = merge(images_vis, resize=not self.save_origin)

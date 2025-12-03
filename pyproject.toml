@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "easymocap"
+version = "0.2.1"
+description = "Easy Human Motion Capture Toolbox"
+authors = [
+    { name = "Qing Shuai", email = "s_q@zju.edu.cn" }
+]
+requires-python = ">=3.7"
+
+[tool.setuptools.packages.find]
+include = [
+    "easymocap",
+    "easymocap.*",
+    "myeasymocap"
+]
+
+[project.scripts]
+emc = "apps.mocap.run:main_entrypoint"
