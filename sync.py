@@ -58,14 +58,26 @@ def parse_args():
 
 def collect_video_paths(root, num_cams):
     video_paths = []
+    valid_indices = []
+
     for i in range(1, num_cams + 1):
         cam_dir = Path(root) / f"{i:02d}" / "VID"
         mp4s = list(cam_dir.glob("*.mp4"))
+
         if len(mp4s) == 0:
-            raise FileNotFoundError(f"No mp4 found in {cam_dir}")
+            logging.warning(f"[WARN] No video found in {cam_dir}, skipping this camera.")
+            continue
+
         if len(mp4s) > 1:
-            raise RuntimeError(f"Multiple videos in {cam_dir}, expected only one.")
+            logging.warning(f"[WARN] Multiple videos in {cam_dir}, using the first one.")
+
         video_paths.append(str(mp4s[0]))
+        valid_indices.append(i)
+
+    if len(video_paths) == 0:
+        raise RuntimeError("No valid cameras found.")
+
+    logging.info(f"Using cameras: {valid_indices}")
     return video_paths
 
 
@@ -448,7 +460,8 @@ def main():
 
     # --- Collect video paths ---
     video_paths = collect_video_paths(root, num_videos)
-    video_path_0 = video_paths[0]
+    num_videos = len(video_paths)   # update real count
+    # video_path_0 = video_paths[0]
     video_name_0 = Path(video_path_0).stem
 
     # --- Prepare output directory ---
