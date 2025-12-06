@@ -461,7 +461,7 @@ def main():
     # --- Collect video paths ---
     video_paths = collect_video_paths(root, num_videos)
     num_videos = len(video_paths)   # update real count
-    # video_path_0 = video_paths[0]
+    video_path_0 = video_paths[0]
     video_name_0 = Path(video_path_0).stem
 
     # --- Prepare output directory ---
