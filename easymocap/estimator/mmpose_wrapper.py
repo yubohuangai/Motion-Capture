@@ -73,10 +73,11 @@ class MMPoseDetector:
                 kpts17[:,2] = conf
 
             kpts25 = coco17tobody25(kpts17[None])[0] 
-            bbox = person['bbox']
-            # bbox confidence: use min of keypoints or average
-            bbox_conf = float(np.mean(kpts17[:, 2]))  # mean confidence
-            bbox.append(bbox_conf)  # append confidence as 5th element
+            # bbox = person['bbox']
+            # # bbox confidence: use min of keypoints or average
+            # bbox = list(person['bbox'])   # convert tuple -> list
+            # bbox_conf = float(np.mean(kpts17[:, 2]))  # mean confidence
+            # bbox.append(bbox_conf)  # append confidence as 5th element
 
             data['personID'] = pid
             data['keypoints'] = kpts25.tolist()
