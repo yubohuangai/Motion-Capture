@@ -76,7 +76,7 @@ class MMPoseDetector:
 
             data['personID'] = pid
             data['keypoints'] = kpts25.tolist()
-            data['bbox'] = np.array(bbox)
+            data['bbox'] = bbox.tolist()
 
 
     def __call__(self, images):
