@@ -80,6 +80,11 @@ config = {
         'min_tracking_confidence': 0.1,
         'static_image_mode': False,
     },
+    'mmpose': {
+        'ext': '.jpg',
+        'pose2d': '/mnt/yubo/mmpose/configs/body_2d_keypoint/rtmpose/coco/rtmpose-l_8xb256-420e_aic-coco-384x288.py',
+        'pose2d_weights': 'data/models/rtmpose-l_simcc-aic-coco_pt-aic-coco_420e-384x288-97d6cb0f_20230228.pth'
+    }
 }
 
 if __name__ == "__main__":
@@ -94,7 +99,7 @@ if __name__ == "__main__":
     parser.add_argument('--mode', type=str, default='openpose', choices=[
         'openpose', 'feet', 'feetcrop', 'openposecrop',
         'yolo-hrnet', 'yolo', 'hrnet', 
-        'mp-pose', 'mp-holistic', 'mp-handl', 'mp-handr', 'mp-face'], 
+        'mp-pose', 'mp-holistic', 'mp-handl', 'mp-handr', 'mp-face', 'mmpose'], 
         help="model to extract joints from image")
     # Openpose
     parser.add_argument('--openpose', type=str, 
@@ -183,6 +188,10 @@ if __name__ == "__main__":
             from easymocap.estimator.mediapipe_wrapper import extract_2d
             config[mode]['ext'] = args.ext
             extract_2d(image_root, annot_root, config[mode], mode=mode.replace('mp-', ''))
+        elif mode == 'mmpose':
+            from easymocap.estimator.mmpose_wrapper import extract_mmpose
+            config[mode]['ext'] = args.ext
+            extract_mmpose(image_root, annot_root, config[mode])
         if mode == 'feetcrop' or mode == 'openposecrop':
             from easymocap.estimator.openpose_wrapper import FeetEstimatorByCrop
             config[mode]['openpose'] = args.openpose

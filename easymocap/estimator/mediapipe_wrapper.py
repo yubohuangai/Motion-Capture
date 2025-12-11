@@ -1,3 +1,6 @@
+'''
+Docstring for easymocap.estimator.mediapipe_wrapper
+''' 
 import numpy as np
 import cv2
 import mediapipe as mp

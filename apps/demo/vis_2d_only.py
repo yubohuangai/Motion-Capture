@@ -1,5 +1,7 @@
 """
 Simple script to visualize 2D detections from EasyMocap without triangulation or SMPL fitting.
+  @ FilePath: Motion-Capture/apps/demo/vis_2d_only.py
+
 """
 import os
 
