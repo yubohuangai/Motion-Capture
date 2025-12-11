@@ -3,53 +3,61 @@ import cv2
 import numpy as np
 from mmpose.apis import MMPoseInferencer
 
-# COCO17 -> Body25 mapping
+
+# COCO17 → BODY25 mapping
 COCO17_IN_BODY25 = [0,16,15,18,17,5,2,6,3,7,4,12,9,13,10,14,11]
 
 def coco17tobody25(points2d):
     """
-    Convert batch of keypoints from COCO17 to Body25 format.
-    points2d: numpy array of shape (N_people, 17, 3)
-    Returns: (N_people, 25, 3)
+    Convert COCO17 (17x3) keypoints to BODY25 (25x3).
+    Input: (N, 17, 3)
+    Output: (N, 25, 3)
     """
     kpts = np.zeros((points2d.shape[0], 25, 3))
+
     kpts[:, COCO17_IN_BODY25, :2] = points2d[:, :, :2]
     kpts[:, COCO17_IN_BODY25, 2:3] = points2d[:, :, 2:3]
 
-    # pelvis
+    # pelvis = midpoint(hip_l, hip_r)
     kpts[:, 8, :2] = kpts[:, [9, 12], :2].mean(axis=1)
     kpts[:, 8, 2] = kpts[:, [9, 12], 2].min(axis=1)
-    # neck
+
+    # neck = midpoint(shoulder_l, shoulder_r)
     kpts[:, 1, :2] = kpts[:, [2, 5], :2].mean(axis=1)
     kpts[:, 1, 2] = kpts[:, [2, 5], 2].min(axis=1)
+
     return kpts
+
 
 def process_image(image_path, inferencer):
     """
-    Process a single image and return annotation in Body25 format.
+    Run inference on one image using MMPoseInferencer.
+    Return annotation in BODY25 format.
     """
     image = cv2.imread(image_path)
     h, w = image.shape[:2]
 
+    # run inference → generator
     results = inferencer(image)
 
+    # take first output (because generator may yield many frames)
+    output = next(results)
+
+    persons = output['predictions'][0]   # list of N persons
+
     annots = []
+    for pid, person in enumerate(persons):
+        kpts17 = np.array(person['keypoints'])  # (17,3)
+        kpts25 = coco17tobody25(kpts17[None])[0]  # convert
 
-    # For each person detected
-    for person in results['predictions'][0]:
-        keypoints = np.array(person['keypoints'])  # shape (17,3)
-        keypoints_body25 = coco17tobody25(keypoints[None, :, :])[0]
+        bbox = person['bbox']  # correct bbox format
 
-        # Use the bounding box from the first element
-        bbox = person['bbox'][0]  # [x1, y1, x2, y2, score]
-
-        annot = {
-            "personID": 0,
+        annots.append({
+            "personID": pid,
             "bbox": bbox,
-            "keypoints": keypoints_body25.tolist(),
+            "keypoints": kpts25.tolist(),
             "isKeyframe": False
-        }
-        annots.append(annot)
+        })
 
     return {
         "filename": os.path.relpath(image_path),
@@ -59,43 +67,32 @@ def process_image(image_path, inferencer):
         "isKeyframe": False
     }
 
+
 if __name__ == "__main__":
-    # Example usage
     import argparse
+
     parser = argparse.ArgumentParser()
-    parser.add_argument('--image', type=str, default='/Users/yubo/github/data/forest/seq1_1/images/01/000000.jpg', required=False, help="Input image path")
-    parser.add_argument('--model', type=str, default='rtmpose-l_8xb256-420e_aic-coco-384x288', help="MMPose model")
+    parser.add_argument('--image', type=str,
+                        default='/mnt/yubo/forest/seq1_1/images/01/000000.jpg')
+    parser.add_argument('--model_cfg', type=str,
+                        default='/mnt/yubo/mmpose/configs/body_2d_keypoint/rtmpose/coco/rtmpose-l_8xb256-420e_aic-coco-384x288.py')
+    parser.add_argument('--model_weights', type=str,
+                        default='data/models/rtmpose-l_simcc-aic-coco_pt-aic-coco_420e-384x288-97d6cb0f_20230228.pth')
+
     args = parser.parse_args()
 
-    inferencer = MMPoseInferencer(args.model, device='cuda:0')
+    inferencer = MMPoseInferencer(
+        pose2d=args.model_cfg,
+        pose2d_weights=args.model_weights,
+        device='cuda:0'
+    )
 
     annot = process_image(args.image, inferencer)
     print(annot)
 
-
-
-# inferencer = MMPoseInferencer('rtmpose-l_8xb256-420e_aic-coco-384x288')
-
-
-# COCO17_IN_BODY25 = [0,16,15,18,17,5,2,6,3,7,4,12,9,13,10,14,11]
-# pairs = [[1, 8], [1, 2], [1, 5], [2, 3], [3, 4], [5, 6], [6, 7], [8, 9], [9, 10], [10, 11], [8, 12], [12, 13], [13, 14], [1, 0], [0,15], [15,17], [0,16], [16,18], [14,19], [19,20], [14,21], [11,22], [22,23], [11,24]]
-# def coco17tobody25(points2d):
-#     kpts = np.zeros((points2d.shape[0], 25, 3))
-#     kpts[:, COCO17_IN_BODY25, :2] = points2d[:, :, :2]
-#     kpts[:, COCO17_IN_BODY25, 2:3] = points2d[:, :, 2:3]
-#     # pelvis
-#     kpts[:, 8, :2] = kpts[:, [9, 12], :2].mean(axis=1)
-#     kpts[:, 8, 2] = kpts[:, [9, 12], 2].min(axis=1)
-#     # neck
-#     kpts[:, 1, :2] = kpts[:, [2, 5], :2].mean(axis=1)
-#     kpts[:, 1, 2] = kpts[:, [2, 5], 2].min(axis=1)
-#     # 需要交换一下
-#     # kpts = kpts[:, :, [1,0,2]]
-#     return kpts
-
-
-# input image: /Users/yubo/github/data/forest/seq1_1/images/01/000000.jpg
-# output example:
+    
+# 
+# output: /mnt/yubo/forest/seq1_1/annots-mm/000000.json file example:
 # {
 #     "filename": "images/01/000000.jpg",
 #     "height": 2160,
