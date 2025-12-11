@@ -108,9 +108,7 @@ class MMPoseDetector:
 
 
 def extract_2d(image_root, annot_root, config, to_openpose=True):
-    force = config.pop('force')
-    if check_result(image_root, annot_root) and not force:
-        return 0
+    config.pop('force')
     ext = config.pop('ext')
     detector = MMPoseDetector(model_cfg=config['pose2d'], model_weights=config['pose2d_weights'], to_openpose=to_openpose)
     imgnames = sorted(glob(join(image_root, '*'+ext)))
