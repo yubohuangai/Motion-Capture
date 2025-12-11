@@ -73,7 +73,8 @@ class MMPoseDetector:
 
             kpts25 = coco17tobody25(kpts17[None])[0] 
             bbox = person['bbox']
-
+            
+            data['personID'] = pid
             data['keypoints'] = kpts25.tolist()
             data['bbox'] = bbox
 
