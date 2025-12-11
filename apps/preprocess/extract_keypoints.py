@@ -189,9 +189,9 @@ if __name__ == "__main__":
             config[mode]['ext'] = args.ext
             extract_2d(image_root, annot_root, config[mode], mode=mode.replace('mp-', ''))
         elif mode == 'mmpose':
-            from easymocap.estimator.mmpose_wrapper import extract_mmpose
+            from easymocap.estimator.mmpose_wrapper import extract_2d
             config[mode]['ext'] = args.ext
-            extract_mmpose(image_root, annot_root, config[mode])
+            extract_2d(image_root, annot_root, config[mode])
         if mode == 'feetcrop' or mode == 'openposecrop':
             from easymocap.estimator.openpose_wrapper import FeetEstimatorByCrop
             config[mode]['openpose'] = args.openpose
