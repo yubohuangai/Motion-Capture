@@ -292,7 +292,7 @@ class FeetEstimatorByCrop:
             save_annot(annotname, annots_ori)
 
 class FeetEstimator:
-    def __init__(self, openpose='/media/qing/Project/openpose') -> None:
+    def __init__(self, openpose='/home/yubo/github/openpose') -> None:
         import sys
         sys.path.append('{}/build_py/python'.format(openpose))
         from openpose import pyopenpose as op
