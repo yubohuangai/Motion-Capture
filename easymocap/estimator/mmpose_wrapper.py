@@ -9,7 +9,8 @@ from tqdm import tqdm
 from glob import glob
 from os.path import join
 from .wrapper_base import check_result, save_annot
-import torch
+import contextlib
+import io
 
 
 COCO17_IN_BODY25 = [0,16,15,18,17,5,2,6,3,7,4,12,9,13,10,14,11]
@@ -52,7 +53,6 @@ class MMPoseDetector:
         self.inferencer = MMPoseInferencer(
             pose2d=model_cfg,
             pose2d_weights=model_weights,
-            show=False,
             device="cuda"
         )
         
@@ -90,7 +90,10 @@ class MMPoseDetector:
         annots_all = []
         for nv, image in enumerate(images):
             image_height, image_width, _ = image.shape
-            results = self.inferencer(image)
+            # --- suppress MMPose output ---
+            with contextlib.redirect_stdout(io.StringIO()):
+                results = self.inferencer(image)
+            # --------------------------------
             data = {}
             self.process(data, results, image_width, image_height)
 

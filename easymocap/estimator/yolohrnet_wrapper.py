@@ -1,3 +1,7 @@
+'''
+Docstring for easymocap.estimator.yolohrnet_wrapper
+'''
+
 from ..annotator.file_utils import read_json
 from .wrapper_base import check_result, create_annot_file, save_annot
 from glob import glob
