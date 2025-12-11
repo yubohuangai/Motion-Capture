@@ -97,7 +97,7 @@ class MMPoseDetector:
                 results = self.inferencer(image)
             # --------------------------------
             data = {}
-            self.process(data, results, image_width, image_height)
+            self.process(data, results)
 
             annots = {
                 'filename': '{}/run.jpg'.format(nv),
