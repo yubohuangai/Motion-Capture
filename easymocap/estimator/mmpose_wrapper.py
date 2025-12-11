@@ -9,6 +9,7 @@ from tqdm import tqdm
 from glob import glob
 from os.path import join
 from .wrapper_base import check_result, save_annot
+from ..annotator.file_utils import read_json
 import contextlib
 import io
 
@@ -56,7 +57,7 @@ class MMPoseDetector:
             device="cuda"
         )
         
-    def process(self, data, results, image_width, image_height):
+    def process(self, data, results):
         """Run MMPose inference on a single image"""
         output = next(results)
         persons = output['predictions'][0]
@@ -119,6 +120,7 @@ def extract_2d(image_root, annot_root, config, to_openpose=True):
     for imgname in tqdm(imgnames, desc='{:10s}'.format(os.path.basename(annot_root))):
         base = os.path.basename(imgname).replace(ext, '')
         annotname = join(annot_root, base+'.json')
+        annots = read_json(annotname)
         image = cv2.imread(imgname)
         annots = detector([image])[0]
         annots['filename'] = os.sep.join(imgname.split(os.sep)[-2:])
