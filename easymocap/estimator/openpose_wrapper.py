@@ -222,6 +222,8 @@ class FeetEstimatorByCrop:
                 continue
             infos[base] = {}
             for i, annot in enumerate(annots['annots']):
+                if 'keypoints' not in annot:
+                    continue
                 bbox = annot['bbox']
                 # 判断bbox大小
                 width, height = bbox[2] - bbox[0], bbox[3] - bbox[1]
