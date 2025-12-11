@@ -95,5 +95,9 @@ def extract_2d(image_root, annot_root, config, to_openpose=True):
         kpts2d = detector.predict(image)
         for i in range(detections.shape[0]):
             annot_ = annots['annots'][i]
+            if i >= len(kpts2d):
+                # Skip if MMPose didn't detect this person
+                # but keep previous annotation structure
+                continue
             annot_['keypoints'] = kpts2d[i]
         save_annot(annotname, annots)
