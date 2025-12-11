@@ -52,6 +52,7 @@ class MMPoseDetector:
         self.inferencer = MMPoseInferencer(
             pose2d=model_cfg,
             pose2d_weights=model_weights,
+            show=False,
             device="cuda"
         )
         
@@ -73,6 +74,9 @@ class MMPoseDetector:
 
             kpts25 = coco17tobody25(kpts17[None])[0] 
             bbox = person['bbox']
+            # bbox confidence: use min of keypoints or average
+            bbox_conf = float(np.mean(kpts17[:, 2]))  # mean confidence
+            bbox.append(bbox_conf)  # append confidence as 5th element
 
             data['personID'] = pid
             data['keypoints'] = kpts25.tolist()
