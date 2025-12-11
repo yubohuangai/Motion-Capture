@@ -9,22 +9,25 @@ COCO17_IN_BODY25 = [0,16,15,18,17,5,2,6,3,7,4,12,9,13,10,14,11]
 
 def coco17tobody25(points2d):
     """
-    Convert COCO17 (17x3) keypoints to BODY25 (25x3).
-    Input: (N, 17, 3)
+    Convert COCO17 (17x3) keypoints to BODY25 (25x3), preserving confidence.
+    Input: (N, 17, 3) -> x, y, score
     Output: (N, 25, 3)
     """
     kpts = np.zeros((points2d.shape[0], 25, 3))
 
+    # copy x, y
     kpts[:, COCO17_IN_BODY25, :2] = points2d[:, :, :2]
-    kpts[:, COCO17_IN_BODY25, 2:3] = points2d[:, :, 2:3]
+
+    # copy confidence
+    kpts[:, COCO17_IN_BODY25, 2] = points2d[:, :, 2]
 
     # pelvis = midpoint(hip_l, hip_r)
     kpts[:, 8, :2] = kpts[:, [9, 12], :2].mean(axis=1)
-    kpts[:, 8, 2] = kpts[:, [9, 12], 2].min(axis=1)
+    kpts[:, 8, 2] = kpts[:, [9, 12], 2].min(axis=1)  # confidence: use min of hips
 
     # neck = midpoint(shoulder_l, shoulder_r)
     kpts[:, 1, :2] = kpts[:, [2, 5], :2].mean(axis=1)
-    kpts[:, 1, 2] = kpts[:, [2, 5], 2].min(axis=1)
+    kpts[:, 1, 2] = kpts[:, [2, 5], 2].min(axis=1)  # confidence: use min of shoulders
 
     return kpts
 
@@ -48,6 +51,16 @@ def process_image(image_path, inferencer):
     annots = []
     for pid, person in enumerate(persons):
         kpts17 = np.array(person['keypoints'])  # (17,3)
+        kpts17 = np.array(person['keypoints'])
+        if 'keypoint_scores' in person:
+            conf = np.array(person['keypoint_scores'])
+        else:
+            conf = np.ones((kpts17.shape[0],), dtype=kpts17.dtype)
+
+        if kpts17.shape[1] == 2:
+            kpts17 = np.concatenate([kpts17, conf[:,None]], axis=1)
+        else:
+            kpts17[:,2] = conf
         kpts25 = coco17tobody25(kpts17[None])[0]  # convert
 
         bbox = person['bbox']  # correct bbox format
@@ -90,7 +103,7 @@ if __name__ == "__main__":
     annot = process_image(args.image, inferencer)
     print(annot)
 
-    
+
 # 
 # output: /mnt/yubo/forest/seq1_1/annots-mm/000000.json file example:
 # {
