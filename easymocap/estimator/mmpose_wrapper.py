@@ -57,10 +57,12 @@ class MMPoseDetector:
             device="cuda"
         )
         
-    def process(self, data, results):
+    def predict(self, image):
         """Run MMPose inference on a single image"""
+        results = self.inferencer(image)
         output = next(results)
         persons = output['predictions'][0]
+        kpts25_all = []
         for pid, person in enumerate(persons):
             kpts17 = np.array(person['keypoints'])
             if 'keypoint_scores' in person:
@@ -74,42 +76,9 @@ class MMPoseDetector:
                 kpts17[:,2] = conf
 
             kpts25 = coco17tobody25(kpts17[None])[0] 
-            # bbox = person['bbox']
-            # # bbox confidence: use min of keypoints or average
-            # bbox = list(person['bbox'])   # convert tuple -> list
-            # bbox_conf = float(np.mean(kpts17[:, 2]))  # mean confidence
-            # bbox.append(bbox_conf)  # append confidence as 5th element
+            kpts25_all.append(kpts25.tolist())
 
-            data['personID'] = pid
-            data['keypoints'] = kpts25.tolist()
-            # data['bbox'] = list(bbox)
-
-    def __call__(self, images):
-        """
-        images: list of images (H,W,3)
-        returns: list of annotations dicts
-        """
-        annots_all = []
-        for nv, image in enumerate(images):
-            image_height, image_width, _ = image.shape
-            # --- suppress MMPose output ---
-            with contextlib.redirect_stdout(io.StringIO()):
-                results = self.inferencer(image)
-            # --------------------------------
-            data = {}
-            self.process(data, results)
-
-            annots = {
-                'filename': '{}/run.jpg'.format(nv),
-                'height': image_height,
-                'width': image_width,
-                'annots': [
-                    data
-                ],
-                'isKeyframe': False
-            }
-            annots_all.append(annots)
-        return annots_all
+        return kpts25_all
 
 
 def extract_2d(image_root, annot_root, config, to_openpose=True):
@@ -121,7 +90,10 @@ def extract_2d(image_root, annot_root, config, to_openpose=True):
         base = os.path.basename(imgname).replace(ext, '')
         annotname = join(annot_root, base+'.json')
         annots = read_json(annotname)
+        detections = np.array([data['bbox'] for data in annots['annots']])
         image = cv2.imread(imgname)
-        annots = detector([image])[0]
-        annots['filename'] = os.sep.join(imgname.split(os.sep)[-2:])
+        kpts2d = detector.predict(image)
+        for i in range(detections.shape[0]):
+            annot_ = annots['annots'][i]
+            annot_['keypoints'] = kpts2d[i]
         save_annot(annotname, annots)
