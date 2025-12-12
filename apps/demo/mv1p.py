@@ -49,7 +49,8 @@ def mv1pmf_skel(dataset, check_repro=True, args=None):
                 keypoints3d, kpts_repro, annots['keypoints'],
                 P=dataset.Pall, MAX_REPRO_ERROR=args.MAX_REPRO_ERROR
             )
-            log_time(f"[Frame {nf:04d}] mean reprojection error = {repro_error:.2f}px")
+            # log_time(f"[Frame {nf:04d}] mean reprojection error = {repro_error:.2f}px")
+            tqdm.write(f"[Frame {nf:04d}] mean reprojection error = {repro_error:.2f}px")
             repro_errors.append(repro_error)
         else:
             repro_error = np.nan
