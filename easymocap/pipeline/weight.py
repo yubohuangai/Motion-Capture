@@ -20,7 +20,7 @@ def load_weight_shape(model, opts):
 def load_weight_pose(model, opts):
     if model == 'smpl':
         weight = {
-            'k3d': 1., 'reg_poses_zero': 1e-2, 'smooth_body': 1e-1,
+            'k3d': 1., 'reg_poses_zero': 1e-2, 'smooth_body': 2e-1,
             'smooth_poses': 1e-1, 'reg_poses': 1e-3,
             'k2d': 1e-4
         }

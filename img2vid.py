@@ -1,3 +1,7 @@
+'''
+img2vid.py
+'''
+
 #!/usr/bin/env python3
 import os
 from glob import glob
@@ -29,8 +33,6 @@ def collect_images(image_dir):
     return combined
 
 
-import imageio
-
 def format_range_suffix(start_idx, end_idx):
     if start_idx is None and end_idx is None:
         return "full"
@@ -39,32 +41,12 @@ def format_range_suffix(start_idx, end_idx):
     return f"{start}-{end}"
 
 
-def create_gif_from_images(image_paths, fps, output_path):
-    duration = 1.0 / fps  # seconds per frame
-
-    frames = []
-    for img_path in image_paths:
-        frame = cv2.imread(img_path)
-        if frame is None:
-            continue
-        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        frames.append(frame)
-
-    if not frames:
-        print("No valid frames for GIF.")
-        return
-
-    imageio.mimsave(output_path, frames, duration=duration)
-    print(f"GIF written to: {output_path} (FPS={fps}, Frames={len(frames)})")
-
-
 def create_video_from_images_cv2(
     image_dir,
     start_idx=None,
     end_idx=None,
     fps=30,
     output_path=None,
-    to_gif=False
 ):
     image_dir = os.path.abspath(image_dir)
     folder_name = os.path.basename(image_dir.rstrip('/'))
@@ -78,8 +60,9 @@ def create_video_from_images_cv2(
         )
     else:
         output_path = os.path.abspath(output_path)
-        os.makedirs(os.path.dirname(output_path), exist_ok=True)
-
+        out_dir = os.path.dirname(output_path)
+        if out_dir:
+            os.makedirs(out_dir, exist_ok=True)
     # Collect images
     image_paths = collect_images(image_dir)
 
@@ -93,14 +76,6 @@ def create_video_from_images_cv2(
         end_idx = end_idx or len(image_paths)
         image_paths = image_paths[start_idx:end_idx]
 
-    if to_gif:
-        if output_path is None:
-            output_path = os.path.join(image_dir, f"{folder_name}.gif")
-        else:
-            output_path = os.path.splitext(output_path)[0] + ".gif"
-
-        create_gif_from_images(image_paths, fps, output_path)
-        return
     # Load first frame to get size
     frame = cv2.imread(image_paths[0])
     if frame is None:
@@ -112,6 +87,8 @@ def create_video_from_images_cv2(
     # Video writer
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+    if not out.isOpened():
+        raise RuntimeError(f"Failed to open VideoWriter for {output_path}")
 
     for img_path in image_paths:
         frame = cv2.imread(img_path)
@@ -128,11 +105,6 @@ def parse_args():
     parser.add_argument("--fps", type=int, default=30, help="Frame rate for the output video.")
     parser.add_argument("--start_idx", type=int, default=None, help="Start frame index (0-based).")
     parser.add_argument("--end_idx", type=int, default=None, help="End frame index (exclusive).")
-    parser.add_argument(
-        "--gif",
-        action="store_true",
-        help="Export GIF instead of MP4"
-    )
     return parser.parse_args()
 
 
@@ -144,5 +116,4 @@ if __name__ == "__main__":
         end_idx=args.end_idx,
         fps=args.fps,
         output_path=args.output_path,
-        to_gif=args.gif
     )
