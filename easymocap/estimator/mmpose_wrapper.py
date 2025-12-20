@@ -51,15 +51,15 @@ class MMPoseDetector:
         show: visualize results
         """
         self.to_openpose = to_openpose
-        self.inferencer = MMPoseInferencer(
-            pose2d=config_name,
-            device="cuda"
-        )
         # self.inferencer = MMPoseInferencer(
-        #     pose2d=model_cfg,
-        #     pose2d_weights=model_weights,
+        #     pose2d=config_name,
         #     device="cuda"
         # )
+        self.inferencer = MMPoseInferencer(
+            pose2d=model_cfg,
+            pose2d_weights=model_weights,
+            device="cuda"
+        )
         
     def predict(self, image):
         """Run MMPose inference on a single image"""

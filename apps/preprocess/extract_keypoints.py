@@ -82,8 +82,11 @@ config = {
     },
     'mmpose': {
         'ext': '.jpg',
-        'pose2d': '/mnt/yubo/mmpose/configs/body_2d_keypoint/rtmpose/coco/rtmpose-l_8xb256-420e_aic-coco-384x288.py',
-        'pose2d_weights': 'data/models/rtmpose-l_simcc-aic-coco_pt-aic-coco_420e-384x288-97d6cb0f_20230228.pth',
+        # 'pose2d': '/mnt/yubo/mmpose/configs/body_2d_keypoint/rtmpose/coco/rtmpose-l_8xb256-420e_aic-coco-384x288.py',
+        # 'pose2d_weights': 'data/models/rtmpose-l_simcc-aic-coco_pt-aic-coco_420e-384x288-97d6cb0f_20230228.pth',
+        #
+        'pose2d': '/mnt/yubo/mmpose/configs/body_2d_keypoint/edpose/coco/edpose_res50_8xb2-50e_coco-800x1333.py',
+        'pose2d_weights': 'data/models/edpose_res50_coco_3rdparty.pth',
         'config_name': 'edpose_res50_8xb2-50e_coco-800x1333'
     }
 }
