@@ -52,9 +52,7 @@ class MMPoseDetector:
         """
         self.to_openpose = to_openpose
         self.inferencer = MMPoseInferencer(
-            'edpose_res50_8xb2-50e_coco-800x1333',
-            device="cuda"
-        )
+            'edpose_res50_8xb2-50e_coco-800x1333')
         # self.inferencer = MMPoseInferencer(
         #     pose2d=model_cfg,
         #     pose2d_weights=model_weights,
