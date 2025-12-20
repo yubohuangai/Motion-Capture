@@ -52,7 +52,7 @@ class MMPoseDetector:
         """
         self.to_openpose = to_openpose
         self.inferencer = MMPoseInferencer(
-            config_name,
+            'edpose_res50_8xb2-50e_coco-800x1333',
             device="cuda"
         )
         # self.inferencer = MMPoseInferencer(
