@@ -2,31 +2,72 @@
 import argparse
 import os
 import subprocess
+import tempfile
+
 
 def video_to_gif(video_path, output_path=None, scale=None, loop=0):
     video_path = os.path.abspath(video_path)
+
+    if not os.path.isfile(video_path):
+        raise FileNotFoundError(f"Input video not found: {video_path}")
 
     if output_path is None:
         base, _ = os.path.splitext(video_path)
         output_path = base + ".gif"
     else:
         output_path = os.path.abspath(output_path)
-        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        out_dir = os.path.dirname(output_path)
+        if out_dir:
+            os.makedirs(out_dir, exist_ok=True)
 
-    vf_parts = []
+    # Build filter string
+    filters = []
     if scale is not None:
-        vf_parts.append(f"scale={scale}:-1:flags=lanczos")
+        filters.append(f"scale={scale}:-1:flags=lanczos")
+    filters.append("palettegen=stats_mode=diff")
 
-    vf = ",".join(vf_parts) if vf_parts else None
+    filter_str = ",".join(filters)
 
-    cmd = ["ffmpeg", "-y", "-i", video_path]
-    if vf:
-        cmd += ["-vf", vf]
-    cmd += ["-loop", str(loop), output_path]
+    with tempfile.TemporaryDirectory() as tmpdir:
+        palette_path = os.path.join(tmpdir, "palette.png")
 
-    print("Running:")
-    print(" ".join(cmd))
-    subprocess.run(cmd, check=True)
+        # --------------------------
+        # 1) Generate palette
+        # --------------------------
+        palette_cmd = [
+            "ffmpeg", "-y",
+            "-i", video_path,
+            "-vf", filter_str,
+            palette_path
+        ]
+
+        print("Generating palette:")
+        print(" ".join(palette_cmd))
+        subprocess.run(palette_cmd, check=True)
+
+        # --------------------------
+        # 2) Apply palette
+        # --------------------------
+        gif_filters = []
+        if scale is not None:
+            gif_filters.append(f"scale={scale}:-1:flags=lanczos")
+        gif_filters.append(f"paletteuse=dither=bayer:bayer_scale=5")
+
+        gif_filter_str = ",".join(gif_filters)
+
+        gif_cmd = [
+            "ffmpeg", "-y",
+            "-i", video_path,
+            "-i", palette_path,
+            "-lavfi", gif_filter_str,
+            "-loop", str(loop),
+            output_path
+        ]
+
+        print("Creating GIF:")
+        print(" ".join(gif_cmd))
+        subprocess.run(gif_cmd, check=True)
+
     print(f"GIF written to: {output_path}")
 
 def parse_args():

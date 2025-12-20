@@ -44,7 +44,7 @@ def coco17tobody25(points2d):
 
 class MMPoseDetector:
 
-    def __init__(self, model_cfg, model_weights, to_openpose=True):
+    def __init__(self, model_cfg, model_weights, config_name, to_openpose=True):
         """
         model_name: str, name of the MMPose model config (e.g., 'TopDownHRNet')
         to_openpose: whether to convert COCO17 keypoints to BODY25
@@ -52,10 +52,14 @@ class MMPoseDetector:
         """
         self.to_openpose = to_openpose
         self.inferencer = MMPoseInferencer(
-            pose2d=model_cfg,
-            pose2d_weights=model_weights,
+            config_name,
             device="cuda"
         )
+        # self.inferencer = MMPoseInferencer(
+        #     pose2d=model_cfg,
+        #     pose2d_weights=model_weights,
+        #     device="cuda"
+        # )
         
     def predict(self, image):
         """Run MMPose inference on a single image"""
@@ -84,7 +88,7 @@ class MMPoseDetector:
 def extract_2d(image_root, annot_root, config, to_openpose=True):
     config.pop('force')
     ext = config.pop('ext')
-    detector = MMPoseDetector(model_cfg=config['pose2d'], model_weights=config['pose2d_weights'], to_openpose=to_openpose)
+    detector = MMPoseDetector(model_cfg=config['pose2d'], model_weights=config['pose2d_weights'], config_name=config['config_name'], to_openpose=to_openpose)
     imgnames = sorted(glob(join(image_root, '*'+ext)))
     for imgname in tqdm(imgnames, desc='{:10s}'.format(os.path.basename(annot_root))):
         base = os.path.basename(imgname).replace(ext, '')
