@@ -60,19 +60,20 @@ def create_chessboard(path, image, pattern, gridSize, ext, overwrite=True):
         else:
             save_json(annname, template)
 
-def _detect_chessboard(datas, path, image, out, pattern):
+def _detect_chessboard(datas, path, image, out, pattern, args):
     for imgname, annotname in datas:
         # imgname, annotname = dataset[i]
         # detect the 2d chessboard
         img = cv2.imread(imgname)
         annots = read_json(annotname)
         try:
-            show = findChessboardCorners(img, annots, pattern)
+            show = findChessboardCorners(img, annots, pattern, fix_orientation=args.fix_orientation)
         except func_timeout.exceptions.FunctionTimedOut:
             show = None
         save_json(annotname, annots)
         if show is None:
-            mywarn('[Info] Cannot find chessboard in {}'.format(imgname))
+            if args.debug:
+                mywarn('[Info] Cannot find chessboard in {}'.format(imgname))
             continue
         outname = join(out, imgname.replace(path + '/{}/'.format(image), ''))
         os.makedirs(os.path.dirname(outname), exist_ok=True)
@@ -88,7 +89,7 @@ def detect_chessboard(path, image, out, pattern, gridSize, args):
     for i in range(args.mp):
         ranges = trange[i::args.mp]
         datas = [dataset[t] for t in ranges]
-        thread = threading.Thread(target=_detect_chessboard, args=(datas, path, image, out, pattern)) # 应该不存在任何数据竞争
+        thread = threading.Thread(target=_detect_chessboard, args=(datas, path, image, out, pattern, args)) # 应该不存在任何数据竞争
         thread.start()
         threads.append(thread)
     for thread in threads:
@@ -119,7 +120,7 @@ def _detect_by_search(path, image, out, pattern, sub):
                 img = cv2.imread(imgname)
                 annots = read_json(annotname)
                 try:
-                    show = findChessboardCorners(img, annots, pattern)
+                    show = findChessboardCorners(img, annots, pattern, fix_orientation=args.fix_orientation)
                 except func_timeout.exceptions.FunctionTimedOut:
                     show = None
                 save_json(annotname, annots)
@@ -187,19 +188,21 @@ def check_chessboard(path, out):
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
+
     parser.add_argument('path', type=str)
     parser.add_argument('--image', type=str, default='images')
-    parser.add_argument('--out', type=str, required=True)
+    parser.add_argument('--out', type=str, default=None)
     parser.add_argument('--ext', type=str, default='.jpg', choices=['.jpg', '.png'])
     parser.add_argument('--pattern', type=lambda x: (int(x.split(',')[0]), int(x.split(',')[1])),
         help='The pattern of the chessboard', default=(9, 6))
-    parser.add_argument('--grid', type=float, default=0.1, 
+    parser.add_argument('--grid', type=float, default=0.111,
         help='The length of the grid size (unit: meter)')
     parser.add_argument('--max_step', type=int, default=50)
     parser.add_argument('--min_step', type=int, default=0)
     parser.add_argument('--mp', type=int, default=4)
     parser.add_argument('--axis', type=str, default='yx')
-    
+    parser.add_argument('--fix_orientation', default=False, action='store_true')
+
     parser.add_argument('--silent', action='store_true')
     parser.add_argument('--debug', action='store_true')
     parser.add_argument('--overwrite3d', action='store_true')
@@ -207,6 +210,8 @@ if __name__ == "__main__":
     parser.add_argument('--check', action='store_true')
 
     args = parser.parse_args()
+    if args.out is None:
+        args.out = os.path.join(args.path, "output", "calibration")
     if args.seq:
         detect_chessboard_sequence(args.path, args.image, args.out, pattern=args.pattern, gridSize=args.grid, args=args)
     else:

@@ -465,7 +465,7 @@ def main():
     video_name_0 = Path(video_path_0).stem
 
     # --- Prepare output directory ---
-    base_output = os.path.join("output", "exp", video_name_0)
+    base_output = os.path.join("../../output", "exp", video_name_0)
     os.makedirs(base_output, exist_ok=True)
 
     # --- Setup logger ---

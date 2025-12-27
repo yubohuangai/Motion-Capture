@@ -12,9 +12,11 @@ from glob import glob
 
 extensions = ['.mp4', '.webm', '.flv', '.MP4', '.MOV', '.mov', '.avi']
 
+
 def run(cmd):
     print(cmd)
     os.system(cmd)
+
 
 def extract_images(path, ffmpeg, image):
     videos = sorted(sum([
@@ -29,16 +31,24 @@ def extract_images(path, ffmpeg, image):
             continue
         os.makedirs(outpath, exist_ok=True)
         other_cmd = ''
-        if args.num != -1:
-            other_cmd += '-vframes {}'.format(args.num)
-        if args.scale != 1 and args.transpose != -1:
-            other_cmd += ' -vf "transpose={transpose},scale=iw/{scale}:ih/{scale}"'.format(scale=args.scale,transpose=args.transpose)
-        elif args.scale != 1:
-            other_cmd += ' -vf "scale=iw/{scale}:ih/{scale}'.format(scale=args.scale)
-        elif args.transpose != -1:
-            other_cmd += ' -vf transpose={}'.format(args.transpose)
-        cmd = '{} -i {} {} -q:v 1 -start_number 0 {}/%06d.jpg'.format(
-            ffmpeg, videoname, other_cmd, outpath)
+        vf_filters = []
+
+        if args.start > 0 or args.end != -1:
+            if args.end != -1:
+                vf_filters.append(f"select='between(n,{args.start},{args.end})'")
+            else:
+                vf_filters.append(f"select='gte(n,{args.start})'")
+        if args.scale != 1:
+            vf_filters.append(f"scale=iw/{args.scale}:ih/{args.scale}")
+        if args.transpose != -1:
+            vf_filters.append(f"transpose={args.transpose}")
+
+        if vf_filters:
+            other_cmd += ' -vf "{}"'.format(','.join(vf_filters))
+
+        cmd = '{} -i {} {} -vsync 0 -q:v 1 -start_number 0 {}/%06d.jpg'.format(
+            ffmpeg, videoname, other_cmd, outpath
+        )
         if not args.debug:
             cmd += ' -loglevel quiet'
         run(cmd)
@@ -49,6 +59,8 @@ if __name__ == "__main__":
     parser.add_argument('path', type=str)
     parser.add_argument('--strip', type=str, default='')
     parser.add_argument('--image', type=str, default='images')
+    parser.add_argument('--start', type=int, default=0, help='start frame index')
+    parser.add_argument('--end', type=int, default=-1, help='end frame index (inclusive)')
     parser.add_argument('--num', type=int, default=-1)
     parser.add_argument('--scale', type=int, default=1)
     parser.add_argument('--transpose', type=int, default=-1)

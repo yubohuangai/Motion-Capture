@@ -38,25 +38,40 @@ def get_lines_chessboard(pattern=(9, 6)):
         lines_cols.append(colors_chessboard_bar[(i//w)%len(colors_chessboard_bar)])
     return lines, lines_cols
 
-def _findChessboardCorners(img, pattern, debug):
+def _findChessboardCorners(img, pattern, debug, fix_orientation):
     "basic function"
     criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
-    retval, corners = cv2.findChessboardCorners(img, pattern)
-
+    retval, corners = cv2.findChessboardCorners(img, pattern,
+        flags=cv2.CALIB_CB_ADAPTIVE_THRESH + cv2.CALIB_CB_FAST_CHECK + cv2.CALIB_CB_FILTER_QUADS)
     if not retval:
         return False, None
     corners = cv2.cornerSubPix(img, corners, (11, 11), (-1, -1), criteria)
-    corners = corners.squeeze()
+    if fix_orientation:
+        h, w = pattern[1], pattern[0]
+        corners = corners.reshape(h, w, 2)
+
+        # horizontal flip
+        if corners[0, -1, 0] < corners[0, 0, 0]:
+            corners = corners[:, ::-1]
+
+        # vertical flip
+        if corners[-1, 0, 1] < corners[0, 0, 1]:
+            corners = corners[::-1, :]
+
+        corners = corners.reshape(-1, 2)
+    else:
+        corners = corners.squeeze()
+
     return True, corners
 
-def _findChessboardCornersAdapt(img, pattern, debug):
+def _findChessboardCornersAdapt(img, pattern, debug, fix_orientation):
     "Adapt mode"
     img = cv2.adaptiveThreshold(img, 255,cv2.ADAPTIVE_THRESH_GAUSSIAN_C,\
                 cv2.THRESH_BINARY, 21, 2)
-    return _findChessboardCorners(img, pattern, debug)
+    return _findChessboardCorners(img, pattern, debug, fix_orientation)
 
 @func_set_timeout(5)
-def findChessboardCorners(img, annots, pattern, debug=False):
+def findChessboardCorners(img, annots, pattern, debug=False, fix_orientation=False):
     conf = sum([v[2] for v in annots['keypoints2d']])
     if annots['visited'] and conf > 0:
         return True
@@ -66,7 +81,7 @@ def findChessboardCorners(img, annots, pattern, debug=False):
     gray = cv2.cvtColor(img,cv2.COLOR_BGR2GRAY)
     # Find the chess board corners
     for func in [_findChessboardCorners, _findChessboardCornersAdapt]:
-        ret, corners = func(gray, pattern, debug)
+        ret, corners = func(gray, pattern, debug, fix_orientation)
         if ret:break
     else:
         return None
