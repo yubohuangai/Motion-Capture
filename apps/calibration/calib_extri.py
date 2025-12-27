@@ -89,6 +89,130 @@ def relative2world(R_rel, T_rel, R_prev, T_prev):
     return rvec_world, T_world
 
 
+def calib_extri_stereo(path, image, intriname):
+    camnames = sorted(os.listdir(join(path, image)))
+    camnames = [c for c in camnames if os.path.isdir(join(path, image, c))]
+    if intriname is None:
+        # initialize intrinsic parameters
+        intri = init_intri(path, image)
+    else:
+        assert os.path.exists(intriname), intriname
+        intri = read_intri(intriname)
+        if len(intri.keys()) == 1:
+            key0 = list(intri.keys())[0]
+            for cam in camnames:
+                intri[cam] = intri[key0].copy()
+    extri = {}
+
+    for ic, cam in enumerate(camnames):
+        chessnames_curr = sorted(glob(join(path, 'chessboard', cam, '*.json')))
+
+        if ic == 0:
+            found_valid = False
+            for chessname in chessnames_curr:
+                data = read_json(chessname)
+                k3d = np.array(data['keypoints3d'], dtype=np.float32)
+                k2d = np.array(data['keypoints2d'], dtype=np.float32)
+                if k3d.shape[0] != k2d.shape[0]:
+                    mywarn('k3d {} doesnot match k2d {}'.format(k3d.shape, k2d.shape))
+                    length = min(k3d.shape[0], k2d.shape[0])
+                    k3d = k3d[:length]
+                    k2d = k2d[:length]
+                valididx = k2d[:, 2] > 0
+                if valididx.sum() >= 4:
+                    k3d = k3d[valididx]
+                    k2d = k2d[valididx, :2]  # slice to 2D, remove confidence.
+                    found_valid = True
+                    break
+            if not found_valid:
+                raise RuntimeError(f"No valid keypoints found for camera {cam}. Stopping the calibration.")
+            K, dist = intri[cam]['K'], intri[cam]['dist']
+            err, rvec, tvec, kpts_repro = solvePnP(k3d, k2d, K, dist, flag=cv2.SOLVEPNP_ITERATIVE)
+
+        elif ic > 0:
+            K, dist = intri[cam]['K'], intri[cam]['dist']
+            prev_cam = camnames[ic - 1]
+
+            prev_jsons = sorted(glob(join(path, 'chessboard', prev_cam, '*.json')))
+            curr_jsons = sorted(glob(join(path, 'chessboard', cam, '*.json')))
+
+            # match by filename (not index)
+            prev_map = {os.path.basename(p): p for p in prev_jsons}
+            curr_map = {os.path.basename(p): p for p in curr_jsons}
+            common_names = sorted(set(prev_map.keys()) & set(curr_map.keys()))
+
+            if len(common_names) == 0:
+                raise RuntimeError(f"No matching chessboard files between {prev_cam} and {cam}")
+
+            objectPoints = []
+            imagePoints_prev = []
+            imagePoints_curr = []
+
+            for name in common_names:
+                data_prev = read_json(prev_map[name])
+                data_curr = read_json(curr_map[name])
+
+                k3d_prev = np.array(data_prev['keypoints3d'], np.float32)
+                k2d_prev = np.array(data_prev['keypoints2d'], np.float32)
+
+                k3d_curr = np.array(data_curr['keypoints3d'], np.float32)
+                k2d_curr = np.array(data_curr['keypoints2d'], np.float32)
+
+                # keep only visible points
+                valid_prev = k2d_prev[:, 2] > 0
+                valid_curr = k2d_curr[:, 2] > 0
+                valid = valid_prev & valid_curr
+
+                if valid.sum() < 4:
+                    continue
+
+                objectPoints.append(k3d_prev[valid])
+                imagePoints_prev.append(k2d_prev[valid, :2])
+                imagePoints_curr.append(k2d_curr[valid, :2])
+
+            if len(objectPoints) == 0:
+                raise RuntimeError(f"No valid stereo pairs for {prev_cam} -> {cam}")
+
+            _, _, _, _, _, R_rel, T_rel, _, _ = cv2.stereoCalibrate(
+                objectPoints,
+                imagePoints_prev,
+                imagePoints_curr,
+                intri[prev_cam]['K'],
+                intri[prev_cam]['dist'],
+                K,
+                dist,
+                None,
+                flags=cv2.CALIB_FIX_INTRINSIC
+            )
+
+            # Convert to world coordinates
+            rvec, tvec = relative2world(
+                R_rel, T_rel, extri[prev_cam]['R'], extri[prev_cam]['T']
+            )
+
+            # Cal reprojection errors
+            total_err = 0.0
+            total_points = 0
+
+            for obj, img in zip(objectPoints, imagePoints_curr):
+                proj, _ = cv2.projectPoints(obj, rvec, tvec, K, dist)
+                proj = proj.squeeze()
+                err = np.linalg.norm(proj - img, axis=1)
+                total_err += err.sum()
+                total_points += len(err)
+
+            err = total_err / total_points
+
+        extri[cam] = {}
+        extri[cam]['Rvec'] = rvec
+        extri[cam]['R'] = cv2.Rodrigues(rvec)[0]
+        extri[cam]['T'] = tvec
+        center = - extri[cam]['R'].T @ tvec
+        print('{} center => {}, err = {:.3f}'.format(cam, center.squeeze(), err))
+    write_intri(join(path, 'intri.yml'), intri)
+    write_extri(join(path, 'extri.yml'), extri)
+
+
 def calib_extri(path, image, intriname, image_id):
     camnames = sorted(os.listdir(join(path, image)))
     camnames = [c for c in camnames if os.path.isdir(join(path, image, c))]
@@ -111,7 +235,7 @@ def calib_extri(path, image, intriname, image_id):
         # chessname = chessnames[0]
         assert len(chessnames) > 0, cam
         chessname = chessnames[image_id]
-        
+
         data = read_json(chessname)
         k3d = np.array(data['keypoints3d'], dtype=np.float32)
         k2d = np.array(data['keypoints2d'], dtype=np.float32)
@@ -120,7 +244,7 @@ def calib_extri(path, image, intriname, image_id):
             length = min(k3d.shape[0], k2d.shape[0])
             k3d = k3d[:length]
             k2d = k2d[:length]
-        #k3d[:, 0] *= -1
+        # k3d[:, 0] *= -1
         valididx = k2d[:, 2] > 0
         if valididx.sum() < 4:
             extri[cam] = {}
@@ -150,55 +274,12 @@ def calib_extri(path, image, intriname, image_id):
                         'rvec': rvec,
                         'tvec': tvec
                     })
-            infos.sort(key=lambda x:x['err'])
+            infos.sort(key=lambda x: x['err'])
             err, rvec, tvec = infos[0]['err'], infos[0]['rvec'], infos[0]['tvec']
             kpts_repro = infos[0]['repro']
             focal = infos[0]['focal']
             intri[cam]['K'][0, 0] = focal
             intri[cam]['K'][1, 1] = focal
-
-        if args.stereo and ic > 0:
-            # print('Stereo calibration for camera {}'.format(cam))
-            K, dist = intri[cam]['K'], intri[cam]['dist']
-            # Use previous camera as stereo reference
-            prev_cam = camnames[ic-1]
-
-            chessname_prev = sorted(glob(join(path, 'chessboard', prev_cam, '*.json')))[image_id]
-            data_prev = read_json(chessname_prev)
-            k3d_prev = np.array(data_prev['keypoints3d'], dtype=np.float32)
-            k2d_prev = np.array(data_prev['keypoints2d'], dtype=np.float32)
-            valididx_prev = k2d_prev[:, 2] > 0
-            k3d_prev = k3d_prev[valididx_prev]
-            k2d_prev = k2d_prev[valididx_prev, :2]
-
-            # Current camera 2D points
-            valididx = k2d[:, 2] > 0
-            k2d_curr = k2d[valididx, :2]
-            k3d_curr = k3d[valididx]
-               
-            # Stereo calibration: get relative R, T (current relative to previous)
-            _, _, _, _, _, R_rel, T_rel, _, _ = cv2.stereoCalibrate(
-                [k3d_prev.reshape(-1,1,3)],
-                [k2d_prev.reshape(-1,1,2)],
-                [k2d_curr.reshape(-1,1,2)],
-                intri[prev_cam]['K'],
-                intri[prev_cam]['dist'],
-                K,
-                dist,
-                None,
-                flags=cv2.CALIB_FIX_INTRINSIC
-            )
-
-            # Convert to world coordinates
-            rvec, tvec = relative2world(
-                R_rel, T_rel, extri[prev_cam]['R'], extri[prev_cam]['T']
-            )
-            
-            # Reproject to compute error
-            points2d_repro, _ = cv2.projectPoints(k3d_curr, rvec, tvec, K, dist)
-            kpts_repro = points2d_repro.squeeze()
-            err = np.linalg.norm(kpts_repro - k2d_curr, axis=1).mean()
-
         else:
             K, dist = intri[cam]['K'], intri[cam]['dist']
             err, rvec, tvec, kpts_repro = solvePnP(k3d, k2d, K, dist, flag=cv2.SOLVEPNP_ITERATIVE)
@@ -227,4 +308,7 @@ if __name__ == "__main__":
     parser.add_argument('--stereo', action='store_true', help='Use stereo calibration for adjacent cameras')
 
     args = parser.parse_args()
-    calib_extri(args.path, args.image, intriname=args.intri, image_id=args.image_id)
+    if args.stereo:
+        calib_extri_stereo(args.path, args.image, intriname=args.intri)
+    else:
+        calib_extri(args.path, args.image, intriname=args.intri, image_id=args.image_id)
