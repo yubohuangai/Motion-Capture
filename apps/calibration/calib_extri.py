@@ -185,23 +185,34 @@ def calib_extri_stereo(path, image, intriname):
                 flags=cv2.CALIB_FIX_INTRINSIC
             )
 
-            # Convert to world coordinates
-            rvec, tvec = relative2world(
-                R_rel, T_rel, extri[prev_cam]['R'], extri[prev_cam]['T']
-            )
-
-            # Cal reprojection errors
+            # --- Reprojection error in stereo (prev → curr) frame ---
             total_err = 0.0
             total_points = 0
 
-            for obj, img in zip(objectPoints, imagePoints_curr):
-                proj, _ = cv2.projectPoints(obj, rvec, tvec, K, dist)
+            rvec_rel = cv2.Rodrigues(R_rel)[0]
+
+            for obj_prev, img_pre, img_curr in zip(objectPoints, imagePoints_prev, imagePoints_curr):
+                _, rvec_pre, tvec_pre = cv2.solvePnP(obj_prev, img_pre, intri[prev_cam]['K'], intri[prev_cam]['dist'], flags=cv2.SOLVEPNP_ITERATIVE)
+                rvec_curr, tvec_curr = cv2.composeRT(rvec_pre, tvec_pre, rvec_rel, T_rel)[:2]
+
+                proj, _ = cv2.projectPoints(
+                    obj_prev,
+                    rvec_curr,
+                    tvec_curr,
+                    K,
+                    dist
+                )
                 proj = proj.squeeze()
-                err = np.linalg.norm(proj - img, axis=1)
+                err = np.linalg.norm(proj - img_curr, axis=1)
                 total_err += err.sum()
                 total_points += len(err)
 
             err = total_err / total_points
+
+            # Convert to world coordinates
+            rvec, tvec = relative2world(
+                R_rel, T_rel, extri[prev_cam]['R'], extri[prev_cam]['T']
+            )
 
         extri[cam] = {}
         extri[cam]['Rvec'] = rvec
