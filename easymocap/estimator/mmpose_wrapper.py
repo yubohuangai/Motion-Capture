@@ -60,7 +60,56 @@ class MMPoseDetector:
             pose2d_weights=model_weights,
             device="cuda"
         )
-        
+
+    def predict_crop(self, image, bbox):
+        """
+        image: full image (H, W, 3)
+        bbox: [x1, y1, x2, y2] or [x1, y1, x2, y2, score]
+        """
+        x1, y1, x2, y2 = map(int, bbox[:4])
+
+        # Clamp to image bounds
+        h, w = image.shape[:2]
+        x1 = max(0, x1)
+        y1 = max(0, y1)
+        x2 = min(w - 1, x2)
+        y2 = min(h - 1, y2)
+
+        if x2 <= x1 or y2 <= y1:
+            return None
+
+        crop = image[y1:y2, x1:x2]
+
+        results = self.inferencer(crop)
+        output = next(results)
+
+        persons = output['predictions'][0]
+        if len(persons) == 0:
+            return None
+
+        # Take the best person (top-down usually returns one)
+        person = persons[0]
+
+        kpts17 = np.array(person['keypoints'])
+        if 'keypoint_scores' in person:
+            conf = np.array(person['keypoint_scores'])
+        else:
+            conf = np.ones((kpts17.shape[0],), dtype=kpts17.dtype)
+
+        if kpts17.shape[1] == 2:
+            kpts17 = np.concatenate([kpts17, conf[:, None]], axis=1)
+        else:
+            kpts17[:, 2] = conf
+
+        kpts25 = coco17tobody25(kpts17[None])[0]
+
+        # Map back to full-image coordinates
+        kpts25[:, 0] += x1
+        kpts25[:, 1] += y1
+
+        return kpts25.tolist()
+
+
     def predict(self, image):
         """Run MMPose inference on a single image"""
         results = self.inferencer(image)
@@ -96,12 +145,15 @@ def extract_2d(image_root, annot_root, config, to_openpose=True):
         annots = read_json(annotname)
         detections = np.array([data['bbox'] for data in annots['annots']])
         image = cv2.imread(imgname)
-        kpts2d = detector.predict(image)
         for i in range(detections.shape[0]):
             annot_ = annots['annots'][i]
-            if i >= len(kpts2d):
-                # Skip if MMPose didn't detect this person
-                # but keep previous annotation structure
-                continue
-            annot_['keypoints'] = kpts2d[i]
+            bbox = annot_['bbox']
+
+            kpts25 = detector.predict_crop(image, bbox)
+
+            if kpts25 is None:
+                continue  # keep original annotation
+
+            annot_['keypoints'] = kpts25
+
         save_annot(annotname, annots)
