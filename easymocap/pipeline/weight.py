@@ -27,7 +27,7 @@ def load_weight_pose(model, opts):
         weight = {
             'k3d': 1., 'reg_poses_zero': 0, 'smooth_body': 0,
             'smooth_poses': 0, 'reg_poses': 0,
-            'k2d': 0
+            'k2d': 1e-4
         }
     elif model == 'smplh':
         weight = {
