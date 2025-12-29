@@ -14,8 +14,36 @@ import contextlib
 import io
 
 
-COCO17_IN_BODY25 = [0,16,15,18,17,5,2,6,3,7,4,12,9,13,10,14,11]
-HALPE_IN_BODY25 = [0, 16, 15, 18, 17, 6, 5, 2, 7, 4, 12, 9, 13, 10, 14, 11, 1, 8, 19, 22, 20, 23, 21, 24]
+COCO17_IN_BODY25 = [0, 16, 15, 18, 17, 5, 2, 6, 3, 7, 4, 12, 9, 13, 10, 14, 11]
+BODY25_IN_HALPE = [0, 18, 6, 8, 10, 5, 7, 9, 10, 12, 14, 16, 11, 13, 15, 2, 1, 4, 3, 20, 22, 24, 21, 23, 25]
+HALPE_TO_BODY25 = {
+    0: 0,
+    1: 16,
+    2: 15,
+    3: 18,
+    4: 17,
+    5: 5,
+    6: 2,
+    7: 6,
+    8: 3,
+    9: 7,
+    10: 4,
+    11: 12,
+    12: 9,
+    13: 13,
+    14: 10,
+    15: 14,
+    16: 11,
+    # HALPE index 17 is intentionally dropped
+    18: 1,
+    19: 8,
+    20: 19,
+    21: 22,
+    22: 20,
+    23: 23,
+    24: 21,
+    25: 24
+}
 pairs = [[1, 8], [1, 2], [1, 5], [2, 3], [3, 4], [5, 6], [6, 7], [8, 9], [9, 10], [10, 11], [8, 12], [12, 13], [13, 14], [1, 0], [0,15], [15,17], [0,16], [16,18], [14,19], [19,20], [14,21], [11,22], [22,23], [11,24]]
 
 def coco17tobody25(points2d):
@@ -44,11 +72,17 @@ def coco17tobody25(points2d):
 
 
 def halpe2body25(points2d):
-    kpts = np.zeros((points2d.shape[0], 25, 3))
-    # copy x, y
-    kpts[:, HALPE_IN_BODY25, :2] = points2d[:, :, :2]
-    # copy confidence
-    kpts[:, HALPE_IN_BODY25, 2] = points2d[:, :, 2]
+    """
+    Convert HALPE26 (N,26,3) → BODY25 (N,25,3)
+    """
+    assert points2d.shape[1] == 26
+
+    N = points2d.shape[0]
+    kpts = np.zeros((N, 25, 3), dtype=points2d.dtype)
+
+    for h_idx, b_idx in HALPE_TO_BODY25.items():
+        kpts[:, b_idx, :] = points2d[:, h_idx, :]
+
     return kpts
 
 
@@ -100,18 +134,18 @@ class MMPoseDetector:
         # Take the best person (top-down usually returns one)
         person = persons[0]
 
-        kpts17 = np.array(person['keypoints'])
+        kpts = np.array(person['keypoints'])
         if 'keypoint_scores' in person:
             conf = np.array(person['keypoint_scores'])
         else:
-            conf = np.ones((kpts17.shape[0],), dtype=kpts17.dtype)
+            conf = np.ones((kpts.shape[0],), dtype=kpts.dtype)
 
-        if kpts17.shape[1] == 2:
-            kpts17 = np.concatenate([kpts17, conf[:, None]], axis=1)
+        if kpts.shape[1] == 2:
+            kpts = np.concatenate([kpts, conf[:, None]], axis=1)
         else:
-            kpts17[:, 2] = conf
+            kpts[:, 2] = conf
 
-        kpts25 = halpe2body25(kpts17[None])[0]
+        kpts25 = halpe2body25(kpts[None])[0]
 
         # Map back to full-image coordinates
         kpts25[:, 0] += x1
