@@ -15,6 +15,7 @@ import io
 
 
 COCO17_IN_BODY25 = [0,16,15,18,17,5,2,6,3,7,4,12,9,13,10,14,11]
+HALPE_IN_BODY25 = [0, 16, 15, 18, 17, 6, 5, 2, 7, 4, 12, 9, 13, 10, 14, 11, 1, 8, 19, 22, 20, 23, 21, 24]
 pairs = [[1, 8], [1, 2], [1, 5], [2, 3], [3, 4], [5, 6], [6, 7], [8, 9], [9, 10], [10, 11], [8, 12], [12, 13], [13, 14], [1, 0], [0,15], [15,17], [0,16], [16,18], [14,19], [19,20], [14,21], [11,22], [22,23], [11,24]]
 
 def coco17tobody25(points2d):
@@ -39,6 +40,15 @@ def coco17tobody25(points2d):
     kpts[:, 1, :2] = kpts[:, [2, 5], :2].mean(axis=1)
     kpts[:, 1, 2] = kpts[:, [2, 5], 2].min(axis=1)  # confidence: use min of shoulders
 
+    return kpts
+
+
+def halpe2body25(points2d):
+    kpts = np.zeros((points2d.shape[0], 25, 3))
+    # copy x, y
+    kpts[:, HALPE_IN_BODY25, :2] = points2d[:, :, :2]
+    # copy confidence
+    kpts[:, HALPE_IN_BODY25, 2] = points2d[:, :, 2]
     return kpts
 
 
@@ -101,7 +111,7 @@ class MMPoseDetector:
         else:
             kpts17[:, 2] = conf
 
-        kpts25 = coco17tobody25(kpts17[None])[0]
+        kpts25 = halpe2body25(kpts17[None])[0]
 
         # Map back to full-image coordinates
         kpts25[:, 0] += x1
