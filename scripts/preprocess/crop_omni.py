@@ -17,21 +17,10 @@ def make_left_view(img):
 
 
 def make_back_view(img):
-    """
-    Back view from ERP:
-    - right 1/4 + left 1/4
-    - mirror both
-    - stitch
-    """
     h, w = img.shape[:2]
     q = w // 4
-
     left_q = img[:, :q]
     right_q = img[:, -q:]
-
-    left_q = cv2.flip(left_q, 1)
-    right_q = cv2.flip(right_q, 1)
-
     return cv2.hconcat([right_q, left_q])
 
 
