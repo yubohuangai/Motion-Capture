@@ -16,12 +16,23 @@ def make_left_view(img):
     return img[:, :w // 2]
 
 
+def make_front_view(img):
+    h, w = img.shape[:2]
+    q = w // 4
+    return img[:, q:3 * q]
+
+
 def make_back_view(img):
     h, w = img.shape[:2]
     q = w // 4
     left_q = img[:, :q]
     right_q = img[:, -q:]
     return cv2.hconcat([right_q, left_q])
+
+
+def make_right_view(img):
+    h, w = img.shape[:2]
+    return img[:, w // 2:]
 
 
 def main():
@@ -43,7 +54,7 @@ def main():
     parser.add_argument(
         "--view",
         type=str,
-        choices=["left", "back"],
+        choices=["left", "right", "front", "back"],
         required=True,
         help="Output view type"
     )
@@ -73,6 +84,10 @@ def main():
 
         if args.view == "left":
             out = make_left_view(img)
+        elif args.view == "right":
+            out = make_right_view(img)
+        elif args.view == "front":
+            out = make_front_view(img)
         elif args.view == "back":
             out = make_back_view(img)
         else:
