@@ -38,7 +38,7 @@ if __name__ == "__main__":
         out=args.out,
         config=CONFIG['body25'],  # assuming 25-joint body model
         kpts_type='body25',
-        undis=True,
+        undis=False,
         no_img=False,
         verbose=args.verbose
     )
