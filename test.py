@@ -11,12 +11,15 @@ import sys
 from omnicv import fisheyeImgConv
 
 # Import equirectangular image
-equiRect = cv2.imread('/Users/yubo/data/s2/insta360_1/test/images/seq1/000000.jpg')
+# equiRect = cv2.imread('/Users/yubo/data/s2/insta360_1/test/images/seq1/000000.jpg')
+equiRect = cv2.imread('/Users/yubo/data/omni/calib/omni1230_front/images/VID_20251230_111803_00_008/000150.jpg')
 
-# Defining output shape
 outShape = [1080, 1080]
 f = 270
-# Creating mapper object
+a_ = 0.5
+xi_ = 0
+angles = [0, 0, 0]
+
 mapper = fisheyeImgConv()
 
 # Converting equirectangular to fisheye using Unified Camera model (UCM)
@@ -35,9 +38,9 @@ mapper = fisheyeImgConv()
 # cv2.waitKey(0)
 #
 # # Converting equirectangular to fisheye using Double Sphere (DS) model
-fisheye = mapper.equirect2Fisheye_DS(equiRect, outShape=outShape, f=f, a_=0.5, xi_=0.8, angles=[0, 0, 180])
-cv2.imshow("DS Model Output", fisheye)
-cv2.waitKey(0)
+# fisheye = mapper.equirect2Fisheye_DS(equiRect, outShape=outShape, f=f, a_=a_, xi_=xi_, angles=angles)
+# cv2.imshow("DS Model Output", fisheye)
+# cv2.waitKey(0)
 #
 # # Changing the distortion coefficient for (UCM)
 # fisheye = mapper.equirect2Fisheye(equiRect, outShape=outShape, xi=0.2)
@@ -45,6 +48,6 @@ cv2.waitKey(0)
 # cv2.waitKey(0)
 #
 # # Rotate the sphere
-# fisheye = mapper.equirect2Fisheye(equiRect, outShape=outShape, angles=[0, 0, 180])
-# cv2.imshow("fisheye", fisheye)
-# cv2.waitKey(0)
+fisheye = mapper.equirect2Fisheye(equiRect, outShape=outShape, angles=[0, 0, 0])
+cv2.imshow("fisheye", fisheye)
+cv2.waitKey(0)

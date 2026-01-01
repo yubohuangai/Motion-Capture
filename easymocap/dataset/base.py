@@ -375,7 +375,7 @@ class MVBase:
     def __init__(self, root, cams=[], out=None, config={}, 
         image_root='images', annot_root='annots', 
         kpts_type='body15',
-        undis=True, no_img=False, filter2d=None) -> None:
+        undis=False, no_img=False, filter2d=None) -> None:
         self.root = root
         self.image_root = join(root, image_root)
         self.annot_root = join(root, annot_root)

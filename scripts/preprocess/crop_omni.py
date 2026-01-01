@@ -35,6 +35,21 @@ def make_right_view(img):
     return img[:, w // 2:]
 
 
+def make_custom_view(img, center_ratio=0.32, width_ratio=0.5):
+    """
+    Crop a horizontal slice of the image centered at center_ratio * width
+    width_ratio: fraction of the total width to crop
+    """
+    h, w = img.shape[:2]
+    cw = int(center_ratio * w)           # center pixel
+    half_w = int(width_ratio * w / 2)    # half width of crop
+
+    left = max(cw - half_w, 0)
+    right = min(cw + half_w, w)
+
+    return img[:, left:right]
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Generate left or back view from equirectangular images"
@@ -54,9 +69,21 @@ def main():
     parser.add_argument(
         "--view",
         type=str,
-        choices=["left", "right", "front", "back"],
+        choices=["left", "right", "front", "back", "custom"],
         required=True,
         help="Output view type"
+    )
+    parser.add_argument(
+        "--center_ratio",
+        type=float,
+        default=0.31,
+        help="Center of custom view as fraction of width"
+    )
+    parser.add_argument(
+        "--width_ratio",
+        type=float,
+        default=0.5,
+        help="Width of custom view as fraction of width"
     )
     parser.add_argument(
         "--ext",
@@ -82,7 +109,9 @@ def main():
             print(f"[WARN] Cannot read {img_path}")
             continue
 
-        if args.view == "left":
+        if args.view == "custom":
+            out = make_custom_view(img, center_ratio=args.center_ratio, width_ratio=args.width_ratio)
+        elif args.view == "left":
             out = make_left_view(img)
         elif args.view == "right":
             out = make_right_view(img)

@@ -143,6 +143,70 @@ def calib_intri(path, image, ext):
     write_intri(join(path, 'output', 'intri.yml'), cameras)
 
 
+def calib_intri_fisheye(path, image, ext):
+    camnames = sorted(os.listdir(join(path, image)))
+    camnames = [cam for cam in camnames if os.path.isdir(join(path, image, cam))]
+    cameras = {}
+    flags = (
+        cv2.fisheye.CALIB_RECOMPUTE_EXTRINSIC |
+        cv2.fisheye.CALIB_FIX_SKEW
+    )
+    criteria = (
+        cv2.TERM_CRITERIA_EPS +
+        cv2.TERM_CRITERIA_MAX_ITER,
+        30,
+        1e-6
+    )
+    for cam in camnames:
+        imagenames = sorted(glob(join(path, image, cam, '*' + ext)))
+        chessnames = sorted(glob(join(path, 'chessboard', cam, '*.json')))
+        k3ds_, k2ds_ = load_chessboards(
+            chessnames,
+            imagenames,
+            args.num,
+            out=join(args.path, 'output', cam + '_used')
+        )
+
+        # fisheye requires shape (N,1,3) and (N,1,2)
+        objpoints = [
+            k3d.reshape(-1, 1, 3).astype(np.float64)
+            for k3d in k3ds_
+        ]
+        imgpoints = [
+            k2d[:, :2].reshape(-1, 1, 2).astype(np.float64)
+            for k2d in k2ds_
+        ]
+
+        gray = cv2.imread(imagenames[0], 0)
+        H, W = gray.shape[:2]
+        # print(f'>> Camera {cam}: {len(objpoints):3d} frames (fisheye)')
+        K = np.zeros((3, 3))
+        D = np.zeros((4, 1))
+        rvecs = [np.zeros((1, 1, 3)) for _ in objpoints]
+        tvecs = [np.zeros((1, 1, 3)) for _ in objpoints]
+
+        with Timer('fisheye calibrate'):
+            rms, K, D, _, _ = cv2.fisheye.calibrate(
+                objpoints,
+                imgpoints,
+                (W, H),
+                K,
+                D,
+                rvecs,
+                tvecs,
+                flags,
+                criteria
+            )
+        print(f'   RMS error: {rms:.6f}')
+        cameras[cam] = {
+            'K': K,
+            'dist': D,
+            'H': H,
+            'W': W
+        }
+    write_intri(join(path, 'output', 'intri.yml'), cameras)
+
+
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
@@ -152,9 +216,12 @@ if __name__ == "__main__":
     parser.add_argument('--num', type=int, default=-1)
     parser.add_argument('--sample', type=int, default=-1)
     parser.add_argument('--share_intri', action='store_true')
+    parser.add_argument('--fisheye', action='store_true')
     parser.add_argument('--remove', action='store_true')
     args = parser.parse_args()
     if args.share_intri:
         calib_intri_share(args.path, args.image, ext=args.ext)
+    elif args.fisheye:
+        calib_intri_fisheye(args.path, args.image, ext=args.ext)
     else:
         calib_intri(args.path, args.image, ext=args.ext)
