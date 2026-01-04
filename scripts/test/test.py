@@ -1,6 +1,6 @@
 '''
 Created on Jan 26, 2018
-FilePath: test.py
+FilePath: test_omnicv.py
 '''
 
 import cv2

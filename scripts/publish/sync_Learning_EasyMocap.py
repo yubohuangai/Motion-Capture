@@ -10,7 +10,7 @@ myeasymocap:
       io:
         - model.py
         - video.py
-        - vis.py
+        - vis_gt.py
         - vis3d.py
         - write.py
       operations:

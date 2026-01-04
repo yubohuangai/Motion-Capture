@@ -100,8 +100,8 @@ def create_video_from_images_cv2(
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Create a video from a folder of images.")
-    parser.add_argument("--image_dir", type=str, required=True, help="Directory containing images or image subfolders.")
-    parser.add_argument("--output_path", type=str, help="Output MP4 file path.")
+    parser.add_argument("--src", type=str, required=True, help="Directory containing images or image subfolders.")
+    parser.add_argument("--dst", type=str, help="Output MP4 file path.")
     parser.add_argument("--fps", type=int, default=30, help="Frame rate for the output video.")
     parser.add_argument("--start_idx", type=int, default=None, help="Start frame index (0-based).")
     parser.add_argument("--end_idx", type=int, default=None, help="End frame index (exclusive).")
@@ -111,9 +111,9 @@ def parse_args():
 if __name__ == "__main__":
     args = parse_args()
     create_video_from_images_cv2(
-        args.image_dir,
+        args.src,
         start_idx=args.start_idx,
         end_idx=args.end_idx,
         fps=args.fps,
-        output_path=args.output_path,
+        output_path=args.dst,
     )

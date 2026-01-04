@@ -46,7 +46,7 @@ def undistort_image(img_path, intri_path, cam_name, output_path):
 
 
 if __name__ == "__main__":
-    img_path = "/Users/yubo/github/Motion-Capture/output/000150_fisheye.jpg"
+    img_path = "/output/000150_fisheye.jpg"
     intri_path = "/Users/yubo/data/omni/calib/omni1230_selected/output/intri_edit.yml"
     cam_name = "VID_20251230_111803_00_008"
     output_path = "/Users/yubo/github/Motion-Capture/output/000150_fisheye_undistorted.jpg"

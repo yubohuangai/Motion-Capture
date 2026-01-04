@@ -1,7 +1,6 @@
 """
-coding: utf-8
-FilePath: circle2rect.py
-@Descrip : Batch convert fisheye images to rectangular (ERP-like or perspective) images
+File path: circle2rect.py
+Description : Batch convert fisheye images to rectangular (ERP-like or perspective) images
 """
 
 import cv2
@@ -118,7 +117,10 @@ def fisheye_to_perspective(
     theta = np.arctan2(Y, X)
 
     f_fish = (min(Wf, Hf) / 2) / (np.pi / 2)
-    r = f_fish * phi
+    # r = f_fish * phiaeqq  37
+    k1 = 0.025
+    k2 = 0.005
+    r = f_fish * (phi + k1 * phi ** 3 + k2 * phi ** 5)
 
     x_fish = r * np.cos(theta) + Wf / 2
     y_fish = Hf / 2 - r * np.sin(theta)
@@ -137,8 +139,9 @@ def fisheye_to_perspective(
 
 
 if __name__ == "__main__":
-    input_dir = "/Users/yubo/data/s2/seq1/view_32_fisheye"
-    output_dir = "/Users/yubo/data/s2/seq1/view_32_fisheye_undis_fov144"
+    input_dir = "/Users/yubo/data/s2/seq1/view32_fisheye"
+    # input_dir = "/Users/yubo/github/Motion-Capture/output"
+    output_dir = "/Users/yubo/data/s2/seq1/view32_fisheye_fov150"
     # output_dir = "/Users/yubo/github/Motion-Capture/output"
     os.makedirs(output_dir, exist_ok=True)
 
@@ -151,7 +154,7 @@ if __name__ == "__main__":
             continue
 
         # rect_img = fisheye_to_rect(fisheye_img, lon_fov=180, lat_fov=140)
-        rect_img = fisheye_to_perspective(fisheye_img, fov_deg=144)
+        rect_img = fisheye_to_perspective(fisheye_img, fov_deg=150)
 
         base, ext = os.path.splitext(os.path.basename(img_path))
         out_path = os.path.join(output_dir, f"{base}{ext}")

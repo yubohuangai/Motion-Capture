@@ -35,7 +35,7 @@ def make_right_view(img):
     return img[:, w // 2:]
 
 
-def make_custom_view(img, center_ratio=0.32, width_ratio=0.5):
+def make_custom_view(img, center_ratio=0.40, width_ratio=0.5):
     """
     Crop a horizontal slice of the image centered at center_ratio * width
     width_ratio: fraction of the total width to crop
@@ -76,7 +76,7 @@ def main():
     parser.add_argument(
         "--center_ratio",
         type=float,
-        default=0.31,
+        default=0.40,
         help="Center of custom view as fraction of width"
     )
     parser.add_argument(

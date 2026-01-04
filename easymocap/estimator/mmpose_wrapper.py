@@ -105,14 +105,47 @@ class MMPoseDetector:
             device="cuda"
         )
 
-    def predict_crop(self, image, bbox):
+    def predict_crop(self, image, bbox=None):
         """
         image: full image (H, W, 3)
-        bbox: [x1, y1, x2, y2] or [x1, y1, x2, y2, score]
+        bbox: [x1, y1, x2, y2] or None
         """
+
+        # -----------------------------
+        # Case 1: NO bbox → full image
+        # -----------------------------
+        if bbox is None:
+            results = self.inferencer(image)
+            output = next(results)
+
+            persons = output['predictions'][0]
+            if len(persons) == 0:
+                return None
+
+            # Take best person
+            person = persons[0]
+
+            kpts = np.array(person['keypoints'])
+            if 'keypoint_scores' in person:
+                conf = np.array(person['keypoint_scores'])
+            else:
+                conf = np.ones((kpts.shape[0],), dtype=kpts.dtype)
+
+            if kpts.shape[1] == 2:
+                kpts = np.concatenate([kpts, conf[:, None]], axis=1)
+            else:
+                kpts[:, 2] = conf
+
+            # HALPE → BODY25
+            kpts25 = halpe2body25(kpts[None])[0]
+
+            return kpts25.tolist()
+
+        # --------------------------------
+        # Case 2: bbox provided → crop
+        # --------------------------------
         x1, y1, x2, y2 = map(int, bbox[:4])
 
-        # Clamp to image bounds
         h, w = image.shape[:2]
         x1 = max(0, x1)
         y1 = max(0, y1)
@@ -131,7 +164,6 @@ class MMPoseDetector:
         if len(persons) == 0:
             return None
 
-        # Take the best person (top-down usually returns one)
         person = persons[0]
 
         kpts = np.array(person['keypoints'])
@@ -145,13 +177,15 @@ class MMPoseDetector:
         else:
             kpts[:, 2] = conf
 
-        kpts25 = halpe2body25(kpts[None])[0]
+        if self.to_openpose:
+            kpts = halpe2body25(kpts[None])[0]
 
-        # Map back to full-image coordinates
-        kpts25[:, 0] += x1
-        kpts25[:, 1] += y1
+        # map back to full image if cropped
+        if bbox is not None:
+            kpts[:, 0] += x1
+            kpts[:, 1] += y1
 
-        return kpts25.tolist()
+        return kpts.tolist()
 
 
     def predict(self, image):
@@ -178,7 +212,7 @@ class MMPoseDetector:
         return kpts25_all
 
 
-def extract_2d(image_root, annot_root, config, to_openpose=True):
+def extract_2d(image_root, annot_root, config, to_openpose=False):
     config.pop('force')
     ext = config.pop('ext')
     detector = MMPoseDetector(model_cfg=config['pose2d'], model_weights=config['pose2d_weights'], config_name=config['config_name'], to_openpose=to_openpose)
