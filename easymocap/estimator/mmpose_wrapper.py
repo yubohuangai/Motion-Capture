@@ -153,31 +153,31 @@ class MMPoseDetector:
             kpts[:, 0] += x1
             kpts[:, 1] += y1
 
-        return kpts25.tolist()
+        return kpts.tolist()
 
 
-    def predict(self, image):
-        """Run MMPose inference on a single image"""
-        results = self.inferencer(image)
-        output = next(results)
-        persons = output['predictions'][0]
-        kpts25_all = []
-        for pid, person in enumerate(persons):
-            kpts17 = np.array(person['keypoints'])
-            if 'keypoint_scores' in person:
-                conf = np.array(person['keypoint_scores'])
-            else:
-                conf = np.ones((kpts17.shape[0],), dtype=kpts17.dtype)
-
-            if kpts17.shape[1] == 2:
-                kpts17 = np.concatenate([kpts17, conf[:,None]], axis=1)
-            else:
-                kpts17[:,2] = conf
-
-            kpts25 = coco17tobody25(kpts17[None])[0] 
-            kpts25_all.append(kpts25.tolist())
-
-        return kpts25_all
+    # def predict(self, image):
+    #     """Run MMPose inference on a single image"""
+    #     results = self.inferencer(image)
+    #     output = next(results)
+    #     persons = output['predictions'][0]
+    #     kpts25_all = []
+    #     for pid, person in enumerate(persons):
+    #         kpts17 = np.array(person['keypoints'])
+    #         if 'keypoint_scores' in person:
+    #             conf = np.array(person['keypoint_scores'])
+    #         else:
+    #             conf = np.ones((kpts17.shape[0],), dtype=kpts17.dtype)
+    #
+    #         if kpts17.shape[1] == 2:
+    #             kpts17 = np.concatenate([kpts17, conf[:,None]], axis=1)
+    #         else:
+    #             kpts17[:,2] = conf
+    #
+    #         kpts25 = coco17tobody25(kpts17[None])[0]
+    #         kpts25_all.append(kpts25.tolist())
+    #
+    #     return kpts25_all
 
 
 def extract_2d(image_root, annot_root, config, to_openpose=False):
