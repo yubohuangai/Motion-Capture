@@ -105,47 +105,14 @@ class MMPoseDetector:
             device="cuda"
         )
 
-    def predict_crop(self, image, bbox=None):
+    def predict_crop(self, image, bbox):
         """
         image: full image (H, W, 3)
-        bbox: [x1, y1, x2, y2] or None
+        bbox: [x1, y1, x2, y2] or [x1, y1, x2, y2, score]
         """
-
-        # -----------------------------
-        # Case 1: NO bbox → full image
-        # -----------------------------
-        if bbox is None:
-            results = self.inferencer(image)
-            output = next(results)
-
-            persons = output['predictions'][0]
-            if len(persons) == 0:
-                return None
-
-            # Take best person
-            person = persons[0]
-
-            kpts = np.array(person['keypoints'])
-            if 'keypoint_scores' in person:
-                conf = np.array(person['keypoint_scores'])
-            else:
-                conf = np.ones((kpts.shape[0],), dtype=kpts.dtype)
-
-            if kpts.shape[1] == 2:
-                kpts = np.concatenate([kpts, conf[:, None]], axis=1)
-            else:
-                kpts[:, 2] = conf
-
-            # HALPE → BODY25
-            kpts25 = halpe2body25(kpts[None])[0]
-
-            return kpts25.tolist()
-
-        # --------------------------------
-        # Case 2: bbox provided → crop
-        # --------------------------------
         x1, y1, x2, y2 = map(int, bbox[:4])
 
+        # Clamp to image bounds
         h, w = image.shape[:2]
         x1 = max(0, x1)
         y1 = max(0, y1)
@@ -164,6 +131,7 @@ class MMPoseDetector:
         if len(persons) == 0:
             return None
 
+        # Take the best person (top-down usually returns one)
         person = persons[0]
 
         kpts = np.array(person['keypoints'])
@@ -185,7 +153,7 @@ class MMPoseDetector:
             kpts[:, 0] += x1
             kpts[:, 1] += y1
 
-        return kpts.tolist()
+        return kpts25.tolist()
 
 
     def predict(self, image):
@@ -215,23 +183,44 @@ class MMPoseDetector:
 def extract_2d(image_root, annot_root, config, to_openpose=False):
     config.pop('force')
     ext = config.pop('ext')
-    detector = MMPoseDetector(model_cfg=config['pose2d'], model_weights=config['pose2d_weights'], config_name=config['config_name'], to_openpose=to_openpose)
-    imgnames = sorted(glob(join(image_root, '*'+ext)))
+    detector = MMPoseDetector(
+        model_cfg=config['pose2d'],
+        model_weights=config['pose2d_weights'],
+        config_name=config['config_name'],
+        to_openpose=to_openpose
+    )
+    imgnames = sorted(glob(join(image_root, '*' + ext)))
     for imgname in tqdm(imgnames, desc='{:10s}'.format(os.path.basename(annot_root))):
         base = os.path.basename(imgname).replace(ext, '')
-        annotname = join(annot_root, base+'.json')
+        annotname = join(annot_root, base + '.json')
         annots = read_json(annotname)
         detections = np.array([data['bbox'] for data in annots['annots']])
         image = cv2.imread(imgname)
-        for i in range(detections.shape[0]):
-            annot_ = annots['annots'][i]
-            bbox = annot_['bbox']
 
-            kpts25 = detector.predict_crop(image, bbox)
+        # If no bbox detected, create a dummy bbox for whole image
+        if detections.shape[0] == 0:
+            full_bbox = [0, 0, image.shape[1], image.shape[0]]
+            kpts_all = detector.predict_crop(image, full_bbox)
+            if kpts_all is not None:
+                # create a new annotation for the person
+                new_annot = {
+                    'personID': 0,
+                    'bbox': full_bbox + [1.0],  # assume score=1.0
+                    'keypoints': kpts_all,
+                    'isKeyframe': True
+                }
+                annots['annots'].append(new_annot)
 
-            if kpts25 is None:
-                continue  # keep original annotation
+        else:
+            # process detected bboxes
+            for i in range(detections.shape[0]):
+                annot_ = annots['annots'][i]
+                bbox = annot_['bbox']
 
-            annot_['keypoints'] = kpts25
+                kpts = detector.predict_crop(image, bbox)
+                if kpts is None:
+                    continue
+
+                annot_['keypoints'] = kpts
 
         save_annot(annotname, annots)
