@@ -89,7 +89,13 @@ def relative2world(R_rel, T_rel, R_prev, T_prev):
     return rvec_world, T_world
 
 
-def calib_extri_stereo(path, image, intriname):
+def sample_list(lst, step):
+    if step <= 1:
+        return lst
+    return lst[::step]
+
+
+def calib_extri_stereo(path, image, intriname, step=6):
     camnames = sorted(os.listdir(join(path, image)))
     camnames = [c for c in camnames if os.path.isdir(join(path, image, c))]
     if intriname is None:
@@ -106,7 +112,7 @@ def calib_extri_stereo(path, image, intriname):
 
     for ic, cam in enumerate(camnames):
         chessnames_curr = sorted(glob(join(path, 'chessboard', cam, '*.json')))
-
+        chessnames_curr = sample_list(chessnames_curr, step)
         if ic == 0:
             found_valid = False
             for chessname in chessnames_curr:
@@ -135,6 +141,9 @@ def calib_extri_stereo(path, image, intriname):
 
             prev_jsons = sorted(glob(join(path, 'chessboard', prev_cam, '*.json')))
             curr_jsons = sorted(glob(join(path, 'chessboard', cam, '*.json')))
+
+            prev_jsons = sample_list(prev_jsons, step)
+            curr_jsons = sample_list(curr_jsons, step)
 
             # match by filename (not index)
             prev_map = {os.path.basename(p): p for p in prev_jsons}
@@ -311,7 +320,7 @@ if __name__ == "__main__":
     parser.add_argument('--image', type=str, default='images')
     parser.add_argument('--intri', type=str, default=None)
     parser.add_argument('--ext', type=str, default='.jpg')
-    parser.add_argument('--step', type=int, default=1)
+    parser.add_argument('--step', type=int, default=6)
     parser.add_argument('--debug', action='store_true')
     parser.add_argument('--tryfocal', action='store_true')
     parser.add_argument('--tryextri', action='store_true')
@@ -320,6 +329,11 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
     if args.stereo:
-        calib_extri_stereo(args.path, args.image, intriname=args.intri)
+        calib_extri_stereo(
+            args.path,
+            args.image,
+            intriname=args.intri,
+            step=args.step
+        )
     else:
         calib_extri(args.path, args.image, intriname=args.intri, image_id=args.image_id)
