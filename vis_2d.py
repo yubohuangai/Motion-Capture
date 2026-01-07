@@ -1,3 +1,7 @@
+'''
+File: vis_2d.py
+'''
+
 import os
 import json
 import cv2
@@ -7,10 +11,12 @@ from glob import glob
 # -----------------------
 # CONFIG
 # -----------------------
-root = "/Users/yubo/data/s2/seq1/360/view32"
-json_dir = os.path.join(root, "annots-rtm/view32")  # folder containing JSONs
-output_dir = os.path.join(root, "output2d")
+root = "/Users/yubo/data/s2/seq1/360/view32_fisheye"
+json_dir = os.path.join(root, "annots-refined")  # folder containing JSONs
+output_dir = os.path.join(root, "output2d-refined")
 os.makedirs(output_dir, exist_ok=True)
+
+FIRST_PERSON_ONLY = True  # <-- set True to visualize only first person
 
 # -----------------------
 # Haple-26 skeleton with body-part grouping
@@ -34,8 +40,7 @@ BONE_THICKNESS = 4
 # -----------------------
 # PROCESS ALL JSON FILES
 # -----------------------
-json_files = sorted(glob(os.path.join(json_dir, "*.json")))
-print(f"Found {len(json_files)} JSON files.")
+json_files = sorted(glob(os.path.join(json_dir, "**/*.json")))
 
 for json_path in json_files:
     # load JSON
@@ -49,7 +54,11 @@ for json_path in json_files:
         continue
 
     # draw annotations
-    for annot in data["annots"]:
+    annots_to_draw = data["annots"]
+    if FIRST_PERSON_ONLY and len(annots_to_draw) > 0:
+        annots_to_draw = [annots_to_draw[0]]  # only first person
+
+    for annot in annots_to_draw:
         pid = annot["personID"]
         kpts = np.array(annot["keypoints"])  # (26, 3)
 

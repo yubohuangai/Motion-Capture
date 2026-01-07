@@ -1,52 +1,93 @@
+"""
+Filepath: scripts/postprocess/split_per_frame.py
+
+Split keypoints.json into per-frame JSON files.
+Supports single-person 2D or 3D keypoints.
+"""
+
 import json
 import os
 import numpy as np
+import argparse
 
-# ---------- paths ----------
-input_json = (
-    "/Users/yubo/data/s2/seq1/output/mhformer/"
-    "view32_fisheye_fov150/output_3D/output_keypoints_3d.json"
+
+# ---------- args ----------
+parser = argparse.ArgumentParser(
+    description="Split single-person keypoints.json into per-frame files"
 )
-
-output_dir = (
-    "/Users/yubo/data/s2/seq1/output/mhformer/"
-    "view32_fisheye_fov150/output_3D/keypoints3d"
+parser.add_argument(
+    "--input",
+    type=str,
+    default="/Users/yubo/data/s2/seq1/360/output/poseformerv2/view32_fov150/input_2D/keypoints.json",
+    help="Path to input keypoints.json"
 )
+parser.add_argument(
+    "--dim",
+    choices=["2d", "3d"],
+    default="2d",
+    help="Keypoint dimension type"
+)
+parser.add_argument(
+    "--confidence",
+    type=float,
+    default=1.0,
+    help="Default confidence value"
+)
+args = parser.parse_args()
 
-os.makedirs(output_dir, exist_ok=True)
-
-# ---------- config ----------
-DEFAULT_CONFIDENCE = 1.0   # change if you want (e.g. 8.0 or 10.0)
+input_json = args.input
+DEFAULT_CONFIDENCE = args.confidence
 PERSON_ID = 0
+
+# ---------- output dir ----------
+output_dir = os.path.splitext(input_json)[0]
+os.makedirs(output_dir, exist_ok=True)
 
 # ---------- load ----------
 with open(input_json, "r") as f:
     data = json.load(f)
 
-# shape: (num_frames, num_joints, 3)
-reconstruction = np.array(data["reconstruction"], dtype=np.float32)
+reconstruction = np.asarray(data["reconstruction"], dtype=np.float32)
+print(f"Loaded reconstruction shape: {reconstruction.shape}")
 
-num_frames, num_joints, _ = reconstruction.shape
-print(f"Loaded {num_frames} frames, {num_joints} joints")
+# ---------- normalize shapes ----------
+if args.dim == "2d":
+    # Accept (T, J, 2) or (1, T, J, 2)
+    if reconstruction.ndim == 4:
+        assert reconstruction.shape[0] == 1, "Only single-person input is supported"
+        reconstruction = reconstruction[0]
+    elif reconstruction.ndim != 3:
+        raise ValueError("Invalid 2D reconstruction shape")
+
+elif args.dim == "3d":
+    # Expect (T, J, 3)
+    if reconstruction.ndim != 3:
+        raise ValueError("Invalid 3D reconstruction shape")
+
+num_frames, num_joints, coord_dim = reconstruction.shape
+print(f"Frames: {num_frames}, Joints: {num_joints}, Dim: {coord_dim}")
 
 # ---------- process ----------
 for frame_idx in range(num_frames):
     frame_kpts = reconstruction[frame_idx]
 
-    # append confidence column
+    # append confidence
     conf = np.full((num_joints, 1), DEFAULT_CONFIDENCE, dtype=np.float32)
-    frame_kpts_4d = np.concatenate([frame_kpts, conf], axis=1)
+    frame_kpts_out = np.concatenate([frame_kpts, conf], axis=1)
 
-    frame_json = [
-        {
+    if args.dim == "3d":
+        frame_json = [{
             "id": PERSON_ID,
-            "keypoints3d": frame_kpts_4d.tolist()
-        }
-    ]
+            "keypoints3d": frame_kpts_out.tolist()
+        }]
+    else:  # 2d
+        frame_json = [{
+            "id": PERSON_ID,
+            "keypoints": frame_kpts_out.tolist()
+        }]
 
     out_path = os.path.join(output_dir, f"{frame_idx:06d}.json")
-
     with open(out_path, "w") as f:
         json.dump(frame_json, f, indent=2)
 
-print(f"Saved {num_frames} frame files to:\n{output_dir}")
+print(f"[DONE] Saved {num_frames} frames to:\n{output_dir}")

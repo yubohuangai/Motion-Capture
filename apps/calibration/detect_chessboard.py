@@ -185,6 +185,7 @@ def check_chessboard(path, out):
     mywarn('Please annot them manually:')
     mywarn(f'python3 apps/annotation/annot_calib.py {path} --mode chessboard --annot chessboard --sub {" ".join(subs_notvalid)}')
 
+
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()

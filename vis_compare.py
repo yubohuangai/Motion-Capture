@@ -3,8 +3,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 # ---------- config ----------
-gt_path = "/Users/yubo/data/s2/seq1/rtm/keypoints3d/000000.json"
-pred_path = "/Users/yubo/data/s2/seq1/output/mhformer/view32_fisheye_fov150/output_3D/keypoints3d/000000.json"
+gt_path = "/Users/yubo/data/s2/seq1/gt/rtm/keypoints3d/000000.json"
+pred_path = "/Users/yubo/data/s2/seq1/360/output/poseformerv2/view32_fisheye/output_3D/keypoints3d/000000.json"
 
 gt_pairs = [
     [1, 8], [1, 2], [1, 5], [2, 3], [3, 4], [5, 6], [6, 7],
@@ -57,7 +57,7 @@ pred_aligned = (R @ pred.T).T + t
 # ---------- visualization remap ----------
 def vis_coords(kpts):
     x0, y0, z0 = kpts[:, 0], kpts[:, 1], kpts[:, 2]
-    x = y0
+    x = -y0
     y = z0
     z = -x0
     return x, y, z
@@ -68,21 +68,21 @@ ax = fig.add_subplot(111, projection="3d")
 
 # GT
 xg, yg, zg = vis_coords(gt)
-ax.scatter(xg, yg, zg, c="tab:blue", s=25, label="GT")
+ax.scatter(xg, yg, zg, c="tab:blue", s=25, label="Ground Truth")
 for i, j in gt_pairs:
     ax.plot([xg[i], xg[j]], [yg[i], yg[j]], [zg[i], zg[j]],
             c="tab:blue", linewidth=2)
 
 # Predict (aligned)
 xp, yp, zp = vis_coords(pred_aligned)
-ax.scatter(xp, yp, zp, c="tab:red", s=25, label="Predict (Aligned)")
+ax.scatter(xp, yp, zp, c="tab:red", s=25, label="Estimation")
 for i, j in pred_pairs:
     ax.plot([xp[i], xp[j]], [yp[i], yp[j]], [zp[i], zp[j]],
             c="tab:red", linewidth=2)
 
-ax.set_title("GT (blue) vs Predict aligned to GT (red)")
+# ax.set_title("GT (blue) vs Predict aligned to GT (red)")
 ax.legend()
-ax.view_init(elev=20, azim=225)
+ax.view_init(elev=7, azim=-30)
 
 # ---------- equal axis ----------
 def set_axes_equal(ax):
@@ -98,4 +98,20 @@ def set_axes_equal(ax):
     ax.set_zlim(center[2] - radius, center[2] + radius)
 
 set_axes_equal(ax)
+ax.set_box_aspect((1, 1, 1))
+# ax.dist = 6
+plt.subplots_adjust(0, 0, 1, 1)
+
+# ---------- zoom using axis limits ----------
+# scale < 1 -> zoom in, scale > 1 -> zoom out
+# scale = 0.6
+# xlim, ylim, zlim = ax.get_xlim(), ax.get_ylim(), ax.get_zlim()
+# xc = (xlim[0] + xlim[1]) / 2
+# yc = (ylim[0] + ylim[1]) / 2
+# zc = (zlim[0] + zlim[1]) / 2
+#
+# ax.set_xlim([xc + (xlim[0]-xc)*scale, xc + (xlim[1]-xc)*scale])
+# ax.set_ylim([yc + (ylim[0]-yc)*scale, yc + (ylim[1]-yc)*scale])
+# ax.set_zlim([zc + (zlim[0]-zc)*scale, zc + (zlim[1]-zc)*scale])
+
 plt.show()

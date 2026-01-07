@@ -87,7 +87,7 @@ def fisheye_to_rect(
 
 def fisheye_to_perspective(
     fisheye_img,
-    fov_deg=90,
+    fov_deg=150,
     out_size=None
 ):
     Hf, Wf = fisheye_img.shape[:2]

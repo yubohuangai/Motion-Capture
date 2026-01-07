@@ -1,8 +1,7 @@
-'''
-img2vid.py
-'''
+"""
+File path: scripts/postprocess/img2vid.py
+"""
 
-#!/usr/bin/env python3
 import os
 from glob import glob
 import cv2
@@ -101,12 +100,17 @@ def create_video_from_images_cv2(
 def parse_args():
     parser = argparse.ArgumentParser(description="Create a video from a folder of images.")
     parser.add_argument("--src", type=str, required=True, help="Directory containing images or image subfolders.")
-    parser.add_argument("--dst", type=str, help="Output MP4 file path.")
-    parser.add_argument("--fps", type=int, default=30, help="Frame rate for the output video.")
+    parser.add_argument("--dst", type=str, default=None, help="Output MP4 file path (default: src folder + .mp4)")
+    parser.add_argument("--fps", type=int, default=5, help="Frame rate for the output video.")
     parser.add_argument("--start_idx", type=int, default=None, help="Start frame index (0-based).")
     parser.add_argument("--end_idx", type=int, default=None, help="End frame index (exclusive).")
-    return parser.parse_args()
+    args = parser.parse_args()
 
+    if args.dst is None:
+        src_abs = os.path.abspath(args.src.rstrip('/'))
+        args.dst = f"{src_abs}.mp4"
+
+    return args
 
 if __name__ == "__main__":
     args = parse_args()
