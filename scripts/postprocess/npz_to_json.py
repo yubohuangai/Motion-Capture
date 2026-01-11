@@ -6,7 +6,7 @@ import numpy as np
 import json
 import os
 
-npz_path = "/Users/yubo/data/s2/seq1/360/output/poseformerv2/view32_fov150/input_2D/keypoints.npz"
+npz_path = "/Users/yubo/data/s2/seq1/360/output/poseformerv2/01_view40/output_3D/output_keypoints_3d.npz"
 json_path = npz_path.replace(".npz", ".json")
 
 # Load NPZ

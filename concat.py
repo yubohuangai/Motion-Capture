@@ -4,9 +4,9 @@ import cv2
 from glob import glob
 import argparse
 
-pose_2d_dir = "/Users/yubo/data/s2/seq1/360/output/poseformerv2/view32_fisheye/pose2D"
-pose_3d_dir = "/Users/yubo/data/s2/seq1/360/output/poseformerv2/view32_fisheye/output_3D/images"
-concat_dir = "/Users/yubo/data/s2/seq1/360/output/poseformerv2/view32_fisheye/output_3D/concat"
+pose_2d_dir = "/Users/yubo/data/s2/seq1/360/output/poseformerv2/01_view40/pose2D"
+pose_3d_dir = "/Users/yubo/data/s2/seq1/360/output/poseformerv2/01_view40/output_3D/images"
+concat_dir = "/Users/yubo/data/s2/seq1/360/output/poseformerv2/01_view40/output_3D/concat"
 
 parser = argparse.ArgumentParser(description="Concatenate images")
 parser.add_argument(

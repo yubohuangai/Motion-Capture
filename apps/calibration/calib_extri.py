@@ -1,10 +1,6 @@
-'''
-  @ Date: 2021-03-02 16:13:03
-  @ Author: Qing Shuai
-  @ LastEditors: Qing Shuai
-  @ LastEditTime: 2022-08-03 17:35:16
-  @ FilePath: /EasyMocapPublic/apps/calibration/calib_extri.py
-'''
+"""
+File: apps/calibration/calib_extri.py
+"""
 from easymocap.mytools.camera_utils import write_intri
 import os
 from glob import glob
@@ -157,6 +153,9 @@ def calib_extri_stereo(path, image, intriname, step=6):
             imagePoints_prev = []
             imagePoints_curr = []
 
+            used_pairs = 0
+            skipped_pairs = 0
+
             for name in common_names:
                 data_prev = read_json(prev_map[name])
                 data_curr = read_json(curr_map[name])
@@ -173,12 +172,14 @@ def calib_extri_stereo(path, image, intriname, step=6):
                 valid = valid_prev & valid_curr
 
                 if valid.sum() < 4:
+                    skipped_pairs += 1
                     continue
 
                 objectPoints.append(k3d_prev[valid])
                 imagePoints_prev.append(k2d_prev[valid, :2])
                 imagePoints_curr.append(k2d_curr[valid, :2])
-
+                used_pairs += 1
+            print(f'[Stereo] {prev_cam} -> {cam}: used_pairs={used_pairs}, skipped_pairs={skipped_pairs}')
             if len(objectPoints) == 0:
                 raise RuntimeError(f"No valid stereo pairs for {prev_cam} -> {cam}")
 

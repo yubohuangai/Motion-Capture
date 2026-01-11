@@ -9,6 +9,82 @@ import os
 import glob
 
 
+def build_fisheye_to_rect_map(
+    Wf, Hf, Wr, Hr,
+    lon_fov_deg=180,
+    lat_fov_deg=180
+):
+    """
+    Build mapping from fisheye image to rect (ERP-like) image
+    with independent longitude and latitude FOV control.
+    """
+
+    lon_fov = np.deg2rad(lon_fov_deg)
+    lat_fov = np.deg2rad(lat_fov_deg)
+
+    # Rectangular pixel grid
+    ys, xs = np.indices((Hr, Wr), np.float32)
+
+    # Longitude [-lon_fov/2, lon_fov/2]
+    lon = (xs / Wr - 0.5) * lon_fov
+
+    # Latitude [-lat_fov/2, lat_fov/2]
+    lat = (0.5 - ys / Hr) * lat_fov
+
+    # Spherical → Cartesian
+    xsph = np.cos(lat) * np.sin(lon)
+    ysph = np.sin(lat)
+    zsph = np.cos(lat) * np.cos(lon)
+
+    # Cartesian → fisheye polar
+    phi = np.arccos(zsph)          # angle from optical axis
+    theta = np.arctan2(ysph, xsph)
+
+    # Fisheye radius
+    r = phi * Hf / lon_fov
+
+    # Image coordinates
+    x_fish = r * np.cos(theta) + Wf / 2.0
+    y_fish = Hf / 2.0 - r * np.sin(theta)
+
+    # Valid region
+    valid = phi <= (lon_fov / 2)
+
+    x_fish[~valid] = -1
+    y_fish[~valid] = -1
+
+    return x_fish.astype(np.float32), y_fish.astype(np.float32)
+
+
+def fisheye_to_rect(
+    fisheye_img,
+    out_size=None,
+    lon_fov=180,
+    lat_fov=180
+):
+    Hf, Wf = fisheye_img.shape[:2]
+
+    if out_size is None:
+        Hr, Wr = Hf, Wf
+    else:
+        Wr, Hr = out_size
+
+    xmap, ymap = build_fisheye_to_rect_map(
+        Wf, Hf, Wr, Hr,
+        lon_fov_deg=lon_fov,
+        lat_fov_deg=lat_fov
+    )
+
+    rect = cv2.remap(
+        fisheye_img,
+        xmap,
+        ymap,
+        interpolation=cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_CONSTANT
+    )
+    return rect
+
+
 def fisheye_to_perspective(
     fisheye_img,
     fov_deg=150,
@@ -77,6 +153,7 @@ if __name__ == "__main__":
             print(f"Failed to load {img_path}, skipping...")
             continue
 
+        # rect_img = fisheye_to_rect(fisheye_img, lon_fov=180, lat_fov=140)
         rect_img = fisheye_to_perspective(fisheye_img, fov_deg=150)
 
         base, ext = os.path.splitext(os.path.basename(img_path))

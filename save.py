@@ -5,10 +5,10 @@ import matplotlib.pyplot as plt
 
 # ---------- config ----------
 gt_dir = "/Users/yubo/data/s2/seq1/gt/rtm/keypoints3d"
-pred_dir = "/Users/yubo/data/s2/seq1/360/output/poseformerv2/view32_fisheye/output_3D/keypoints3d"
-save_path = "/Users/yubo/data/s2/seq1/360/output/poseformerv2/view32_fisheye/output_3D/images"
+pred_dir = "/Users/yubo/data/s2/seq1/360/output/poseformerv2/01_view40/output_3D/output_keypoints_3d"
+save_path = "/Users/yubo/data/s2/seq1/360/output/poseformerv2/01_view40/output_3D/images"
 
-FPS_RATIO = 6  # 30fps / 5fps
+FPS_RATIO = 1  # 30fps / 5fps
 
 # ---------- skeleton pairs ----------
 gt_pairs = [
@@ -66,7 +66,7 @@ for gt_file, pred_file in zip(gt_files, pred_files):
         gt = np.asarray(json.load(f)[0]["keypoints3d"])[:, :3]
     # load prediction
     with open(os.path.join(pred_dir, pred_file)) as f:
-        pred = np.asarray(json.load(f)[0]["keypoints3d"])[:, :3]
+        pred = np.asarray(json.load(f)[0]["keypoints"])[:, :3]
 
     # align prediction to GT
     P_idx = [0, 14, 11]
@@ -95,7 +95,7 @@ for gt_file, pred_file in zip(gt_files, pred_files):
     with open(gt_path) as f:
         gt = np.asarray(json.load(f)[0]["keypoints3d"])[:, :3]
     with open(pred_path) as f:
-        pred = np.asarray(json.load(f)[0]["keypoints3d"])[:, :3]
+        pred = np.asarray(json.load(f)[0]["keypoints"])[:, :3]
 
     # align prediction
     P_idx = [0, 14, 11]

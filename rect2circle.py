@@ -1,8 +1,6 @@
 """
-coding: utf-8
-FilePath: rect2circle.py
-@Descrip : Batch convert rectangular (ERP-like) images to fisheye images
-
+Filepath: rect2circle.py
+Descrip : Batch convert rectangular (ERP-like) images to fisheye images
 """
 
 import cv2

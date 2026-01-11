@@ -18,7 +18,7 @@ parser = argparse.ArgumentParser(
 parser.add_argument(
     "--input",
     type=str,
-    default="/Users/yubo/data/s2/seq1/360/output/poseformerv2/view32_fov150/input_2D/keypoints.json",
+    default="/Users/yubo/data/s2/seq1/360/output/poseformerv2/01_view40/output_3D/output_keypoints_3d.json",
     help="Path to input keypoints.json"
 )
 parser.add_argument(
