@@ -135,6 +135,34 @@ def project_points(K, dist, R_c0, t_c0, R_b0, t_b0, X_b):
     img, _ = cv2.projectPoints(X0, rvec_c0, t_c0, K, dist)
     return img.reshape(-1, 2)
 
+
+def print_view_histogram(obs, prefix="[BA]"):
+    """
+    obs: list of frame_obs dict(cam -> (X,u))
+    Prints:
+      N frames can be seen in K views
+    """
+    counts = {}
+    for frame_obs in obs:
+        nv = len(frame_obs)
+        counts[nv] = counts.get(nv, 0) + 1
+
+    # Print in descending #views for readability
+    for nv in sorted(counts.keys(), reverse=True):
+        print(f"{prefix} {counts[nv]} frames can be seen in {nv} views at the same time")
+
+def compute_reprojection_stats(residuals_1d: np.ndarray):
+    """
+    residuals_1d: stacked residual vector [dx0, dy0, dx1, dy1, ...]
+    Returns mean L2 pixel error, RMS pixel error, and number of points.
+    """
+    r = residuals_1d.reshape(-1, 2)
+    per_pt = np.linalg.norm(r, axis=1)  # pixel L2 per point
+    mean = float(per_pt.mean()) if per_pt.size > 0 else 0.0
+    rms = float(np.sqrt((per_pt ** 2).mean())) if per_pt.size > 0 else 0.0
+    return mean, rms, int(per_pt.size)
+
+
 def pack_rt(rvec, tvec):
     return np.hstack([rvec.reshape(3), tvec.reshape(3)])
 
@@ -230,7 +258,10 @@ def global_refine(
         raise RuntimeError("No frames with >=2 cameras see the board; cannot BA.")
 
     print(f"[BA] cameras={len(camnames)} frames_kept={len(obs)} dropped={drop} points={total_points}")
-
+    print_view_histogram(obs, prefix="[BA]")
+    avg_views = np.mean([len(o) for o in obs])
+    print(f"[BA] avg views per kept frame: {avg_views:.2f}")
+    
     # ---- init cam0->cam from board->cam extri_init ----
     cam_rts_init = {cam0: (np.eye(3), np.zeros((3, 1), dtype=np.float64))}
     for cam in camnames[1:]:
@@ -309,9 +340,19 @@ def global_refine(
 
         return np.concatenate(res, axis=0)
 
+    # --- reprojection stats BEFORE optimization ---
+    res0 = fun(x0)
+    mean0, rms0, npts0 = compute_reprojection_stats(res0)
+    print(f"[BA] reprojection BEFORE: mean={mean0:.3f}px  rms={rms0:.3f}px  points={npts0}")
+
     print(f"[BA] optimize: cams={len(cam_order)} (cam0 fixed), frames={len(obs)}, loss={loss}, f_scale={f_scale}")
     result = least_squares(fun, x0, method="trf", loss=loss, f_scale=f_scale, verbose=2)
     print(f"[BA] success={result.success} cost={result.cost:.3f} msg={result.message}")
+    # --- reprojection stats AFTER optimization ---
+    res1 = fun(result.x)
+    mean1, rms1, npts1 = compute_reprojection_stats(res1)
+    print(f"[BA] reprojection AFTER : mean={mean1:.3f}px  rms={rms1:.3f}px  points={npts1}")
+
 
     # ---- unpack optimized ----
     x = result.x
