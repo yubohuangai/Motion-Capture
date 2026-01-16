@@ -247,7 +247,7 @@ def global_refine(
             frame_obs[cam] = (X, u)
             total_points += X.shape[0]
 
-        if len(frame_obs) < 2:
+        if len(frame_obs) < 3:
             drop += 1
             continue
 
@@ -261,7 +261,7 @@ def global_refine(
     print_view_histogram(obs, prefix="[BA]")
     avg_views = np.mean([len(o) for o in obs])
     print(f"[BA] avg views per kept frame: {avg_views:.2f}")
-    
+
     # ---- init cam0->cam from board->cam extri_init ----
     cam_rts_init = {cam0: (np.eye(3), np.zeros((3, 1), dtype=np.float64))}
     for cam in camnames[1:]:
