@@ -101,7 +101,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Create a video from a folder of images.")
     parser.add_argument("--src", type=str, required=True, help="Directory containing images or image subfolders.")
     parser.add_argument("--dst", type=str, default=None, help="Output MP4 file path (default: src folder + .mp4)")
-    parser.add_argument("--fps", type=int, default=5, help="Frame rate for the output video.")
+    parser.add_argument("--fps", type=int, default=30, help="Frame rate for the output video.")
     parser.add_argument("--start_idx", type=int, default=None, help="Start frame index (0-based).")
     parser.add_argument("--end_idx", type=int, default=None, help="End frame index (exclusive).")
     args = parser.parse_args()

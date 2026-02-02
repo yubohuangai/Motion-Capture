@@ -208,7 +208,7 @@ def global_refine(
 
     # Use camera order from extri.yml (usually consistent)
     camnames = names_extri
-    assert len(camnames) >= 2, "Need >= 2 cameras"
+    assert len(camnames) >= 3, "Need >= 3 cameras"
 
     cam0 = camnames[0]
 
@@ -226,7 +226,7 @@ def global_refine(
     if max_frames and max_frames > 0:
         all_names = all_names[:max_frames]
 
-    # ---- build sparse observations, keep frames with >=2 cams ----
+    # ---- build sparse observations, keep frames with >=3 cams ----
     obs = []          # list of dict(cam -> (X,u))
     kept = []
     drop = 0
@@ -255,7 +255,7 @@ def global_refine(
         kept.append(name)
 
     if len(obs) == 0:
-        raise RuntimeError("No frames with >=2 cameras see the board; cannot BA.")
+        raise RuntimeError("No frames with >=3 cameras see the board; cannot BA.")
 
     print(f"[BA] cameras={len(camnames)} frames_kept={len(obs)} dropped={drop} points={total_points}")
     print_view_histogram(obs, prefix="[BA]")
