@@ -370,13 +370,16 @@ class SMPLlayer(nn.Module):
             vertices = vertices.detach().cpu().numpy()
         return vertices
     
-    def init_params(self, nFrames=1, nShapes=1, ret_tensor=False):
+    def init_params(self, nFrames=1, nShapes=1, nPerson=1, ret_tensor=False):
         params = {
             'poses': np.zeros((nFrames, self.NUM_POSES)),
             'shapes': np.zeros((nShapes, NUM_SHAPES)),
             'Rh': np.zeros((nFrames, 3)),
             'Th': np.zeros((nFrames, 3)),
         }
+        if nPerson > 1:
+            for key in params.keys():
+                params[key] = params[key][:, None].repeat(nPerson, axis=1)
         if self.model_type == 'smplx':
             params['expression'] = np.zeros((nFrames, NUM_EXPR))
         if ret_tensor:
