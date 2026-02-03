@@ -23,7 +23,8 @@ smplh-3d:
   comment: "Fitting SMPLH to 3D body keypoints"
   data: config/data/mv1p.yml
   exp: config/fit/mv1p3dhand-new.yml
-  model: config/model/smplh.yml
+  # model: config/model/smplh.yml
+  model: config/model/smplh_male.yml 
 handlr-3d:
   comment: "Fitting Left and right hands to 3D hand keypoints"
   data: config/data/mv2h.yml
