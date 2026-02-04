@@ -1,4 +1,4 @@
-make_video: True
+make_video: False
 
 video_module: easymocap.visualize.ffmpeg_wrapper.VideoMaker
 video_args:

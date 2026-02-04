@@ -6,6 +6,7 @@
   @ LastEditTime: 2022-05-19 23:09:57
   @ FilePath: /EasyMocapPublic/apps/postprocess/render.py
 '''
+import os
 from os.path import join
 from easymocap.config import Config, load_object
 from easymocap.config.baseconfig import load_config_from_index, load_object_from_cmd
@@ -13,6 +14,7 @@ from easymocap.mytools.debug_utils import mywarn, log, myerror
 from tqdm import tqdm
 from easymocap.mytools import Timer
 
+os.environ.setdefault('PYOPENGL_PLATFORM', 'osmesa')
 index = Config.load('config/render_index.yml', [])
 
 def vis(cfg):
