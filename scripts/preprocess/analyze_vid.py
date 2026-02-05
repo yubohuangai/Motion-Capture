@@ -9,10 +9,10 @@ import yaml
 
 
 CONFIG = dict(
-    base_root=r"C:\Users\yuboh\GitHub\data\battery1223",
-    log_file=r"output\video_analysis.log",
+    base_root="/Users/yubo/data/and",
+    log_file="output/video_analysis.log",
     start_cam=1,
-    end_cam=2,   # inclusive
+    end_cam=None,   # inclusive; None = auto-detect
     truncate=False,
     truncate_from="begin",
     clear_log=False,
@@ -47,6 +47,22 @@ def get_csv_path_from_video(video_path):
     csv_path = Path(video_path).parent.parent / f"{video_date}.csv"
     return csv_path
 
+
+def resolve_csv_path(video_path):
+    csv_path = get_csv_path_from_video(video_path)
+    if csv_path is None:
+        return None
+    if csv_path.exists():
+        return csv_path
+    root = csv_path.parent
+    candidates = list(root.glob("*.csv")) + list(root.glob("*.CSV"))
+    if len(candidates) == 1:
+        return candidates[0]
+    for candidate in candidates:
+        if candidate.stem == csv_path.stem:
+            return candidate
+    return csv_path
+
 def find_video_and_csv(root_path):
     """
     Input:
@@ -78,15 +94,50 @@ def find_video_and_csv(root_path):
 
     # CSV should sit in the root directory
     csv_path = root / f"{timestamp}.csv"
+    if not csv_path.exists():
+        # Fallback: look for any CSV in the root matching the timestamp.
+        candidates = list(root.glob("*.csv")) + list(root.glob("*.CSV"))
+        if len(candidates) == 1:
+            csv_path = candidates[0]
+        else:
+            for candidate in candidates:
+                if candidate.stem == timestamp:
+                    csv_path = candidate
+                    break
 
     return str(video_path), str(csv_path)
 
 
 def count_csv_lines(csv_path):
-    if not os.path.exists(csv_path):
-        return None
-    with open(csv_path, "r", encoding="utf-8") as f:
-        return sum(1 for _ in f)
+    if csv_path is None:
+        return None, "missing_path"
+    path = Path(csv_path)
+    if not path.exists():
+        return None, "not_found"
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            return sum(1 for _ in f), None
+    except Exception as exc:
+        return None, str(exc)
+
+
+def get_camera_ids(base_root, start_cam=1, end_cam=None):
+    base_root = Path(base_root)
+    if not base_root.exists():
+        return []
+    cam_ids = []
+    for entry in base_root.iterdir():
+        if not entry.is_dir():
+            continue
+        if not entry.name.isdigit():
+            continue
+        cam_id = int(entry.name)
+        if cam_id < start_cam:
+            continue
+        if end_cam is not None and cam_id > end_cam:
+            continue
+        cam_ids.append(cam_id)
+    return sorted(cam_ids)
 
 
 def get_frame_count_ffmpeg(video_path):
@@ -129,14 +180,22 @@ def analyze_video(video_path: str, log_file: str, truncate=False, truncate_from=
     if not os.path.exists(video_path):
         raise FileNotFoundError(f"Video not found: {video_path}")
 
-    csv_path = get_csv_path_from_video(video_path)
+    csv_path = resolve_csv_path(video_path)
     timestamp_count = None
     if csv_path is None:
         csv_msg = "Video name format did not match expected pattern. No CSV checked."
     else:
-        timestamp_count = count_csv_lines(csv_path)
+        timestamp_count, csv_err = count_csv_lines(csv_path)
         if timestamp_count is None:
-            csv_msg = f"CSV not found: {csv_path}"
+            root = Path(video_path).parent.parent
+            candidates = list(root.glob("*.csv")) + list(root.glob("*.CSV"))
+            if csv_err == "not_found":
+                csv_msg = (
+                    f"CSV not found: {csv_path}\n"
+                    f"CSV candidates in {root}: {[c.name for c in candidates]}"
+                )
+            else:
+                csv_msg = f"CSV error ({csv_err}): {csv_path}"
         else:
             csv_msg = f"CSV path  : {csv_path} (lines: {timestamp_count})"
 
@@ -154,14 +213,25 @@ def analyze_video(video_path: str, log_file: str, truncate=False, truncate_from=
             frame_count_ffmpeg = get_frame_count_fast(video_path)
             frame_count = frame_count_ffmpeg or int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
             fps = cap.get(cv2.CAP_PROP_FPS)
+            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
             duration = frame_count / fps if fps > 0 else 0
+            bitrate_kbps = None
+            try:
+                size_bytes = os.path.getsize(video_path)
+                bitrate_kbps = (size_bytes * 8) / max(duration, 1e-6) / 1000.0
+            except OSError:
+                bitrate_kbps = None
 
             f.write("OpenCV video properties:\n")
             if timestamp_count is not None:
                 f.write(f"Timestamp count  : {timestamp_count}\n")
             f.write(f"Frame count      : {frame_count}\n")
             f.write(f"Frame rate (FPS) : {fps:.2f}\n")
+            f.write(f"Resolution       : {width}x{height}\n")
             f.write(f"Duration (sec)   : {duration:.2f}\n")
+            if bitrate_kbps is not None:
+                f.write(f"Bitrate (kbps)   : {bitrate_kbps:.1f}\n")
 
         cap.release()
 
@@ -207,8 +277,11 @@ if __name__ == "__main__":
     if CONFIG["clear_log"]:
         open(log_file, "w", encoding="utf-8").close()
 
-    for i in range(CONFIG["start_cam"], CONFIG["end_cam"] + 1):
-        root_path = base_root / f"{i:02d}"
+    cam_ids = get_camera_ids(base_root, CONFIG["start_cam"], CONFIG["end_cam"])
+    if not cam_ids:
+        print(f"No camera folders found under {base_root}")
+    for cam_id in cam_ids:
+        root_path = base_root / f"{cam_id:02d}"
         print(f"\n--- Processing {root_path} ---")
 
         try:

@@ -27,16 +27,15 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Multi-video timestamp matching")
 
     parser.add_argument(
-        "--root",
-        required=True,
+        "root",
         help="Root directory containing 01, 02, 03, ... camera folders"
     )
 
     parser.add_argument(
         "--cams",
         type=int,
-        required=True,
-        help="Number of camera folders"
+        default=None,
+        help="Number of camera folders (optional; auto-detect if omitted)"
     )
 
     parser.add_argument(
@@ -56,11 +55,34 @@ def parse_args():
     return parser.parse_args()
 
 
+def get_camera_ids(root, max_cams=None):
+    root_path = Path(root)
+    if not root_path.exists():
+        return []
+    cam_ids = []
+    for entry in root_path.iterdir():
+        if not entry.is_dir():
+            continue
+        if not entry.name.isdigit():
+            continue
+        cam_id = int(entry.name)
+        if max_cams is not None and cam_id > max_cams:
+            continue
+        cam_ids.append(cam_id)
+    return sorted(cam_ids)
+
+
 def collect_video_paths(root, num_cams):
     video_paths = []
     valid_indices = []
 
-    for i in range(1, num_cams + 1):
+    cam_ids = get_camera_ids(root, num_cams)
+    if not cam_ids and num_cams is not None:
+        cam_ids = list(range(1, num_cams + 1))
+    if not cam_ids:
+        raise RuntimeError("No camera folders found.")
+
+    for i in cam_ids:
         cam_dir = Path(root) / f"{i:02d}" / "VID"
         mp4s = list(cam_dir.glob("*.mp4"))
 
@@ -200,7 +222,8 @@ def setup_logger(log_file_path):
         handlers=[
             logging.FileHandler(log_file_path, mode='a', encoding='utf-8'),
             logging.StreamHandler()
-        ]
+        ],
+        force=True
     )
 
 
