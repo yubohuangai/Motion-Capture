@@ -94,7 +94,7 @@ def run_task(base_root, task):
     if task.get("mode") == "first":
         for cam_id in cam_ids:
             src_dir = Path(base_root) / f"{cam_id:02d}" / "images"
-            dst_dir = Path(task["dst"]) / f"{cam_id:02d}"
+            dst_dir = Path(task["dst"]) / f"{cam_id:02d}" / "images"
             copy_first(str(src_dir), str(dst_dir))
         return
 
@@ -107,7 +107,7 @@ def run_task(base_root, task):
 
     for cam_id in cam_ids:
         src_dir = Path(base_root) / f"{cam_id:02d}" / "images"
-        dst_dir = Path(task["dst"]) / f"{cam_id:02d}"
+        dst_dir = Path(task["dst"]) / f"{cam_id:02d}" / "images"
         copy_range(str(src_dir), str(dst_dir), start_idx, end_idx)
 
 
