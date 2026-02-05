@@ -104,7 +104,7 @@ def infer_image_dirs_from_videos(video_paths):
 
 
 def move_unmatched_images(args):
-    csv_path = args.matched_csv
+    csv_path = args.csv
     match_mode = args.match_mode
     if not csv_path or not os.path.exists(csv_path):
         raise FileNotFoundError(f"Matched CSV not found or not defined: {csv_path}")
