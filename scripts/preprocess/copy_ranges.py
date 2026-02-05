@@ -69,8 +69,12 @@ def copy_range(src_dir, dst_dir, start_idx, end_idx):
     os.makedirs(dst_dir, exist_ok=True)
     files = list_images(src_dir)
     selected = files[start_idx - 1:end_idx]
+    next_idx = 0
     for f in tqdm(selected, desc=f"Copying {os.path.basename(src_dir)}"):
-        shutil.copy2(os.path.join(src_dir, f), os.path.join(dst_dir, f))
+        ext = os.path.splitext(f)[1]
+        new_name = f"{next_idx:06d}{ext}"
+        shutil.copy2(os.path.join(src_dir, f), os.path.join(dst_dir, new_name))
+        next_idx += 1
 
 
 def copy_first(src_dir, dst_dir):
@@ -79,7 +83,8 @@ def copy_first(src_dir, dst_dir):
         raise FileNotFoundError(f"No images found in {src_dir}")
     os.makedirs(dst_dir, exist_ok=True)
     first = files[0]
-    shutil.copy2(os.path.join(src_dir, first), os.path.join(dst_dir, first))
+    ext = os.path.splitext(first)[1]
+    shutil.copy2(os.path.join(src_dir, first), os.path.join(dst_dir, f"{0:06d}{ext}"))
 
 
 def run_task(base_root, task):
@@ -94,7 +99,7 @@ def run_task(base_root, task):
     if task.get("mode") == "first":
         for cam_id in cam_ids:
             src_dir = Path(base_root) / f"{cam_id:02d}" / "images"
-            dst_dir = Path(task["dst"]) / f"{cam_id:02d}" / "images"
+            dst_dir = Path(task["dst"]) / "images" / f"{cam_id:02d}"
             copy_first(str(src_dir), str(dst_dir))
         return
 
@@ -107,7 +112,7 @@ def run_task(base_root, task):
 
     for cam_id in cam_ids:
         src_dir = Path(base_root) / f"{cam_id:02d}" / "images"
-        dst_dir = Path(task["dst"]) / f"{cam_id:02d}" / "images"
+        dst_dir = Path(task["dst"]) / "images" / f"{cam_id:02d}"
         copy_range(str(src_dir), str(dst_dir), start_idx, end_idx)
 
 
