@@ -47,9 +47,8 @@ def parse_args():
 
     parser.add_argument(
         "--extract",
-        type=str,
-        default="false",
-        help="Extract frames (true/false)"
+        action="store_true",
+        help="Extract frames"
     )
 
     return parser.parse_args()

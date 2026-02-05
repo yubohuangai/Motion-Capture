@@ -15,12 +15,11 @@ import argparse
 def parse_args():
     parser = argparse.ArgumentParser(description="Move unmatched images")
     parser.add_argument(
-        "--root",
-        required=True,
+        "root",
         help="Root folder containing 01/, 02/, ..., 11/ subfolders"
     )
     parser.add_argument(
-        "--matched_csv",
+        "--csv",
         required=True,
         help="Path to matched_multi_xx.csv"
     )
@@ -37,7 +36,7 @@ def parse_args():
 
     parser.add_argument(
         "--match_mode",
-        required=True,
+        default="full",
         choices=["first", "full"],
         help="Alignment mode"
     )
