@@ -126,3 +126,4 @@ res/
 .idea/
 .vscode/
 .DS_Store
+tmp_config.yml

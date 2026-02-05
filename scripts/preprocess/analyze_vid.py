@@ -1,3 +1,4 @@
+import argparse
 import cv2
 import os
 import subprocess
@@ -7,14 +8,14 @@ import re
 import shutil
 import yaml
 
-
+ 
 CONFIG = dict(
     base_root="/Users/yubo/data/and",
     log_file="output/video_analysis.log",
     start_cam=1,
     end_cam=None,   # inclusive; None = auto-detect
     truncate=False,
-    truncate_from="begin",
+    truncate_from="end",
     clear_log=False,
 )
 
@@ -171,7 +172,7 @@ def get_frame_count_fast(video_path):
         return None
 
 
-def analyze_video(video_path: str, log_file: str, truncate=False, truncate_from="end"):
+def analyze_video(video_path: str, log_file: str, truncate=False, truncate_from="end", print_log=False):
     """
     Analyze video & optionally truncate CSV if timestamp_count > frame_count.
     truncate_from: "end" (default) → cut extra lines at the end,
@@ -199,6 +200,12 @@ def analyze_video(video_path: str, log_file: str, truncate=False, truncate_from=
         else:
             csv_msg = f"CSV path  : {csv_path} (lines: {timestamp_count})"
 
+    log_start = None
+    if print_log:
+        try:
+            log_start = os.path.getsize(log_file)
+        except OSError:
+            log_start = 0
     with open(log_file, "a", encoding="utf-8") as f:
         f.write(f"\n============= Video Analysis: {datetime.now()} =============\n")
         f.write(f"Video path: {video_path}\n")
@@ -265,19 +272,42 @@ def analyze_video(video_path: str, log_file: str, truncate=False, truncate_from=
             # f.write(result.stderr)
         except FileNotFoundError:
             f.write("FFmpeg not found. Please ensure it is installed and in PATH.\n")
+    if print_log:
+        with open(log_file, "r", encoding="utf-8") as f:
+            if log_start is None:
+                print(f.read())
+            else:
+                f.seek(log_start)
+                print(f.read())
 
 
 
 if __name__ == "__main__":
-    base_root = Path(CONFIG["base_root"])
-    log_file = CONFIG["log_file"]
+    parser = argparse.ArgumentParser(description="Analyze videos and CSV timestamp files.")
+    parser.add_argument(
+        "base_root",
+        nargs="?",
+        default=CONFIG["base_root"],
+        help="Root directory containing 01, 02, 03, ... camera folders",
+    )
+    parser.add_argument("--log_file", default=CONFIG["log_file"])
+    parser.add_argument("--start_cam", type=int, default=CONFIG["start_cam"])
+    parser.add_argument("--end_cam", type=int, default=CONFIG["end_cam"])
+    parser.add_argument("--truncate", action="store_true", default=CONFIG["truncate"])
+    parser.add_argument("--truncate_from", default=CONFIG["truncate_from"], choices=["begin", "end"])
+    parser.add_argument("--clear_log", action="store_true", default=CONFIG["clear_log"])
+    parser.add_argument("--print_log", action="store_true", default=True)
+    args = parser.parse_args()
+
+    base_root = Path(args.base_root)
+    log_file = args.log_file
 
     ensure_file_exists(log_file)
 
-    if CONFIG["clear_log"]:
+    if args.clear_log:
         open(log_file, "w", encoding="utf-8").close()
 
-    cam_ids = get_camera_ids(base_root, CONFIG["start_cam"], CONFIG["end_cam"])
+    cam_ids = get_camera_ids(base_root, args.start_cam, args.end_cam)
     if not cam_ids:
         print(f"No camera folders found under {base_root}")
     for cam_id in cam_ids:
@@ -293,8 +323,9 @@ if __name__ == "__main__":
             analyze_video(
                 video_path,
                 log_file,
-                truncate=CONFIG["truncate"],
-                truncate_from=CONFIG["truncate_from"]
+                truncate=args.truncate,
+                truncate_from=args.truncate_from,
+                print_log=args.print_log
             )
             print(f"✓ Finished: {video_path}")
 
