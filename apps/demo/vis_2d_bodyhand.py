@@ -31,6 +31,13 @@ def main():
     if args.kpts_type not in CONFIG:
         raise ValueError(f"Unknown kpts_type: {args.kpts_type}")
 
+    cams = args.sub
+    if len(cams) == 0:
+        images_root = os.path.join(args.path, "images")
+        if os.path.isdir(images_root):
+            cams = sorted([d for d in os.listdir(images_root)
+                           if os.path.isdir(os.path.join(images_root, d))])
+
     log_time("Starting EasyMocap 2D visualization...")
     log(f"Input path: {args.path}")
     log(f"Output directory: {args.out}")
@@ -38,7 +45,7 @@ def main():
     dataset = MV1PMF(
         args.path,
         annot_root=args.annot,
-        cams=args.sub,
+        cams=cams,
         out=args.out,
         config=CONFIG[args.kpts_type],
         kpts_type=args.kpts_type,
