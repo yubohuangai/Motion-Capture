@@ -493,7 +493,7 @@ CONFIG['bodyhand'] = {'kintree':
     [66, 65]
     ],
     'nJoints': 67,
-    'colors': CONFIG['body25']['colors'] + CONFIG['hand']['colors'] + CONFIG['hand']['colors'],
+    'colors': CONFIG['body25']['colors'] + CONFIG['hand']['colors'] + CONFIG['hand']['colorsrhand'],
     'skeleton':{
     ( 0,  1): {'mean': 0.251, 'std': 0.050}, 
     ( 1,  2): {'mean': 0.169, 'std': 0.034}, 

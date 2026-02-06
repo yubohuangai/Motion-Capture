@@ -33,16 +33,16 @@ args:
       enable: True
       root: detect
       ext: .jpg
-      scale: 0.5
+      scale: 1
       crop: True
     vismatch:
       enable: False
       root: match
       ext: .jpg
       crop: True
-      scale: 0.5
+      scale: 1
     visrepro:
       enable: True
       root: repro
       ext: .jpg
-      scale: 0.5
+      scale: 1

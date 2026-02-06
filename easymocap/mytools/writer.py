@@ -5,7 +5,7 @@ import cv2
 # from mytools import save_json, merge
 # from ..mytools import merge, plot_bbox, plot_keypoints
 # from mytools.file_utils import read_json, save_json, read_annot, read_smpl, write_smpl, get_bbox_from_pose
-from .vis_base import plot_bbox, plot_keypoints, merge
+from .vis_base import plot_bbox, plot_keypoints, plot_keypoints_auto, merge
 from .file_utils import write_keypoints3d, write_smpl, mkout, mkdir
 
 class FileWriter:
@@ -48,7 +48,7 @@ class FileWriter:
                 else:
                     bbox = det['bbox']
                 plot_bbox(img, bbox, pid=pid, vis_id=vis_id)
-                plot_keypoints(img, keypoints, pid=pid, config=self.config, use_limb_color=False, lw=8)
+                plot_keypoints_auto(img, keypoints, pid=pid, use_limb_color=True, lw=-1)
             images_vis.append(img)
         if len(images_vis) > 1:
             images_vis = merge(images_vis, resize=not self.save_origin)
