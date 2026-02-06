@@ -63,7 +63,7 @@ def mocap_demo(path, mode, exp=None):
             opt_data += ' args.writer.vismatch.enable True'
         if args.disable_visrepro:
             opt_data += ' args.writer.visrepro.enable False'        
-        if args.disable_crop:
+        if not args.enable_crop:
             opt_data += ' args.writer.vismatch.crop False args.writer.visdetect.crop False '
         if args.ranges is not None:
             opt_data += ' args.ranges {},{},{}'.format(*args.ranges)
@@ -208,7 +208,7 @@ def run_triangulation(cfg_data, cfg_exp, path, out, args):
         opt_data += ' args.writer.vismatch.enable True'
     if args.disable_visrepro:
         opt_data += ' args.writer.visrepro.enable False'
-    if args.disable_crop:
+    if not args.enable_crop:
         opt_data += ' args.writer.vismatch.crop False args.writer.visdetect.crop False '
     if args.vis_scale is not None:
         opt_data += ' args.writer.visrepro.scale {}'.format(args.vis_scale)
@@ -227,7 +227,7 @@ def run_triangulation(cfg_data, cfg_exp, path, out, args):
         opt_exp=opt_exp
     )
     run_cmd(cmd)
-    if not args.disable_match_video:
+    if args.enable_match_video:
         cmd = f'python3 -m easymocap.visualize.ffmpeg_wrapper {out}/match --fps {args.fps}'
         run_cmd(cmd)
 
@@ -390,9 +390,9 @@ if __name__ == '__main__':
         help='render the mesh on the right')
     parser.add_argument('--disable_visrepro', action='store_true')
     parser.add_argument('--disable_vismesh', action='store_true')
-    parser.add_argument('--disable_crop', action='store_true')
-    parser.add_argument('--disable_match_video', action='store_true', default=True,
-        help='Skip generating match.mp4 from triangulation')
+    parser.add_argument('--enable_crop', action='store_true', default=False)
+    parser.add_argument('--enable_match_video', action='store_true', default=False,
+        help='Generate match.mp4 from triangulation')
     parser.add_argument('--triangulator_min_views', type=int, default=None)
     args = parser.parse_args()
 
