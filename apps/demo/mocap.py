@@ -76,9 +76,10 @@ def mocap_demo(path, mode, exp=None):
             opt_exp=opt_exp
         )
         run_cmd(cmd)
-        # compose videos
-        cmd = f'python3 -m easymocap.visualize.ffmpeg_wrapper {dir_k3d}/match --fps 50'
-        run_cmd(cmd)
+        # compose videos (optional)
+        if args.enable_match_video:
+            cmd = f'python3 -m easymocap.visualize.ffmpeg_wrapper {dir_k3d}/match --fps 50'
+            run_cmd(cmd)
     # TODO: check triangulation
     # run reconstruction
     if mode in ['object3d']:
