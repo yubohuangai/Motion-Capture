@@ -84,7 +84,8 @@ def mocap_demo(path, mode, exp=None):
     if mode in ['object3d']:
         return 0
     exp = mode if exp is None else exp
-    if not check_exists(join(path, 'output-{}'.format(exp), 'smpl')) or args.restart:
+    output = args.out if args.out is not None else join(path, 'output-{}'.format(exp))
+    if not check_exists(join(output, 'smpl')) or args.restart:
         # load config
         config = config_dict[args.mode]
         cfg_data = config.data
@@ -95,7 +96,6 @@ def mocap_demo(path, mode, exp=None):
         cmd = f'python3 apps/fit/fit.py --cfg_model {cfg_model} --cfg_data {cfg_data} --cfg_exp {cfg_exp}'
 
         # opt data
-        output = join(path, 'output-{}'.format(exp))
         opt_data = ['args.path', path, 'args.out', output]
         opt_data += args.opt_data
         opt_data += config.get('opt_data', [])
@@ -126,10 +126,10 @@ def mocap_demo(path, mode, exp=None):
 
         log(cmd.replace(output, '${output}').replace(path, '${data}'))
         run_cmd(cmd)
-    videoname = join(path, 'output-{}'.format(exp), 'smplmesh.mp4')
+    videoname = join(output, 'smplmesh.mp4')
     if not exists(videoname) or args.restart:
-        cmd = 'python3 -m easymocap.visualize.ffmpeg_wrapper {data}/output-{exp}/smplmesh --fps 50'.format(
-            data=path, exp=exp
+        cmd = 'python3 -m easymocap.visualize.ffmpeg_wrapper {out}/smplmesh --fps 50'.format(
+            out=output
         )
         run_cmd(cmd)
 
@@ -144,7 +144,8 @@ def mono_demo(path, mode, exp=None):
     if args.subs is None:
         args.subs = sorted(os.listdir(join(path, 'images')))
     for sub in args.subs:
-        outdir = join(path, 'output-{}'.format(exp), 'smplmesh')
+        output = args.out if args.out is not None else join(path, 'output-{}'.format(exp))
+        outdir = join(output, 'smplmesh')
         videoname = join(outdir, sub+'.mp4')
         if os.path.exists(videoname) and not args.restart:
             continue
@@ -157,7 +158,6 @@ def mono_demo(path, mode, exp=None):
         _config_data = Config.load(cfg_data)
 
         # opt data
-        output = join(path, 'output-{}'.format(exp))
         opt_data = ['args.path', path, 'args.out', output, 'args.subs', format_subs([sub]).replace('"', '')]
         opt_data += args.opt_data
         opt_data += config.get('opt_data', [])
@@ -189,8 +189,8 @@ def mono_demo(path, mode, exp=None):
         log(cmd.replace(output, '${output}').replace(path, '${data}'))
         run_cmd(cmd)
 
-        cmd = 'python3 -m easymocap.visualize.ffmpeg_wrapper {data}/output-{exp}/smplmesh/{sub} --fps {fps}'.format(
-            data=path, exp=exp, sub=sub, fps=30
+        cmd = 'python3 -m easymocap.visualize.ffmpeg_wrapper {out}/smplmesh/{sub} --fps {fps}'.format(
+            out=output, sub=sub, fps=30
         )
         run_cmd(cmd)
 
@@ -333,7 +333,9 @@ def workflow(work, args):
         cfg_exp = workflow.fit.exp
         # check output
         path = args.path
-        if 'output' in workflow.keys():
+        if args.out is not None:
+            output = args.out
+        elif 'output' in workflow.keys():
             output = join(args.path, workflow.output)
         else:
             output = join(args.path, 'output-{}'.format(exp))
@@ -373,6 +375,7 @@ if __name__ == '__main__':
     parser.add_argument('--exp', type=str, default='output-smpl-3d')
     parser.add_argument('--opt_data', type=str, default=[], nargs='+')
     parser.add_argument('--opt_exp', type=str, default=[], nargs='+')
+    parser.add_argument('--out', type=str, default=None, help='Output directory (absolute or relative)')
     parser.add_argument('--debug', action='store_true')
     parser.add_argument('--mono', action='store_true')
     parser.add_argument('--mp', action='store_true', help='use multi-person')
