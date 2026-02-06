@@ -191,7 +191,7 @@ class BaseData:
     @staticmethod
     def write_image(outname, img):
         os.makedirs(os.path.dirname(outname), exist_ok=True)
-        cv2.imwrite(outname, add_logo(img))
+        cv2.imwrite(outname, img)
 
     @staticmethod
     def write_params(outname, params, camera=None):

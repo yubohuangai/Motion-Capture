@@ -227,8 +227,9 @@ def run_triangulation(cfg_data, cfg_exp, path, out, args):
         opt_exp=opt_exp
     )
     run_cmd(cmd)
-    cmd = f'python3 -m easymocap.visualize.ffmpeg_wrapper {out}/match --fps {args.fps}'
-    run_cmd(cmd)
+    if not args.disable_match_video:
+        cmd = f'python3 -m easymocap.visualize.ffmpeg_wrapper {out}/match --fps {args.fps}'
+        run_cmd(cmd)
 
 def append_mocap_flags(path, output, cfg_data, cfg_model, cfg_exp, config, args):
     cmd = f'python3 apps/fit/fit.py --cfg_model {cfg_model} --cfg_data {cfg_data} --cfg_exp {cfg_exp}'
@@ -390,6 +391,8 @@ if __name__ == '__main__':
     parser.add_argument('--disable_visrepro', action='store_true')
     parser.add_argument('--disable_vismesh', action='store_true')
     parser.add_argument('--disable_crop', action='store_true')
+    parser.add_argument('--disable_match_video', action='store_true', default=True,
+        help='Skip generating match.mp4 from triangulation')
     parser.add_argument('--triangulator_min_views', type=int, default=None)
     args = parser.parse_args()
 
