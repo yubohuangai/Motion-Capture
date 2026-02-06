@@ -23,6 +23,8 @@ if __name__ == "__main__":
     parser.add_argument('--vis_det', action='store_true', help='Visualize 2D detections')
     parser.add_argument('--ext', type=str, default='.jpg', help='Image extension')
     parser.add_argument('--save_origin', action='store_true', help='Save original images in output')
+    parser.add_argument('--kpts_type', type=str, default='body25',
+                        help='Keypoints type: body25, bodyhand, bodyhandface, total, handl, handr')
     parser.add_argument('--verbose', action='store_true')
     args = parser.parse_args()
 
@@ -31,13 +33,15 @@ if __name__ == "__main__":
     log(f"Output directory: {args.out}")
 
     # Create dataset object
+    if args.kpts_type not in CONFIG:
+        raise ValueError(f"Unknown kpts_type: {args.kpts_type}. Available: {', '.join(CONFIG.keys())}")
     dataset = MV1PMF(
         args.path,
         annot_root=args.annot,
         cams=args.sub,
         out=args.out,
-        config=CONFIG['body25'],  # assuming 25-joint body model
-        kpts_type='body25',
+        config=CONFIG[args.kpts_type],
+        kpts_type=args.kpts_type,
         undis=False,
         no_img=False,
         verbose=args.verbose
