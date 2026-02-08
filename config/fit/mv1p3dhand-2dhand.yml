@@ -2,6 +2,11 @@ parents:
   - config/fit/mv1p3d.yml
 args:
   stages:
+    joints:
+      before_after:
+        skip_poses:
+          args:
+            nPoses: 63
     handpose2d:
       repeat: 2
       optimize: [handl, handr]
