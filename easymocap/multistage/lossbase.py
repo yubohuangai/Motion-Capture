@@ -600,6 +600,29 @@ class AnyKeypoints2D(Keypoints2D):
         super().__init__(keypoints2d=keypoints2d, **kwargs)
         self.key = key
 
+    def project(self, kpts_est):
+        kpts_est = self.select(kpts_est, self.index_est, self.ranges_est)
+        kpts_homo = torch.ones_like(kpts_est[..., -1:])
+        kpts_homo = torch.cat([kpts_est, kpts_homo], dim=-1)
+        # Expand to (frames, views, joints, 4) if GT has view dimension
+        if self.keypoints.dim() == 4 and kpts_homo.dim() == 3:
+            v = self.K.shape[0] if self.K.dim() == 3 else self.K.shape[1]
+            kpts_homo = kpts_homo.unsqueeze(1).expand(-1, v, -1, -1)
+        if self.unproj:
+            P = torch.cat([self.Rc, self.Tc], dim=-1)
+        else:
+            if self.K.dim() == 3:
+                P = torch.bmm(self.K, torch.cat([self.Rc, self.Tc], dim=-1))
+            else:
+                P = torch.matmul(self.K, torch.cat([self.Rc, self.Tc], dim=-1))
+        # Multi-view: P is (V,3,4), kpts_homo is (F,V,N,4)
+        if P.dim() == 3 and kpts_homo.dim() == 4:
+            point_cam = torch.einsum('vab,fvnb->fvna', P, kpts_homo)
+        else:
+            point_cam = torch.einsum(self.einsum, P, kpts_homo)
+        img_points = point_cam[..., :2]/point_cam[..., 2:]
+        return img_points
+
 class DepthLoss(LossBase):
     def __init__(self, K, Rc, Tc, depth, norm, norm_info, index_est=[]):
         super().__init__()
