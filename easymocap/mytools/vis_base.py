@@ -167,13 +167,13 @@ def plot_keypoints_auto(img, points, pid, vis_conf=False, use_limb_color=True, s
     if lw == -1:
         lw = img.shape[0]//200
     if config_name == 'hand':
-        lw = img.shape[0]//100
+        lw = img.shape[0]//120
     lw = max(lw, 1)
     for ii, (i, j) in enumerate(config['kintree']):
         if i >= len(points) or j >= len(points):
             continue
         if i >= 25 and config_name in ['bodyhand', 'total']:
-            lw = max(img.shape[0]//400, 1)
+            lw = max(img.shape[0]//600, 1)
         pt1, pt2 = points[i], points[j]
         if use_limb_color:
             col = get_rgb(config['colors'][ii])
@@ -187,16 +187,16 @@ def plot_keypoints_auto(img, points, pid, vis_conf=False, use_limb_color=True, s
             image = cv2.line(
                 img, (int(pt1[0]*scale+0.5), int(pt1[1]*scale+0.5)), (int(pt2[0]*scale+0.5), int(pt2[1]*scale+0.5)),
                 col, lw)
-    lw = img.shape[0]//200
+    lw = img.shape[0]//220
     if config_name == 'hand':
-        lw = img.shape[0]//500
+        lw = img.shape[0]//700
     lw = max(lw, 1)
     for i in range(len(points)):
         x, y = points[i][0]*scale, points[i][1]*scale
         if x < 0 or y < 0 or x >10000 or y >10000:
             continue
         if i >= 25 and config_name in ['bodyhand', 'total']:
-            lw = max(img.shape[0]//400, 1)
+            lw = max(img.shape[0]//700, 1)
         c = points[i][-1]
         if c > 0.01:
             col = get_rgb(pid)

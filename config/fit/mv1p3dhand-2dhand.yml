@@ -1,0 +1,42 @@
+parents:
+  - config/fit/mv1p3d.yml
+args:
+  stages:
+    handpose2d:
+      repeat: 2
+      optimize: [handl, handr]
+      loss:
+        handl2d:
+          weight: 200.0
+          module: easymocap.multistage.lossbase.Keypoints2D
+          infos: [handl2d, K, Rc, Tc]
+          args:
+            ranges_est: [25, 46]
+            ranges_gt: [0, 21]
+            norm: l2
+            unproj: True
+        handr2d:
+          weight: 200.0
+          module: easymocap.multistage.lossbase.Keypoints2D
+          infos: [handr2d, K, Rc, Tc]
+          args:
+            ranges_est: [46, 67]
+            ranges_gt: [0, 21]
+            norm: l2
+            unproj: True
+        sHl:
+          weight: 1.0
+          module: easymocap.multistage.lossbase.AnySmooth
+          args:
+            key: handl
+            weight: [0.5, 0.3, 0.1, 0.1]
+            norm: l2
+            order: 2
+        sHr:
+          weight: 1.0
+          module: easymocap.multistage.lossbase.AnySmooth
+          args:
+            key: handr
+            weight: [0.5, 0.3, 0.1, 0.1]
+            norm: l2
+            order: 2
