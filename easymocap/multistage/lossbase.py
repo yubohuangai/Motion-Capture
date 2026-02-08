@@ -415,6 +415,14 @@ class AnyKeypoints3DWithRT(Keypoints3D):
         kpts_est = RXT
         return super().check(kpts_est, min_conf)
 
+
+class AnyKeypoints2D(Keypoints2D):
+    def __init__(self, **kwargs) -> None:
+        key = kwargs.pop('key')
+        keypoints2d = kwargs.pop(key)
+        super().__init__(keypoints2d=keypoints2d, **kwargs)
+        self.key = key
+
 class Handl3D(BaseKeypoints):
     def __init__(self, handl3d, **kwargs) -> None:
         handl3d = handl3d.clone()

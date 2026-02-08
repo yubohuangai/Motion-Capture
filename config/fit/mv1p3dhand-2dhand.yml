@@ -13,20 +13,20 @@ args:
       loss:
         handl2d:
           weight: 200.0
-          module: easymocap.multistage.lossbase.Keypoints2D
+          module: easymocap.multistage.lossbase.AnyKeypoints2D
           infos: [handl2d, K, Rc, Tc]
           args:
+            key: handl2d
             ranges_est: [25, 46]
-            ranges_gt: [0, 21]
             norm: l2
             unproj: True
         handr2d:
           weight: 200.0
-          module: easymocap.multistage.lossbase.Keypoints2D
+          module: easymocap.multistage.lossbase.AnyKeypoints2D
           infos: [handr2d, K, Rc, Tc]
           args:
+            key: handr2d
             ranges_est: [46, 67]
-            ranges_gt: [0, 21]
             norm: l2
             unproj: True
         sHl:
