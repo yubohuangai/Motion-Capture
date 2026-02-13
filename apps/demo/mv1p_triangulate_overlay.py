@@ -59,9 +59,11 @@ def draw_overlay(images, annots, kpts_repro, outdir, nf, kintree=None):
         kpt_det = keypoints2d[vid]
         kpt_rep = kpts_repro[vid]
 
-        # Blue: 2D detection; Red: Reprojected points
+        # OpenCV uses BGR (not RGB):
+        # - Orange detections: (0, 128, 255)
+        # - Red reprojections: (64, 64, 255)
         img_disp = draw_points2d(img_disp, kpt_det, kintree=kintree, color=(0, 128, 255))
-        img_disp = draw_points2d(img_disp, kpt_rep, kintree=kintree, color=(255, 64, 64))
+        img_disp = draw_points2d(img_disp, kpt_rep, kintree=kintree, color=(64, 64, 255))
 
         out_path = join(outdir, f"{nf:06d}_{vid:02d}.jpg")
         cv2.imwrite(out_path, img_disp)
@@ -79,9 +81,13 @@ def mv1pmf_triangulate_overlay(dataset, args):
     else:
         kintree = getattr(config, 'kintree', None)
 
-    print(f"[INFO] Triangulating frames {start}–{end-1}...")
+    print(f"[INFO] Triangulating frames {start}-{end-1}...")
+    errors = []
+    frame_iter = range(start, end)
+    if not args.no_bar:
+        frame_iter = tqdm(frame_iter, desc="Triangulate")
 
-    for nf in tqdm(range(start, end), desc="Triangulate"):
+    for nf in frame_iter:
         images, annots = dataset[nf]
 
         keypoints2d = annots['keypoints']
@@ -90,6 +96,7 @@ def mv1pmf_triangulate_overlay(dataset, args):
         # Triangulate to 3D
         keypoints3d, kpts_repro = simple_recon_person(keypoints2d, dataset.Pall)
         err = compute_reprojection_error(keypoints2d, kpts_repro)
+        errors.append(err)
         print(f"[Frame {nf:06d}] mean reprojection error = {err:.2f}px")
 
         # Save 3D keypoints
@@ -98,13 +105,16 @@ def mv1pmf_triangulate_overlay(dataset, args):
         # Draw overlay (detections + reprojections)
         draw_overlay(images, annots, kpts_repro, outdir=vis_dir, nf=nf, kintree=kintree)
 
+    avg_error = float(np.nanmean(np.array(errors))) if len(errors) > 0 else float('nan')
     print(f"[DONE] All overlays saved to {vis_dir}")
+    print(f"[DONE] Average reprojection error over sequence = {avg_error:.2f}px")
 
 
 if __name__ == "__main__":
     from easymocap.mytools import load_parser, parse_parser
     parser = load_parser()
     parser.add_argument('--no_vis', action='store_true', help='disable visualization')
+    parser.add_argument('--no_bar', action='store_true', help='disable tqdm progress bar')
     args = parse_parser(parser)
 
     print("""
