@@ -70,6 +70,12 @@ def joint_ba_refine(dataset, keypoints2d_all, kp3ds_all, args):
         raise RuntimeError("Camera parameters are required for --joint_ba")
 
     n_frames = keypoints2d_all.shape[0]
+    cameras_R_before = {cam: dataset.cameras[cam]['R'].copy() for cam in dataset.cams}
+    cameras_T_before = {cam: dataset.cameras[cam]['T'].copy() for cam in dataset.cams}
+    seq_repro_before = np.mean([
+        _compute_repro_error(kp3ds_all[nf], keypoints2d_all[nf], dataset.Pall)
+        for nf in range(n_frames)
+    ])
     frame_indices = list(range(0, n_frames, max(1, args.joint_ba_step)))
     if args.joint_ba_max_frames > 0:
         frame_indices = frame_indices[:args.joint_ba_max_frames]
@@ -255,6 +261,26 @@ def joint_ba_refine(dataset, keypoints2d_all, kp3ds_all, args):
             keypoints3d, _ = simple_recon_person(keypoints2d_all[nf], dataset.Pall)
             kp3ds_refined[nf] = keypoints3d
 
+    seq_repro_after = np.mean([
+        _compute_repro_error(kp3ds_refined[nf], keypoints2d_all[nf], dataset.Pall)
+        for nf in range(n_frames)
+    ])
+    improve = seq_repro_before - seq_repro_after
+    log_time(
+        f"[joint_ba] sequence reprojection: before={seq_repro_before:.3f}px "
+        f"after={seq_repro_after:.3f}px improve={improve:.3f}px"
+    )
+    if (not args.joint_ba_accept_worse) and (improve < args.joint_ba_min_improve_px):
+        mywarn(
+            f"[joint_ba] rejected (min improve {args.joint_ba_min_improve_px:.3f}px, "
+            f"got {improve:.3f}px). Roll back to pre-BA cameras and 3D."
+        )
+        for cam in dataset.cams:
+            dataset.cameras[cam]['R'] = cameras_R_before[cam]
+            dataset.cameras[cam]['T'] = cameras_T_before[cam]
+        _rebuild_dataset_projection(dataset)
+        return kp3ds_all
+
     return kp3ds_refined
 
 
@@ -377,6 +403,10 @@ if __name__ == "__main__":
                         help='L2 regularization weight to keep cameras near initial extrinsics')
     parser.add_argument('--joint_ba_skip_retriangulate', action='store_true',
                         help='Skip re-triangulating all frames after joint BA for speed')
+    parser.add_argument('--joint_ba_min_improve_px', type=float, default=0.0,
+                        help='Minimum sequence reprojection improvement (px) required to accept BA')
+    parser.add_argument('--joint_ba_accept_worse', action='store_true',
+                        help='Accept BA result even if sequence reprojection gets worse')
     args = parse_parser(parser)
 
     log_time("Starting EasyMocap mv1p pipeline...")
