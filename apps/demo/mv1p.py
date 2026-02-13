@@ -15,6 +15,12 @@ from easymocap.pipeline import smpl_from_keypoints3d2d
 import os
 from os.path import join
 import numpy as np
+import cv2
+
+try:
+    from scipy.optimize import least_squares
+except Exception:
+    least_squares = None
 
 
 def check_repro_error(keypoints3d, kpts_repro, keypoints2d, P, MAX_REPRO_ERROR):
@@ -30,11 +36,189 @@ def check_repro_error(keypoints3d, kpts_repro, keypoints2d, P, MAX_REPRO_ERROR):
     return keypoints3d, kpts_repro, mean_repro_error
 
 
+def _pack_rt(rvec, tvec):
+    return np.hstack([rvec.reshape(3), tvec.reshape(3)])
+
+
+def _unpack_rt(x):
+    rvec = x[:3].reshape(3, 1)
+    tvec = x[3:6].reshape(3, 1)
+    return rvec, tvec
+
+
+def _rebuild_dataset_projection(dataset):
+    for cam in dataset.cams:
+        cam_data = dataset.cameras[cam]
+        cam_data['RT'] = np.hstack((cam_data['R'], cam_data['T']))
+        cam_data['P'] = cam_data['K'] @ cam_data['RT']
+    dataset.Pall = np.stack([dataset.cameras[cam]['P'] for cam in dataset.cams])
+
+
+def _compute_repro_error(keypoints3d, keypoints2d, Pall):
+    kpts_repro = projectN3(keypoints3d, Pall)
+    conf = (keypoints3d[None, :, -1:] > 0) * (keypoints2d[:, :, -1:] > 0)
+    dist = np.sqrt((((kpts_repro[..., :2] - keypoints2d[..., :2]) * conf) ** 2).sum(axis=-1))
+    return (dist[conf[..., 0] > 0]).mean() if np.any(conf[..., 0] > 0) else 0.0
+
+
+def joint_ba_refine(dataset, keypoints2d_all, kp3ds_all, args):
+    if least_squares is None:
+        raise ImportError("scipy is required for --joint_ba: pip install scipy")
+    if dataset.cameras is None:
+        raise RuntimeError("Camera parameters are required for --joint_ba")
+
+    n_frames = keypoints2d_all.shape[0]
+    frame_indices = list(range(0, n_frames, max(1, args.joint_ba_step)))
+    if args.joint_ba_max_frames > 0:
+        frame_indices = frame_indices[:args.joint_ba_max_frames]
+    if len(frame_indices) < 2:
+        mywarn("Too few frames selected for joint BA. Skipping joint BA.")
+        return kp3ds_all
+
+    camnames = dataset.cams
+    cam0 = camnames[0]
+    cam_order = camnames[1:]
+    K_dict = {cam: dataset.cameras[cam]['K'].astype(np.float64) for cam in camnames}
+    R0_dict = {cam: dataset.cameras[cam]['R'].astype(np.float64) for cam in camnames}
+    T0_dict = {cam: dataset.cameras[cam]['T'].astype(np.float64) for cam in camnames}
+
+    # Keep only frame/joint pairs with enough 2D support.
+    frame_infos = []
+    total_obs = 0
+    for nf in frame_indices:
+        kpts2d = keypoints2d_all[nf]
+        kp3d = kp3ds_all[nf]
+        valid_joint = ((kpts2d[..., 2] > 0).sum(axis=0) >= 2) & (kp3d[:, 3] > 0)
+        joint_ids = np.where(valid_joint)[0]
+        if joint_ids.size == 0:
+            continue
+        total_obs += int((kpts2d[:, joint_ids, 2] > 0).sum())
+        frame_infos.append({
+            'nf': nf,
+            'joint_ids': joint_ids.astype(np.int64),
+            'kpts2d': kpts2d.astype(np.float64),
+            'xyz0': kp3d[joint_ids, :3].astype(np.float64),
+        })
+    if len(frame_infos) < 2:
+        mywarn("Not enough valid frame/joint observations for joint BA. Skipping.")
+        return kp3ds_all
+
+    x0 = []
+    cam_prior = {}
+    for cam in cam_order:
+        rvec0, _ = cv2.Rodrigues(R0_dict[cam])
+        tvec0 = T0_dict[cam]
+        cam_prior[cam] = (rvec0.copy(), tvec0.copy())
+        x0.append(_pack_rt(rvec0, tvec0))
+    for info in frame_infos:
+        x0.append(info['xyz0'].reshape(-1))
+    x0 = np.concatenate(x0, axis=0)
+
+    log_time(
+        f"[joint_ba] frames={len(frame_infos)} views={len(camnames)} "
+        f"obs={total_obs} variables={x0.size}"
+    )
+
+    def residual_func(x):
+        idx = 0
+        cam_vars = {
+            cam0: (
+                np.zeros((3, 1), dtype=np.float64),
+                R0_dict[cam0],
+                T0_dict[cam0]
+            )
+        }
+        for cam in cam_order:
+            rvec, tvec = _unpack_rt(x[idx:idx+6])
+            R, _ = cv2.Rodrigues(rvec)
+            cam_vars[cam] = (rvec, R, tvec)
+            idx += 6
+
+        residuals = []
+        for info in frame_infos:
+            joint_ids = info['joint_ids']
+            n_joint = joint_ids.shape[0]
+            xyz = x[idx:idx + 3 * n_joint].reshape(n_joint, 3)
+            idx += 3 * n_joint
+            for nv, cam in enumerate(camnames):
+                vis = info['kpts2d'][nv, joint_ids, 2] > 0
+                if not np.any(vis):
+                    continue
+                xyz_vis = xyz[vis]
+                uv_obs = info['kpts2d'][nv, joint_ids[vis], :2]
+                conf = info['kpts2d'][nv, joint_ids[vis], 2:3]
+
+                _, R, T = cam_vars[cam]
+                Xc = (R @ xyz_vis.T + T).T
+                z = np.maximum(Xc[:, 2:3], 1e-6)
+                proj = (K_dict[cam] @ Xc.T).T
+                uv = proj[:, :2] / z
+                diff = (uv - uv_obs) * np.sqrt(np.clip(conf, 1e-8, None))
+                residuals.append(diff.reshape(-1))
+
+        if args.joint_ba_lambda_cam > 0:
+            w = np.sqrt(args.joint_ba_lambda_cam)
+            for cam in cam_order:
+                rvec0, tvec0 = cam_prior[cam]
+                rvec, _, tvec = cam_vars[cam]
+                residuals.append((w * (rvec - rvec0)).reshape(-1))
+                residuals.append((w * (tvec - tvec0)).reshape(-1))
+
+        if len(residuals) == 0:
+            return np.zeros((0,), dtype=np.float64)
+        return np.concatenate(residuals, axis=0)
+
+    res0 = residual_func(x0)
+    before = np.sqrt((res0.reshape(-1, 2) ** 2).sum(axis=1)).mean() if res0.size > 0 else 0.0
+    log_time(f"[joint_ba] weighted reprojection before: {before:.3f}")
+
+    result = least_squares(
+        residual_func,
+        x0,
+        method='trf',
+        loss=args.joint_ba_loss,
+        f_scale=args.joint_ba_f_scale,
+        max_nfev=args.joint_ba_max_nfev,
+        verbose=2 if args.verbose else 0,
+    )
+    log_time(f"[joint_ba] success={result.success}, cost={result.cost:.4f}, msg={result.message}")
+    res1 = residual_func(result.x)
+    after = np.sqrt((res1.reshape(-1, 2) ** 2).sum(axis=1)).mean() if res1.size > 0 else 0.0
+    log_time(f"[joint_ba] weighted reprojection after : {after:.3f}")
+
+    # Unpack optimized camera extrinsics.
+    idx = 0
+    for cam in cam_order:
+        rvec, tvec = _unpack_rt(result.x[idx:idx+6])
+        R, _ = cv2.Rodrigues(rvec)
+        dataset.cameras[cam]['R'] = R.astype(np.float64)
+        dataset.cameras[cam]['T'] = tvec.astype(np.float64)
+        idx += 6
+    _rebuild_dataset_projection(dataset)
+
+    # Unpack optimized 3D points for selected frames.
+    kp3ds_refined = kp3ds_all.copy()
+    for info in frame_infos:
+        joint_ids = info['joint_ids']
+        n_joint = joint_ids.shape[0]
+        xyz = result.x[idx:idx + 3 * n_joint].reshape(n_joint, 3)
+        idx += 3 * n_joint
+        kp3ds_refined[info['nf'], joint_ids, :3] = xyz
+
+    # Re-triangulate all frames with refined cameras for consistency.
+    for nf in range(n_frames):
+        keypoints3d, _ = simple_recon_person(keypoints2d_all[nf], dataset.Pall)
+        kp3ds_refined[nf] = keypoints3d
+
+    return kp3ds_refined
+
+
 def mv1pmf_skel(dataset, check_repro=True, args=None):
     MIN_CONF_THRES = args.thres2d
     no_img = not (args.vis_det or args.vis_repro)
     dataset.no_img = no_img
     kp3ds = []
+    keypoints2d_all = []
     start, end = args.start, min(args.end, len(dataset))
     kpts_repro = None
 
@@ -56,6 +240,7 @@ def mv1pmf_skel(dataset, check_repro=True, args=None):
             repro_error = np.nan
         # keypoints3d, kpts_repro = robust_triangulate(annots['keypoints'], dataset.Pall, config=config, ret_repro=True)
         kp3ds.append(keypoints3d)
+        keypoints2d_all.append(annots['keypoints'].copy())
         if args.vis_det:
             dataset.vis_detections(images, annots, nf, sub_vis=args.sub_vis)
         if args.vis_repro:
@@ -63,6 +248,18 @@ def mv1pmf_skel(dataset, check_repro=True, args=None):
 
     np.save(join(args.out, "reprojection_error.npy"), np.array(repro_errors))
     log_time(f"Average reprojection error over sequence: {np.nanmean(repro_errors):.2f}px")    # smooth the skeleton
+    keypoints2d_all = np.stack(keypoints2d_all)
+    kp3ds = np.stack(kp3ds)
+
+    if args.joint_ba:
+        log_time("Running joint BA (optimize camera extrinsics + 3D skeleton)...")
+        kp3ds = joint_ba_refine(dataset, keypoints2d_all, kp3ds, args)
+        repro_errors_ba = []
+        for nf in range(kp3ds.shape[0]):
+            repro_errors_ba.append(_compute_repro_error(kp3ds[nf], keypoints2d_all[nf], dataset.Pall))
+        np.save(join(args.out, "reprojection_error_joint_ba.npy"), np.array(repro_errors_ba))
+        log_time(f"Average reprojection error after joint BA: {np.nanmean(repro_errors_ba):.2f}px")
+
     if args.smooth3d > 0:
         kp3ds = smooth_skeleton(kp3ds, args.smooth3d)
     for nf in tqdm(range(len(kp3ds)), desc='dump'):
@@ -118,6 +315,21 @@ if __name__ == "__main__":
 
     parser = load_parser()
     parser.add_argument('--skel', action='store_true')
+    parser.add_argument('--joint_ba', action='store_true',
+                        help='Jointly optimize camera extrinsics and 3D skeleton before SMPL fitting')
+    parser.add_argument('--joint_ba_step', type=int, default=1,
+                        help='Frame sampling step for joint BA')
+    parser.add_argument('--joint_ba_max_frames', type=int, default=200,
+                        help='Maximum number of frames used by joint BA; -1 for all selected frames')
+    parser.add_argument('--joint_ba_loss', type=str, default='huber',
+                        choices=['linear', 'huber', 'soft_l1', 'cauchy', 'arctan'],
+                        help='Robust loss for joint BA')
+    parser.add_argument('--joint_ba_f_scale', type=float, default=2.0,
+                        help='Robust loss scale for joint BA')
+    parser.add_argument('--joint_ba_max_nfev', type=int, default=50,
+                        help='Maximum function evaluations for joint BA solver')
+    parser.add_argument('--joint_ba_lambda_cam', type=float, default=1e-3,
+                        help='L2 regularization weight to keep cameras near initial extrinsics')
     args = parse_parser(parser)
 
     log_time("Starting EasyMocap mv1p pipeline...")

@@ -127,3 +127,6 @@ res/
 .vscode/
 .DS_Store
 tmp_config.yml
+
+# References
+Footefield/
