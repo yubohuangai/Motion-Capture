@@ -60,10 +60,10 @@ def draw_overlay(images, annots, kpts_repro, outdir, nf, kintree=None):
         kpt_rep = kpts_repro[vid]
 
         # OpenCV uses BGR (not RGB):
-        # - Orange detections: (0, 128, 255)
-        # - Red reprojections: (64, 64, 255)
-        img_disp = draw_points2d(img_disp, kpt_det, kintree=kintree, color=(0, 128, 255))
-        img_disp = draw_points2d(img_disp, kpt_rep, kintree=kintree, color=(64, 64, 255))
+        # - Yellow detections: (0, 255, 255)
+        # - Green reprojections: (0, 255, 0)
+        img_disp = draw_points2d(img_disp, kpt_det, kintree=kintree, color=(0, 255, 255))
+        img_disp = draw_points2d(img_disp, kpt_rep, kintree=kintree, color=(0, 255, 0))
 
         out_path = join(outdir, f"{nf:06d}_{vid:02d}.jpg")
         cv2.imwrite(out_path, img_disp)
