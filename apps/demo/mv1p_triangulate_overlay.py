@@ -73,6 +73,11 @@ def mv1pmf_triangulate_overlay(dataset, args):
     dataset.no_img = False
     vis_dir = join(args.out, 'vis_overlay')
     os.makedirs(vis_dir, exist_ok=True)
+    config = getattr(dataset, 'config', None)
+    if isinstance(config, dict):
+        kintree = config.get('kintree', None)
+    else:
+        kintree = getattr(config, 'kintree', None)
 
     print(f"[INFO] Triangulating frames {start}–{end-1}...")
 
@@ -91,7 +96,7 @@ def mv1pmf_triangulate_overlay(dataset, args):
         dataset.write_keypoints3d(keypoints3d, nf)
 
         # Draw overlay (detections + reprojections)
-        draw_overlay(images, annots, kpts_repro, outdir=vis_dir, nf=nf, kintree=dataset.config.kintree)
+        draw_overlay(images, annots, kpts_repro, outdir=vis_dir, nf=nf, kintree=kintree)
 
     print(f"[DONE] All overlays saved to {vis_dir}")
 
