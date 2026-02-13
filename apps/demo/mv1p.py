@@ -19,8 +19,10 @@ import cv2
 
 try:
     from scipy.optimize import least_squares
+    from scipy.sparse import lil_matrix
 except Exception:
     least_squares = None
+    lil_matrix = None
 
 
 def check_repro_error(keypoints3d, kpts_repro, keypoints2d, P, MAX_REPRO_ERROR):
@@ -62,7 +64,7 @@ def _compute_repro_error(keypoints3d, keypoints2d, Pall):
 
 
 def joint_ba_refine(dataset, keypoints2d_all, kp3ds_all, args):
-    if least_squares is None:
+    if least_squares is None or lil_matrix is None:
         raise ImportError("scipy is required for --joint_ba: pip install scipy")
     if dataset.cameras is None:
         raise RuntimeError("Camera parameters are required for --joint_ba")
@@ -92,12 +94,19 @@ def joint_ba_refine(dataset, keypoints2d_all, kp3ds_all, args):
         joint_ids = np.where(valid_joint)[0]
         if joint_ids.size == 0:
             continue
-        total_obs += int((kpts2d[:, joint_ids, 2] > 0).sum())
+        obs_by_cam = []
+        obs_count = 0
+        for nv in range(len(camnames)):
+            vis_local = np.where(kpts2d[nv, joint_ids, 2] > 0)[0].astype(np.int64)
+            obs_by_cam.append(vis_local)
+            obs_count += int(vis_local.size)
+        total_obs += obs_count
         frame_infos.append({
             'nf': nf,
             'joint_ids': joint_ids.astype(np.int64),
             'kpts2d': kpts2d.astype(np.float64),
             'xyz0': kp3d[joint_ids, :3].astype(np.float64),
+            'obs_by_cam': obs_by_cam,
         })
     if len(frame_infos) < 2:
         mywarn("Not enough valid frame/joint observations for joint BA. Skipping.")
@@ -114,9 +123,42 @@ def joint_ba_refine(dataset, keypoints2d_all, kp3ds_all, args):
         x0.append(info['xyz0'].reshape(-1))
     x0 = np.concatenate(x0, axis=0)
 
+    # Variable block index mapping for sparse Jacobian.
+    cam_col_start = {}
+    for icam, cam in enumerate(cam_order):
+        cam_col_start[cam] = 6 * icam
+    offset = 6 * len(cam_order)
+    for info in frame_infos:
+        info['var_start'] = offset
+        info['n_joint'] = int(info['joint_ids'].shape[0])
+        offset += 3 * info['n_joint']
+
+    # Build Jacobian sparsity: each (u,v) residual depends on one camera block (except cam0)
+    # and one local 3D joint block.
+    n_vars = x0.size
+    n_rows = 2 * total_obs + (6 * len(cam_order) if args.joint_ba_lambda_cam > 0 else 0)
+    jac_sparsity = lil_matrix((n_rows, n_vars), dtype=np.int8)
+    row = 0
+    for info in frame_infos:
+        for nv, cam in enumerate(camnames):
+            vis_local = info['obs_by_cam'][nv]
+            for local_idx in vis_local:
+                point_col = info['var_start'] + 3 * int(local_idx)
+                jac_sparsity[row:row+2, point_col:point_col+3] = 1
+                if cam != cam0:
+                    c0 = cam_col_start[cam]
+                    jac_sparsity[row:row+2, c0:c0+6] = 1
+                row += 2
+    if args.joint_ba_lambda_cam > 0:
+        for cam in cam_order:
+            c0 = cam_col_start[cam]
+            jac_sparsity[row:row+6, c0:c0+6] = 1
+            row += 6
+    assert row == n_rows, (row, n_rows)
+
     log_time(
         f"[joint_ba] frames={len(frame_infos)} views={len(camnames)} "
-        f"obs={total_obs} variables={x0.size}"
+        f"obs={total_obs} variables={x0.size} (sparse_jacobian)"
     )
 
     def residual_func(x):
@@ -137,16 +179,16 @@ def joint_ba_refine(dataset, keypoints2d_all, kp3ds_all, args):
         residuals = []
         for info in frame_infos:
             joint_ids = info['joint_ids']
-            n_joint = joint_ids.shape[0]
+            n_joint = info['n_joint']
             xyz = x[idx:idx + 3 * n_joint].reshape(n_joint, 3)
             idx += 3 * n_joint
             for nv, cam in enumerate(camnames):
-                vis = info['kpts2d'][nv, joint_ids, 2] > 0
-                if not np.any(vis):
+                vis_local = info['obs_by_cam'][nv]
+                if vis_local.size == 0:
                     continue
-                xyz_vis = xyz[vis]
-                uv_obs = info['kpts2d'][nv, joint_ids[vis], :2]
-                conf = info['kpts2d'][nv, joint_ids[vis], 2:3]
+                xyz_vis = xyz[vis_local]
+                uv_obs = info['kpts2d'][nv, joint_ids[vis_local], :2]
+                conf = info['kpts2d'][nv, joint_ids[vis_local], 2:3]
 
                 _, R, T = cam_vars[cam]
                 Xc = (R @ xyz_vis.T + T).T
@@ -175,6 +217,8 @@ def joint_ba_refine(dataset, keypoints2d_all, kp3ds_all, args):
     result = least_squares(
         residual_func,
         x0,
+        jac_sparsity=jac_sparsity,
+        x_scale='jac',
         method='trf',
         loss=args.joint_ba_loss,
         f_scale=args.joint_ba_f_scale,
@@ -205,10 +249,11 @@ def joint_ba_refine(dataset, keypoints2d_all, kp3ds_all, args):
         idx += 3 * n_joint
         kp3ds_refined[info['nf'], joint_ids, :3] = xyz
 
-    # Re-triangulate all frames with refined cameras for consistency.
-    for nf in range(n_frames):
-        keypoints3d, _ = simple_recon_person(keypoints2d_all[nf], dataset.Pall)
-        kp3ds_refined[nf] = keypoints3d
+    # Optional: re-triangulate all frames with refined cameras for full consistency.
+    if not args.joint_ba_skip_retriangulate:
+        for nf in range(n_frames):
+            keypoints3d, _ = simple_recon_person(keypoints2d_all[nf], dataset.Pall)
+            kp3ds_refined[nf] = keypoints3d
 
     return kp3ds_refined
 
@@ -330,6 +375,8 @@ if __name__ == "__main__":
                         help='Maximum function evaluations for joint BA solver')
     parser.add_argument('--joint_ba_lambda_cam', type=float, default=1e-3,
                         help='L2 regularization weight to keep cameras near initial extrinsics')
+    parser.add_argument('--joint_ba_skip_retriangulate', action='store_true',
+                        help='Skip re-triangulating all frames after joint BA for speed')
     args = parse_parser(parser)
 
     log_time("Starting EasyMocap mv1p pipeline...")
