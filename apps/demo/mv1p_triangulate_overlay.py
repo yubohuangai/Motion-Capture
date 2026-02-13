@@ -114,7 +114,9 @@ if __name__ == "__main__":
     from easymocap.mytools import load_parser, parse_parser
     parser = load_parser()
     parser.add_argument('--no_vis', action='store_true', help='disable visualization')
-    parser.add_argument('--no_bar', action='store_true', help='disable tqdm progress bar')
+    parser.add_argument('--no_bar', dest='no_bar', action='store_true', help='disable tqdm progress bar')
+    parser.add_argument('--bar', dest='no_bar', action='store_false', help='enable tqdm progress bar')
+    parser.set_defaults(no_bar=True)
     args = parse_parser(parser)
 
     print("""
