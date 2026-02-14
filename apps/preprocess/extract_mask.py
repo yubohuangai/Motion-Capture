@@ -4,8 +4,11 @@ Extract person masks using Segment Anything (SAM) for multiview image folders.
 This script follows the same dataset layout/CLI style as extract_keypoints.py:
     {path}/images/{sub}/%06d.jpg
     {path}/{annot}/{sub}/%06d.json
-and writes:
-    {path}/{mask}/{sub}/%06d.png
+
+Default behavior:
+    write per-person mask points into each json annotation as `annots[*].mask`
+Optional:
+    save binary mask image to {path}/{mask}/{sub}/%06d.png via --save_mask_images
 """
 import os
 from os.path import join
@@ -13,6 +16,7 @@ import argparse
 from tqdm import tqdm
 import numpy as np
 import cv2
+import json
 
 
 def load_subs(path, subs):
@@ -26,15 +30,27 @@ def load_subs(path, subs):
 
 def load_annots(annotname):
     if not os.path.exists(annotname):
-        return []
-    import json
+        return None, []
     with open(annotname, "r") as f:
         data = json.load(f)
     if isinstance(data, dict):
-        return data.get("annots", [])
-    if isinstance(data, list):
-        return data
-    return []
+        annots = data.get("annots", [])
+    elif isinstance(data, list):
+        annots = data
+    else:
+        annots = []
+    return data, annots
+
+
+def save_annots(annotname, data, annots):
+    if data is None:
+        data = {"annots": annots}
+    elif isinstance(data, dict):
+        data["annots"] = annots
+    else:
+        data = annots
+    with open(annotname, "w") as f:
+        json.dump(data, f, indent=4)
 
 
 def clip_bbox_xyxy(bbox, width, height):
@@ -79,6 +95,17 @@ def mask_from_annot(predictor, annot, image_shape, args):
     return mask
 
 
+def points_from_mask(mask, max_points, rng):
+    ys, xs = np.where(mask > 0)
+    if xs.shape[0] == 0:
+        return np.zeros((0, 2), dtype=np.float32)
+    points = np.stack([xs, ys], axis=1).astype(np.float32)
+    if points.shape[0] > max_points:
+        idx = rng.choice(points.shape[0], size=max_points, replace=False)
+        points = points[idx]
+    return points
+
+
 def extract_mask_one_sub(image_root, annot_root, mask_root, args):
     try:
         from segment_anything import sam_model_registry, SamPredictor
@@ -88,17 +115,29 @@ def extract_mask_one_sub(image_root, annot_root, mask_root, args):
             "`pip install git+https://github.com/facebookresearch/segment-anything.git`"
         ) from e
 
-    os.makedirs(mask_root, exist_ok=True)
+    if args.save_mask_images:
+        os.makedirs(mask_root, exist_ok=True)
     device = args.device
     sam = sam_model_registry[args.sam_model_type](checkpoint=args.sam_checkpoint)
     sam.to(device=device)
     predictor = SamPredictor(sam)
+    rng = np.random.default_rng(0)
 
     imgnames = sorted([n for n in os.listdir(image_root) if n.endswith(args.ext)])
-    for imgname in tqdm(imgnames, desc=f"mask {os.path.basename(mask_root) or 'root'}"):
+    for imgname in tqdm(imgnames, desc=f"mask {os.path.basename(annot_root) or 'root'}"):
         base = imgname.replace(args.ext, "")
         outname = join(mask_root, base + ".png")
-        if os.path.exists(outname) and not args.force:
+        annotname = join(annot_root, base + ".json")
+        data, annots = load_annots(annotname)
+        if annots is None or len(annots) == 0:
+            continue
+        if not args.force and all(("mask" in ann and len(ann["mask"]) > 0) for ann in annots):
+            if not args.save_mask_images:
+                continue
+            if args.save_mask_images and os.path.exists(outname):
+                continue
+
+        if args.save_mask_images and os.path.exists(outname) and not args.force:
             continue
 
         image = cv2.imread(join(image_root, imgname))
@@ -107,22 +146,28 @@ def extract_mask_one_sub(image_root, annot_root, mask_root, args):
         image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         predictor.set_image(image_rgb)
 
-        annots = load_annots(join(annot_root, base + ".json"))
         mask_all = np.zeros(image.shape[:2], dtype=np.uint8)
         for annot in annots:
             pred = mask_from_annot(predictor, annot, image.shape, args)
             if pred is None:
+                annot["mask"] = []
                 continue
-            mask_all[pred] = 255
+            mask_person = np.zeros(image.shape[:2], dtype=np.uint8)
+            mask_person[pred] = 255
+            if args.erosion > 0:
+                kernel = np.ones((args.erosion, args.erosion), np.uint8)
+                mask_person = cv2.erode(mask_person, kernel, iterations=1)
+            if args.dilation > 0:
+                kernel = np.ones((args.dilation, args.dilation), np.uint8)
+                mask_person = cv2.dilate(mask_person, kernel, iterations=1)
+            points = points_from_mask(mask_person, args.mask_max_points, rng)
+            annot["mask"] = points.tolist()
+            mask_all = np.maximum(mask_all, mask_person)
 
-        if args.erosion > 0:
-            kernel = np.ones((args.erosion, args.erosion), np.uint8)
-            mask_all = cv2.erode(mask_all, kernel, iterations=1)
-        if args.dilation > 0:
-            kernel = np.ones((args.dilation, args.dilation), np.uint8)
-            mask_all = cv2.dilate(mask_all, kernel, iterations=1)
+        save_annots(annotname, data, annots)
 
-        cv2.imwrite(outname, mask_all)
+        if args.save_mask_images:
+            cv2.imwrite(outname, mask_all)
         if args.vis:
             vis = image.copy()
             vis[mask_all == 0] = 0
@@ -143,6 +188,8 @@ def main():
     parser.add_argument("--sam_checkpoint", type=str, default="data/models/sam_vit_b_01ec64.pth")
     parser.add_argument("--sam_model_type", type=str, default="vit_b", choices=["vit_h", "vit_l", "vit_b"])
     parser.add_argument("--device", type=str, default="cuda")
+    parser.add_argument("--mask_max_points", type=int, default=2000)
+    parser.add_argument("--save_mask_images", action="store_true")
     parser.add_argument("--erosion", type=int, default=0)
     parser.add_argument("--dilation", type=int, default=0)
     parser.add_argument("--gpus", type=int, nargs="+", default=[])
@@ -167,7 +214,10 @@ def main():
             cmd += f" --subs {' '.join(sublist)} --annot {args.annot} --mask {args.mask} --ext {args.ext}"
             cmd += f" --prompt {args.prompt} --bbox_thres {args.bbox_thres} --kpt_thres {args.kpt_thres}"
             cmd += f" --sam_checkpoint {args.sam_checkpoint} --sam_model_type {args.sam_model_type} --device cuda"
+            cmd += f" --mask_max_points {args.mask_max_points}"
             cmd += f" --erosion {args.erosion} --dilation {args.dilation}"
+            if args.save_mask_images:
+                cmd += " --save_mask_images"
             if args.force:
                 cmd += " --force"
             if args.vis:

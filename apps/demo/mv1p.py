@@ -16,6 +16,7 @@ import os
 from os.path import join
 import numpy as np
 import cv2
+import json
 
 
 def check_repro_error(keypoints3d, kpts_repro, keypoints2d, P, MAX_REPRO_ERROR):
@@ -117,11 +118,15 @@ def mv1pmf_smpl(dataset, args, weight_pose=None, weight_shape=None):
 
 def load_silhouette_points(dataset, start, end, args):
     mask_root = join(dataset.root, args.shape_mask_root)
-    if not os.path.exists(mask_root):
-        print(f"[Shape silhouette] mask root not found: {mask_root}, skipping silhouette term.")
+    annot_root = join(dataset.root, args.annot)
+    has_json_masks = os.path.exists(annot_root)
+    has_image_masks = os.path.exists(mask_root)
+    if not has_json_masks and not has_image_masks:
+        print(f"[Shape silhouette] neither annot root ({annot_root}) nor mask root ({mask_root}) exists, skipping silhouette term.")
         return None
     rng = np.random.default_rng(0)
     silhouettes = []
+    pid = getattr(args, 'pid', 0)
     for nf in tqdm(range(start, end), desc='loading masks'):
         frame_points = []
         use_frame = ((nf - start) % max(args.shape_mask_frame_step, 1) == 0)
@@ -130,21 +135,47 @@ def load_silhouette_points(dataset, start, end, args):
             if use_frame:
                 imgname = dataset.imagelist[cam][nf]
                 base, ext = os.path.splitext(imgname)
-                candidates = [
-                    join(mask_root, cam, base + '.png'),
-                    join(mask_root, cam, base + '.jpg'),
-                    join(mask_root, cam, imgname),
-                ]
-                maskname = next((name for name in candidates if os.path.exists(name)), None)
-                if maskname is not None:
-                    mask = cv2.imread(maskname, cv2.IMREAD_GRAYSCALE)
-                    if mask is not None:
-                        ys, xs = np.where(mask > args.shape_mask_thr)
-                        if xs.shape[0] > 0:
-                            points = np.stack([xs, ys], axis=1).astype(np.float32)
-                            if points.shape[0] > args.shape_mask_max_points:
-                                sel = rng.choice(points.shape[0], size=args.shape_mask_max_points, replace=False)
-                                points = points[sel]
+                # Prefer json masks saved in annots[*].mask by extract_mask.py.
+                annotname = join(annot_root, cam, base + '.json')
+                if os.path.exists(annotname):
+                    try:
+                        with open(annotname, 'r') as f:
+                            data = json.load(f)
+                        annots = data.get('annots', []) if isinstance(data, dict) else data
+                        if isinstance(annots, list) and len(annots) > 0:
+                            target = None
+                            for ann in annots:
+                                if ann.get('id', 0) == pid and 'mask' in ann:
+                                    target = ann
+                                    break
+                            if target is None:
+                                for ann in annots:
+                                    if 'mask' in ann:
+                                        target = ann
+                                        break
+                            if target is not None:
+                                pts = np.asarray(target.get('mask', []), dtype=np.float32)
+                                if pts.ndim == 2 and pts.shape[1] >= 2 and pts.shape[0] > 0:
+                                    points = pts[:, :2]
+                    except Exception:
+                        pass
+                # Fallback to image masks for backward compatibility.
+                if points.shape[0] == 0 and has_image_masks:
+                    candidates = [
+                        join(mask_root, cam, base + '.png'),
+                        join(mask_root, cam, base + '.jpg'),
+                        join(mask_root, cam, imgname),
+                    ]
+                    maskname = next((name for name in candidates if os.path.exists(name)), None)
+                    if maskname is not None:
+                        mask = cv2.imread(maskname, cv2.IMREAD_GRAYSCALE)
+                        if mask is not None:
+                            ys, xs = np.where(mask > args.shape_mask_thr)
+                            if xs.shape[0] > 0:
+                                points = np.stack([xs, ys], axis=1).astype(np.float32)
+                if points.shape[0] > args.shape_mask_max_points:
+                    sel = rng.choice(points.shape[0], size=args.shape_mask_max_points, replace=False)
+                    points = points[sel]
             frame_points.append(points)
         silhouettes.append(frame_points)
     return silhouettes
