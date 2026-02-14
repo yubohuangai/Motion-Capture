@@ -7,7 +7,7 @@
 '''
 def load_weight_shape(model, opts):
     if model in ['smpl', 'smplh', 'smplx']:
-        weight = {'s3d': 1., 'reg_shapes': 5e-3}
+        weight = {'s3d': 1., 'reg_shapes': 5e-3, 'chamfer': 0.}
     elif model == 'mano':
         weight = {'s3d': 1e2, 'reg_shapes': 5e-5}
     else:

@@ -79,6 +79,97 @@ def optimizeShape(body_model, body_params, keypoints3d,
     body_params = {key:val.detach().cpu().numpy() for key, val in body_params.items()}
     return body_params
 
+def optimizeShapeSilhouette(body_model, body_params, silhouette_points, Pall, weight_loss, max_iter=20, max_verts=1000):
+    """Refine shape with a one-directional silhouette Chamfer loss.
+
+    Args:
+        body_model: SMPL body model.
+        body_params: dict of fitted parameters (poses/Rh/Th/shapes).
+        silhouette_points: nested list [nFrames][nViews], each item (N, 2) ndarray.
+        Pall: (nViews, 3, 4) projection matrices.
+        weight_loss: dict, uses keys {'chamfer', 'reg_shapes'}.
+        max_iter: LBFGS max iterations.
+        max_verts: number of mesh vertices sampled for Chamfer.
+    """
+    if silhouette_points is None:
+        return body_params
+    nFrames = len(silhouette_points)
+    if nFrames == 0:
+        return body_params
+    nViews = len(silhouette_points[0]) if len(silhouette_points[0]) > 0 else 0
+    if nViews == 0:
+        return body_params
+    if weight_loss.get('chamfer', 0.) <= 0.:
+        return body_params
+    if max_verts <= 0:
+        max_verts = 1000
+
+    device = body_model.device
+    Pall_t = torch.tensor(Pall, dtype=torch.float32, device=device)
+    body_params = {key: torch.tensor(val, dtype=torch.float32, device=device) for key, val in body_params.items()}
+    body_params_init = {key: val.clone() for key, val in body_params.items()}
+    opt_params = [body_params['shapes']]
+    grad_require(opt_params, True)
+    optimizer = LBFGS(opt_params, line_search_fn='strong_wolfe', max_iter=max_iter)
+    ones_cache = {}
+
+    points_t = []
+    for nf in range(nFrames):
+        frame_points = []
+        for nv in range(nViews):
+            pts = silhouette_points[nf][nv]
+            if pts is None or len(pts) == 0:
+                frame_points.append(None)
+                continue
+            frame_points.append(torch.tensor(pts, dtype=torch.float32, device=device))
+        points_t.append(frame_points)
+
+    def closure(debug=False):
+        optimizer.zero_grad()
+        verts = body_model(return_verts=True, return_tensor=True, **body_params)
+        if verts.shape[1] > max_verts:
+            step = max(verts.shape[1] // max_verts, 1)
+            verts = verts[:, ::step, :]
+        nv_verts = verts.shape[1]
+        if nv_verts not in ones_cache:
+            ones_cache[nv_verts] = torch.ones((verts.shape[0], nv_verts, 1), dtype=verts.dtype, device=device)
+        verts_h = torch.cat([verts, ones_cache[nv_verts]], dim=2)
+        point_cam = torch.einsum('vab,fnb->vfna', Pall_t, verts_h)
+        proj = point_cam[..., :2] / torch.clamp(point_cam[..., 2:3], min=1e-6)
+
+        chamfer_loss = torch.tensor(0., device=device)
+        count = 0
+        for nf in range(nFrames):
+            for nv in range(nViews):
+                pts = points_t[nf][nv]
+                if pts is None:
+                    continue
+                dists = torch.cdist(proj[nv, nf], pts, p=2)
+                chamfer_loss = chamfer_loss + dists.min(dim=1)[0].mean()
+                count += 1
+        if count > 0:
+            chamfer_loss = chamfer_loss / count
+
+        loss_dict = {
+            'chamfer': chamfer_loss,
+            'reg_shapes': torch.sum(body_params['shapes']**2)
+        }
+        if 'init_shape' in weight_loss.keys():
+            loss_dict['init_shape'] = torch.sum((body_params['shapes'] - body_params_init['shapes'])**2)
+
+        loss = sum([loss_dict[key] * weight_loss.get(key, 0.) for key in loss_dict.keys()])
+        if debug:
+            return loss_dict
+        loss.backward()
+        return loss
+
+    fitting = FittingMonitor(ftol=1e-4)
+    fitting.run_fitting(optimizer, closure, opt_params)
+    fitting.close()
+    grad_require(opt_params, False)
+    body_params = {key: val.detach().cpu().numpy() for key, val in body_params.items()}
+    return body_params
+
 N_BODY = 25
 N_HAND = 21
 

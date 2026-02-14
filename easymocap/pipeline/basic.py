@@ -6,6 +6,7 @@
   @ FilePath: /EasyMocap/easymocap/pipeline/basic.py
 '''
 from ..pyfitting import optimizeShape, optimizePose2D, optimizePose3D
+from ..pyfitting.optimize_simple import optimizeShapeSilhouette
 from ..mytools import Timer
 from ..dataset import CONFIG
 from .weight import load_weight_pose, load_weight_shape
@@ -53,7 +54,7 @@ def multi_stage_optimize2d(body_model, params, kp2ds, bboxes, Pall, weight={}, a
     return params
 
 def smpl_from_keypoints3d2d(body_model, kp3ds, kp2ds, bboxes, Pall, config, args,
-    weight_shape=None, weight_pose=None):
+    weight_shape=None, weight_pose=None, silhouette_points=None):
     model_type = body_model.model_type
     params_init = body_model.init_params(nFrames=1)
     if weight_shape is None:
@@ -75,6 +76,12 @@ def smpl_from_keypoints3d2d(body_model, kp3ds, kp2ds, bboxes, Pall, config, args
         weight_pose = load_weight_pose(model_type, args.opts)
     # We divide this step to two functions, because we can have different initialization method
     params = multi_stage_optimize(body_model, params, kp3ds, kp2ds, bboxes, Pall, weight_pose, cfg)
+    if silhouette_points is not None and args.shape_silhouette:
+        params = optimizeShapeSilhouette(
+            body_model, params, silhouette_points, Pall,
+            weight_shape, max_iter=args.shape_silhouette_iters,
+            max_verts=args.shape_silhouette_vert_subsample
+        )
     return params
 
 def smpl_from_keypoints3d(body_model, kp3ds, config, args, 

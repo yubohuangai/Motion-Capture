@@ -15,6 +15,7 @@ from easymocap.pipeline import smpl_from_keypoints3d2d
 import os
 from os.path import join
 import numpy as np
+import cv2
 
 
 def check_repro_error(keypoints3d, kpts_repro, keypoints2d, P, MAX_REPRO_ERROR):
@@ -82,12 +83,16 @@ def mv1pmf_smpl(dataset, args, weight_pose=None, weight_shape=None):
     keypoints2d = np.stack(keypoints2d)
     bboxes = np.stack(bboxes)
     kp3ds = check_keypoints(kp3ds, 1)
+    silhouette_points = None
+    if args.shape_silhouette:
+        silhouette_points = load_silhouette_points(dataset, start, end, args)
     # optimize the human shape
     with Timer('Loading {}, {}'.format(args.model, args.gender), not args.verbose):
         body_model = load_model(gender=args.gender, model_type=args.model)
     params = smpl_from_keypoints3d2d(body_model, kp3ds, keypoints2d, bboxes, 
         dataset.Pall, config=dataset.config, args=args,
-        weight_shape=weight_shape, weight_pose=weight_pose)
+        weight_shape=weight_shape, weight_pose=weight_pose,
+        silhouette_points=silhouette_points)
     # write out the results
     dataset.no_img = not (args.vis_smpl or args.vis_repro)
     for nf in tqdm(range(start, end), desc='render'):
@@ -109,6 +114,40 @@ def mv1pmf_smpl(dataset, args, weight_pose=None, weight_shape=None):
             keypoints = body_model(return_verts=False, return_tensor=False, **param)[0]
             kpts_repro = projectN3(keypoints, dataset.Pall)
             dataset.vis_repro(images, kpts_repro, nf=nf, sub_vis=args.sub_vis, mode='repro_smpl')
+
+def load_silhouette_points(dataset, start, end, args):
+    mask_root = join(dataset.root, args.shape_mask_root)
+    if not os.path.exists(mask_root):
+        print(f"[Shape silhouette] mask root not found: {mask_root}, skipping silhouette term.")
+        return None
+    rng = np.random.default_rng(0)
+    silhouettes = []
+    for nf in tqdm(range(start, end), desc='loading masks'):
+        frame_points = []
+        use_frame = ((nf - start) % max(args.shape_mask_frame_step, 1) == 0)
+        for cam in dataset.cams:
+            points = np.zeros((0, 2), dtype=np.float32)
+            if use_frame:
+                imgname = dataset.imagelist[cam][nf]
+                base, ext = os.path.splitext(imgname)
+                candidates = [
+                    join(mask_root, cam, base + '.png'),
+                    join(mask_root, cam, base + '.jpg'),
+                    join(mask_root, cam, imgname),
+                ]
+                maskname = next((name for name in candidates if os.path.exists(name)), None)
+                if maskname is not None:
+                    mask = cv2.imread(maskname, cv2.IMREAD_GRAYSCALE)
+                    if mask is not None:
+                        ys, xs = np.where(mask > args.shape_mask_thr)
+                        if xs.shape[0] > 0:
+                            points = np.stack([xs, ys], axis=1).astype(np.float32)
+                            if points.shape[0] > args.shape_mask_max_points:
+                                sel = rng.choice(points.shape[0], size=args.shape_mask_max_points, replace=False)
+                                points = points[sel]
+            frame_points.append(points)
+        silhouettes.append(frame_points)
+    return silhouettes
 
 
 if __name__ == "__main__":

@@ -51,6 +51,20 @@ def load_parser():
     recon.add_argument('--MAX_SPEED_ERROR', type=int,
         help='The threshold of reprojection error', default=50)
     recon.add_argument('--robust3d', action='store_true')
+    recon.add_argument('--shape_silhouette', action='store_true',
+        help='refine shape using silhouette Chamfer loss after initial pose fitting')
+    recon.add_argument('--shape_mask_root', type=str, default='masks',
+        help='sub directory name for silhouette masks, under sequence root')
+    recon.add_argument('--shape_mask_thr', type=int, default=127,
+        help='binary threshold for silhouette masks')
+    recon.add_argument('--shape_mask_max_points', type=int, default=2000,
+        help='maximum sampled silhouette points per frame-view')
+    recon.add_argument('--shape_mask_frame_step', type=int, default=1,
+        help='use one frame every N frames for silhouette shape refinement')
+    recon.add_argument('--shape_silhouette_iters', type=int, default=20,
+        help='LBFGS max_iter for shape silhouette refinement')
+    recon.add_argument('--shape_silhouette_vert_subsample', type=int, default=1000,
+        help='number of mesh vertices sampled for silhouette Chamfer')
     # 
     # visualization part
     # 
