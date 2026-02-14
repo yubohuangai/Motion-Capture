@@ -49,6 +49,21 @@ def compute_reprojection_error(keypoints2d, kpts_repro):
         return np.nan
     return err[conf].mean()
 
+def compute_reprojection_error_ba_style(keypoints2d, kpts_repro, keypoints3d, conf_thres=0.1):
+    """Compute BA-style reprojection error:
+    - use observations with 2D conf > conf_thres
+    - use joints with valid 3D conf > 0
+    - average unweighted L2 pixel error over selected observations
+    """
+    valid_2d = keypoints2d[..., -1] > conf_thres
+    valid_3d = keypoints3d[:, -1] > 0
+    valid = valid_2d & valid_3d[None, :]
+    if not np.any(valid):
+        return np.nan
+    diff = keypoints2d[..., :2] - kpts_repro[..., :2]
+    err = np.sqrt((diff ** 2).sum(axis=-1))
+    return err[valid].mean()
+
 
 def draw_overlay(images, annots, kpts_repro, outdir, nf, kintree=None):
     """Draw detections (2D) and reprojections (2D) together on each camera view."""
@@ -82,7 +97,8 @@ def mv1pmf_triangulate_overlay(dataset, args):
         kintree = getattr(config, 'kintree', None)
 
     print(f"[INFO] Triangulating frames {start}-{end-1}...")
-    errors = []
+    errors_legacy = []
+    errors_ba = []
     frame_iter = range(start, end)
     if not args.no_bar:
         frame_iter = tqdm(frame_iter, desc="Triangulate")
@@ -95,9 +111,16 @@ def mv1pmf_triangulate_overlay(dataset, args):
 
         # Triangulate to 3D
         keypoints3d, kpts_repro = simple_recon_person(keypoints2d, dataset.Pall)
-        err = compute_reprojection_error(keypoints2d, kpts_repro)
-        errors.append(err)
-        print(f"[Frame {nf:06d}] mean reprojection error = {err:.2f}px")
+        err_legacy = compute_reprojection_error(keypoints2d, kpts_repro)
+        err_ba = compute_reprojection_error_ba_style(
+            keypoints2d, kpts_repro, keypoints3d, conf_thres=args.ba_conf
+        )
+        errors_legacy.append(err_legacy)
+        errors_ba.append(err_ba)
+        print(
+            f"[Frame {nf:06d}] reproj err legacy={err_legacy:.2f}px, "
+            f"ba-style={err_ba:.2f}px"
+        )
 
         # Save 3D keypoints
         dataset.write_keypoints3d(keypoints3d, nf)
@@ -105,9 +128,11 @@ def mv1pmf_triangulate_overlay(dataset, args):
         # Draw overlay (detections + reprojections)
         draw_overlay(images, annots, kpts_repro, outdir=vis_dir, nf=nf, kintree=kintree)
 
-    avg_error = float(np.nanmean(np.array(errors))) if len(errors) > 0 else float('nan')
+    avg_legacy = float(np.nanmean(np.array(errors_legacy))) if len(errors_legacy) > 0 else float('nan')
+    avg_ba = float(np.nanmean(np.array(errors_ba))) if len(errors_ba) > 0 else float('nan')
     print(f"[DONE] All overlays saved to {vis_dir}")
-    print(f"[DONE] Average reprojection error over sequence = {avg_error:.2f}px")
+    print(f"[DONE] Average reprojection error (legacy) over sequence = {avg_legacy:.2f}px")
+    print(f"[DONE] Average reprojection error (ba-style, conf>{args.ba_conf:.2f}) over sequence = {avg_ba:.2f}px")
 
 
 if __name__ == "__main__":
@@ -116,6 +141,7 @@ if __name__ == "__main__":
     parser.add_argument('--no_vis', action='store_true', help='disable visualization')
     parser.add_argument('--no_bar', dest='no_bar', action='store_true', help='disable tqdm progress bar')
     parser.add_argument('--bar', dest='no_bar', action='store_false', help='enable tqdm progress bar')
+    parser.add_argument('--ba_conf', type=float, default=0.1, help='2D confidence threshold for BA-style reprojection error')
     parser.set_defaults(no_bar=True)
     args = parse_parser(parser)
 
