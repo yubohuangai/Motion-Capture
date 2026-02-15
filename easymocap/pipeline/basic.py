@@ -72,16 +72,16 @@ def smpl_from_keypoints3d2d(body_model, kp3ds, kp2ds, bboxes, Pall, config, args
     cfg.device = body_model.device
     params = body_model.init_params(nFrames=kp3ds.shape[0])
     params['shapes'] = params_shape['shapes'].copy()
-    if weight_pose is None:
-        weight_pose = load_weight_pose(model_type, args.opts)
-    # We divide this step to two functions, because we can have different initialization method
-    params = multi_stage_optimize(body_model, params, kp3ds, kp2ds, bboxes, Pall, weight_pose, cfg)
     if silhouette_points is not None and args.shape_silhouette:
         params = optimizeShapeSilhouette(
             body_model, params, silhouette_points, Pall,
             weight_shape, max_iter=args.shape_silhouette_iters,
             max_verts=args.shape_silhouette_vert_subsample
         )
+    if weight_pose is None:
+        weight_pose = load_weight_pose(model_type, args.opts)
+    # We divide this step to two functions, because we can have different initialization method
+    params = multi_stage_optimize(body_model, params, kp3ds, kp2ds, bboxes, Pall, weight_pose, cfg)
     return params
 
 def smpl_from_keypoints3d(body_model, kp3ds, config, args, 
