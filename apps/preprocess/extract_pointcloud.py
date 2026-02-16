@@ -310,18 +310,19 @@ def triangulate_multiview_dlt(obs_uv, cams):
     return X
 
 
-def reproj_valid_multiview(X, obs_uv, cams, reproj_thres):
+def reproj_inlier_count_multiview(X, obs_uv, cams, reproj_thres):
     X = np.asarray(X, dtype=np.float64).reshape(1, 3)
+    inliers = 0
     for cam, uv in obs_uv:
         R, T, K = cams[cam]["R"], cams[cam]["T"], cams[cam]["K"]
         Xc = (R @ X.T + T).T
         if Xc[0, 2] <= 1e-6:
-            return False
+            continue
         uvhat, _ = cv2.projectPoints(X, cv2.Rodrigues(R)[0], T, K, None)
         err = np.linalg.norm(uvhat.reshape(2) - np.asarray(uv, dtype=np.float64))
-        if err > reproj_thres:
-            return False
-    return True
+        if err <= reproj_thres:
+            inliers += 1
+    return inliers
 
 
 def ransac_filter_points(pts0, pts1, cam0, args):
@@ -414,11 +415,32 @@ def build_frame_cloud_global(data, cams_ok, feats, args):
     for _, tr in tracks.items():
         if len(tr["obs"]) < 2:
             continue
-        obs_uv = [(cam, uv) for cam, uv in tr["obs"].items()]
+        obs_uv_all = [(cam, uv) for cam, uv in tr["obs"].items()]
+        if len(obs_uv_all) < args.global_min_views:
+            continue
+        # Build a stable triangulation set: reference + best matched views.
+        obs_uv = [(ref_cam, tr["obs"][ref_cam])]
+        others = []
+        for cam, uv in tr["obs"].items():
+            if cam == ref_cam:
+                continue
+            score = tr["best_dist"].get(cam, 1e9)
+            others.append((score, cam, uv))
+        others.sort(key=lambda x: x[0])
+        n_take = max(1, args.global_triang_views - 1)
+        for _, cam, uv in others[:n_take]:
+            obs_uv.append((cam, uv))
+
         X = triangulate_multiview_dlt(obs_uv, {cam: data[cam]["cam"] for cam in cams_ok})
         if X is None:
             continue
-        if not reproj_valid_multiview(X, obs_uv, {cam: data[cam]["cam"] for cam in cams_ok}, args.reproj_thres):
+        ninlier = reproj_inlier_count_multiview(
+            X,
+            obs_uv_all,
+            {cam: data[cam]["cam"] for cam in cams_ok},
+            args.reproj_thres,
+        )
+        if ninlier < args.global_min_views:
             continue
         u_ref, v_ref = tr["obs"][ref_cam]
         x = int(np.clip(round(float(u_ref)), 0, w - 1))
@@ -573,6 +595,8 @@ def main():
     parser.add_argument("--start", type=int, default=0)
     parser.add_argument("--match_mode", type=str, default="global", choices=["global", "pairwise"])
     parser.add_argument("--pair_mode", type=str, default="all", choices=["ring", "all"])
+    parser.add_argument("--global_triang_views", type=int, default=3, help="views used to triangulate one global track")
+    parser.add_argument("--global_min_views", type=int, default=2, help="minimum reprojection-inlier views to keep a global track")
     parser.add_argument("--nfeatures", type=int, default=4000)
     parser.add_argument("--fast_threshold", type=int, default=10)
     parser.add_argument("--crosscheck", action="store_true")
