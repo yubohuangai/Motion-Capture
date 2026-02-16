@@ -119,6 +119,38 @@ def write_ply_ascii(outname, xyz, rgb=None):
             f.write(f"{x:.6f} {y:.6f} {z:.6f} {int(r)} {int(g)} {int(b)}\n")
 
 
+def read_keypoints3d_json(filename, conf_thres=0.1):
+    if not exists(filename):
+        return np.zeros((0, 3), dtype=np.float32)
+    try:
+        with open(filename, "r") as f:
+            data = json.load(f)
+    except Exception:
+        return np.zeros((0, 3), dtype=np.float32)
+    if isinstance(data, dict):
+        data = data.get("annots", [])
+    if not isinstance(data, list):
+        return np.zeros((0, 3), dtype=np.float32)
+
+    pts_all = []
+    for person in data:
+        if "keypoints3d" not in person:
+            continue
+        k3d = np.asarray(person["keypoints3d"], dtype=np.float32)
+        if k3d.ndim != 2 or k3d.shape[0] == 0:
+            continue
+        if k3d.shape[1] >= 4:
+            valid = k3d[:, 3] > conf_thres
+            k3d = k3d[valid, :3]
+        else:
+            k3d = k3d[:, :3]
+        if k3d.shape[0] > 0:
+            pts_all.append(k3d)
+    if len(pts_all) == 0:
+        return np.zeros((0, 3), dtype=np.float32)
+    return np.concatenate(pts_all, axis=0).astype(np.float32)
+
+
 def make_pairs(cams, pair_mode):
     if len(cams) < 2:
         return []
@@ -325,6 +357,9 @@ def main():
     parser.add_argument("--use_mask", action="store_true", default=True, help="use masks/{cam}/xxxxxx.png if available")
     parser.add_argument("--mask_from_annot", action="store_true", help="fallback: annots/{cam}/xxxxxx.json")
     parser.add_argument("--save_ply", action="store_true")
+    parser.add_argument("--k3d", type=str, default="", help="3D keypoints folder (relative to path or absolute)")
+    parser.add_argument("--k3d_conf", type=float, default=0.1, help="confidence threshold for keypoints3d[:,3]")
+    parser.add_argument("--k3d_color", type=int, nargs=3, default=[0, 255, 0], help="RGB color for inserted 3D keypoints")
     parser.add_argument("--force", action="store_true")
     args = parser.parse_args()
 
@@ -369,7 +404,31 @@ def main():
             continue
 
         X, C, stats = build_frame_cloud(frame, {k: cameras[k] for k in subs}, args)
-        np.savez_compressed(out_npz, xyz=X.astype(np.float32), rgb=C.astype(np.uint8), frame=np.array([frame]))
+        is_keypoint = np.zeros((X.shape[0],), dtype=np.uint8)
+
+        if args.k3d != "":
+            k3d_root = args.k3d if args.k3d.startswith("/") else join(args.path, args.k3d)
+            k3d_name = join(k3d_root, stem + ".json")
+            X_k3d = read_keypoints3d_json(k3d_name, conf_thres=args.k3d_conf)
+            if X_k3d.shape[0] > 0:
+                color_k3d = np.asarray(args.k3d_color, dtype=np.uint8).reshape(1, 3)
+                C_k3d = np.repeat(color_k3d, X_k3d.shape[0], axis=0)
+                X = np.concatenate([X, X_k3d], axis=0)
+                C = np.concatenate([C, C_k3d], axis=0)
+                is_keypoint = np.concatenate([is_keypoint, np.ones((X_k3d.shape[0],), dtype=np.uint8)], axis=0)
+                stats["k3d_points"] = int(X_k3d.shape[0])
+            else:
+                stats["k3d_points"] = 0
+        else:
+            stats["k3d_points"] = 0
+
+        np.savez_compressed(
+            out_npz,
+            xyz=X.astype(np.float32),
+            rgb=C.astype(np.uint8),
+            is_keypoint=is_keypoint,
+            frame=np.array([frame]),
+        )
         if args.save_ply:
             write_ply_ascii(out_ply, X, C)
         clouds_all.append(X.astype(np.float32))
