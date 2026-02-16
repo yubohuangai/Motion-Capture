@@ -600,6 +600,27 @@ def run_joint_ba(args, cameras, camnames, ref_cam, cloud_pack, k3d_pack, out_roo
                 state[cam] = (R, tvec)
         return state
 
+    def compute_reproj_stats(cam_params, pts3d, obs_mask=None):
+        cam_state = build_cam_state(cam_params)
+        errs = []
+        if obs_mask is None:
+            obs_ids = range(n_obs)
+        else:
+            obs_ids = np.where(obs_mask)[0].tolist()
+        for i in obs_ids:
+            cam = camid_to_name[int(cam_idx[i])]
+            R, T = cam_state[cam]
+            K = cameras[cam]["K"]
+            X = pts3d[int(pt_idx[i])].reshape(1, 3)
+            rvec, _ = cv2.Rodrigues(R)
+            uv_hat, _ = cv2.projectPoints(X, rvec, T, K, None)
+            e = np.linalg.norm(uv_hat.reshape(2) - uv_obs[i])
+            errs.append(float(e))
+        if len(errs) == 0:
+            return {"mean": float("nan"), "median": float("nan")}
+        errs = np.asarray(errs, dtype=np.float64)
+        return {"mean": float(np.mean(errs)), "median": float(np.median(errs))}
+
     def fun(x):
         ncam = len(cam_order) * 6
         cam_params = x[:ncam].reshape(-1, 6) if ncam > 0 else np.zeros((0, 6))
@@ -654,10 +675,27 @@ def run_joint_ba(args, cameras, camnames, ref_cam, cloud_pack, k3d_pack, out_roo
         return A
 
     x0 = np.concatenate([cam_init.reshape(-1), X_init.reshape(-1)], axis=0)
+    obs_is_cloud = pt_idx < n_cloud
+    obs_is_k3d = pt_idx >= n_cloud
+    stats0 = compute_reproj_stats(cam_init, X_init)
+    stats0_cloud = compute_reproj_stats(cam_init, X_init, obs_mask=obs_is_cloud)
+    stats0_k3d = compute_reproj_stats(cam_init, X_init, obs_mask=obs_is_k3d)
     jac_sparsity = build_jac_sparsity()
     print(
         f"[BA] start: cams_opt={len(cam_order)} cloud_points={n_cloud} "
         f"k3d_points={n_k3d} obs={len(cam_idx)}"
+    )
+    print(
+        "[BA] reprojection BEFORE: "
+        f"mean={stats0['mean']:.3f}px median={stats0['median']:.3f}px"
+    )
+    print(
+        "[BA] reproj BEFORE (cloud): "
+        f"mean={stats0_cloud['mean']:.3f}px median={stats0_cloud['median']:.3f}px"
+    )
+    print(
+        "[BA] reproj BEFORE (k3d)  : "
+        f"mean={stats0_k3d['mean']:.3f}px median={stats0_k3d['median']:.3f}px"
     )
     if jac_sparsity is not None:
         print("[BA] using sparse Jacobian structure")
@@ -680,6 +718,21 @@ def run_joint_ba(args, cameras, camnames, ref_cam, cloud_pack, k3d_pack, out_roo
     ncam = len(cam_order) * 6
     cam_opt = result.x[:ncam].reshape(-1, 6) if ncam > 0 else np.zeros((0, 6))
     pts_opt = result.x[ncam:].reshape(-1, 3)
+    stats1 = compute_reproj_stats(cam_opt, pts_opt)
+    stats1_cloud = compute_reproj_stats(cam_opt, pts_opt, obs_mask=obs_is_cloud)
+    stats1_k3d = compute_reproj_stats(cam_opt, pts_opt, obs_mask=obs_is_k3d)
+    print(
+        "[BA] reprojection AFTER : "
+        f"mean={stats1['mean']:.3f}px median={stats1['median']:.3f}px"
+    )
+    print(
+        "[BA] reproj AFTER  (cloud): "
+        f"mean={stats1_cloud['mean']:.3f}px median={stats1_cloud['median']:.3f}px"
+    )
+    print(
+        "[BA] reproj AFTER  (k3d)  : "
+        f"mean={stats1_k3d['mean']:.3f}px median={stats1_k3d['median']:.3f}px"
+    )
     cam_state = build_cam_state(cam_opt)
 
     cams_out = {}
