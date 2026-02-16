@@ -206,18 +206,59 @@ def triangulate_pair(
     img0_ud,
     match_crosscheck,
     reproj_thres,
+    use_ransac=False,
+    ransac_method="essential",
+    ransac_thres=1.0,
+    ransac_prob=0.999,
+    ransac_iters=2000,
 ):
     if des0 is None or des1 is None or len(kp0) < 8 or len(kp1) < 8:
         return np.zeros((0, 3), dtype=np.float32), np.zeros((0, 3), dtype=np.uint8), 0
 
     matcher = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=match_crosscheck)
     matches = matcher.match(des0, des1)
-    if len(matches) < 8:
-        return np.zeros((0, 3), dtype=np.float32), np.zeros((0, 3), dtype=np.uint8), len(matches)
+    n_matches_raw = len(matches)
+    if n_matches_raw < 8:
+        return (
+            np.zeros((0, 3), dtype=np.float32),
+            np.zeros((0, 3), dtype=np.uint8),
+            n_matches_raw,
+            n_matches_raw,
+        )
 
     matches = sorted(matches, key=lambda m: m.distance)
     pts0 = np.float32([kp0[m.queryIdx].pt for m in matches])
     pts1 = np.float32([kp1[m.trainIdx].pt for m in matches])
+
+    if use_ransac and pts0.shape[0] >= 8:
+        mask = None
+        if ransac_method == "fundamental":
+            _, mask = cv2.findFundamentalMat(
+                pts0,
+                pts1,
+                method=cv2.FM_RANSAC,
+                ransacReprojThreshold=ransac_thres,
+                confidence=ransac_prob,
+                maxIters=ransac_iters,
+            )
+        else:
+            E, mask = cv2.findEssentialMat(
+                pts0,
+                pts1,
+                cameraMatrix=cam0["K"],
+                method=cv2.RANSAC,
+                prob=ransac_prob,
+                threshold=ransac_thres,
+                maxIters=ransac_iters,
+            )
+            if E is None:
+                mask = None
+        if mask is not None:
+            inlier = mask.reshape(-1).astype(bool)
+            if inlier.sum() >= 8:
+                pts0 = pts0[inlier]
+                pts1 = pts1[inlier]
+    n_matches_used = int(pts0.shape[0])
 
     P0 = cam0["P"]
     P1 = cam1["P"]
@@ -225,7 +266,12 @@ def triangulate_pair(
     X = (X_h[:, :3] / np.clip(X_h[:, 3:4], 1e-8, None)).astype(np.float64)
     good = filter_depth_and_reproj(X, cam0, cam1, pts0, pts1, reproj_thres)
     if good.sum() == 0:
-        return np.zeros((0, 3), dtype=np.float32), np.zeros((0, 3), dtype=np.uint8), len(matches)
+        return (
+            np.zeros((0, 3), dtype=np.float32),
+            np.zeros((0, 3), dtype=np.uint8),
+            n_matches_raw,
+            n_matches_used,
+        )
 
     X = X[good].astype(np.float32)
     pts0 = pts0[good]
@@ -237,7 +283,7 @@ def triangulate_pair(
         b, g, r = img0_ud[y, x]
         colors.append([r, g, b])
     colors = np.asarray(colors, dtype=np.uint8)
-    return X, colors, len(matches)
+    return X, colors, n_matches_raw, n_matches_used
 
 
 def build_frame_cloud(frame, cameras, args):
@@ -286,8 +332,9 @@ def build_frame_cloud(frame, cameras, args):
     clouds = []
     colors = []
     matches_total = 0
+    ransac_inliers_total = 0
     for c0, c1 in pair_cams:
-        X, C, nm = triangulate_pair(
+        X, C, n_raw, n_used = triangulate_pair(
             feats[c0]["kp"],
             feats[c0]["des"],
             feats[c1]["kp"],
@@ -297,8 +344,15 @@ def build_frame_cloud(frame, cameras, args):
             data[c0]["img_ud"],
             args.crosscheck,
             args.reproj_thres,
+            use_ransac=args.ransac,
+            ransac_method=args.ransac_method,
+            ransac_thres=args.ransac_thres,
+            ransac_prob=args.ransac_prob,
+            ransac_iters=args.ransac_iters,
         )
-        matches_total += nm
+        matches_total += n_raw
+        if args.ransac:
+            ransac_inliers_total += n_used
         if X.shape[0] == 0:
             continue
         clouds.append(X)
@@ -307,6 +361,7 @@ def build_frame_cloud(frame, cameras, args):
         return np.zeros((0, 3), dtype=np.float32), np.zeros((0, 3), dtype=np.uint8), {
             "pairs": len(pair_cams),
             "matches": matches_total,
+            "ransac_inliers": ransac_inliers_total,
             "points": 0,
         }
 
@@ -328,6 +383,7 @@ def build_frame_cloud(frame, cameras, args):
     return X, C, {
         "pairs": len(pair_cams),
         "matches": matches_total,
+        "ransac_inliers": ransac_inliers_total,
         "points": int(X.shape[0]),
     }
 
@@ -347,10 +403,15 @@ def main():
     parser.add_argument("--max_frames", type=int, default=-1)
     parser.add_argument("--start", type=int, default=0)
     parser.add_argument("--pair_mode", type=str, default="all", choices=["ring", "all"])
-    parser.add_argument("--nfeatures", type=int, default=2000)
+    parser.add_argument("--nfeatures", type=int, default=4000)
     parser.add_argument("--fast_threshold", type=int, default=10)
     parser.add_argument("--crosscheck", action="store_true")
-    parser.add_argument("--reproj_thres", type=float, default=3.0)
+    parser.add_argument("--ransac", action="store_true", help="apply RANSAC filtering on 2D matches before triangulation")
+    parser.add_argument("--ransac_method", type=str, default="essential", choices=["essential", "fundamental"])
+    parser.add_argument("--ransac_thres", type=float, default=4.0, help="RANSAC inlier threshold in pixels")
+    parser.add_argument("--ransac_prob", type=float, default=0.999, help="RANSAC confidence")
+    parser.add_argument("--ransac_iters", type=int, default=2000, help="RANSAC max iterations")
+    parser.add_argument("--reproj_thres", type=float, default=4.0)
     parser.add_argument("--voxel_size", type=float, default=0.0, help="world unit dedup voxel size (0 disables)")
     parser.add_argument("--max_points", type=int, default=20000)
     parser.add_argument("--seed", type=int, default=0)
