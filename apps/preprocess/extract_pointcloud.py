@@ -239,40 +239,6 @@ def undistort_pixels(k2d, K, dist):
     return np.hstack([pts_ud, conf]).astype(np.float32)
 
 
-def init_roma_model(args):
-    try:
-        import torch
-    except Exception as e:
-        raise RuntimeError("PyTorch is required for --matcher roma.") from e
-    # Compatibility for older torch versions used in some easymocap envs.
-    if not hasattr(torch, "get_float32_matmul_precision"):
-        torch.get_float32_matmul_precision = lambda: "highest"
-    if not hasattr(torch, "set_float32_matmul_precision"):
-        torch.set_float32_matmul_precision = lambda *a, **k: None
-
-    try:
-        from romatch import roma_outdoor
-    except Exception as e:
-        raise RuntimeError(
-            "RoMa is required for --matcher roma. "
-            "Install dependency `romatch` in your environment."
-        ) from e
-    use_custom_corr = args.roma_use_custom_corr
-    if use_custom_corr == "auto":
-        use_custom_corr = "false" if args.roma_device.lower() == "cpu" else "true"
-    use_custom_corr = use_custom_corr == "true"
-    amp_dtype = torch.float32 if args.roma_device.lower() == "cpu" else torch.float16
-    print(
-        f"[Matcher] loading RoMa on device={args.roma_device} "
-        f"(use_custom_corr={use_custom_corr}, amp_dtype={amp_dtype})"
-    )
-    return roma_outdoor(
-        device=args.roma_device,
-        use_custom_corr=use_custom_corr,
-        amp_dtype=amp_dtype,
-    )
-
-
 def make_pairs(cams, pair_mode):
     if len(cams) < 2:
         return []
@@ -318,12 +284,15 @@ def filter_depth_and_reproj(X, cam0, cam1, pts0, pts1, reproj_thres):
     return good
 
 
-def triangulate_from_points(
-    pts0,
-    pts1,
+def triangulate_pair(
+    kp0,
+    des0,
+    kp1,
+    des1,
     cam0,
     cam1,
     img0_ud,
+    match_crosscheck,
     reproj_thres,
     use_ransac=False,
     ransac_method="essential",
@@ -331,9 +300,19 @@ def triangulate_from_points(
     ransac_prob=0.999,
     ransac_iters=2000,
 ):
-    pts0 = np.asarray(pts0, dtype=np.float32).reshape(-1, 2)
-    pts1 = np.asarray(pts1, dtype=np.float32).reshape(-1, 2)
-    n_matches_raw = pts0.shape[0]
+    if des0 is None or des1 is None or len(kp0) < 8 or len(kp1) < 8:
+        return (
+            np.zeros((0, 3), dtype=np.float32),
+            np.zeros((0, 3), dtype=np.uint8),
+            0,
+            0,
+            np.zeros((0, 2), dtype=np.float32),
+            np.zeros((0, 2), dtype=np.float32),
+        )
+
+    matcher = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=match_crosscheck)
+    matches = matcher.match(des0, des1)
+    n_matches_raw = len(matches)
     if n_matches_raw < 8:
         return (
             np.zeros((0, 3), dtype=np.float32),
@@ -343,6 +322,10 @@ def triangulate_from_points(
             np.zeros((0, 2), dtype=np.float32),
             np.zeros((0, 2), dtype=np.float32),
         )
+
+    matches = sorted(matches, key=lambda m: m.distance)
+    pts0 = np.float32([kp0[m.queryIdx].pt for m in matches])
+    pts1 = np.float32([kp1[m.trainIdx].pt for m in matches])
 
     if use_ransac and pts0.shape[0] >= 8:
         mask = None
@@ -372,8 +355,8 @@ def triangulate_from_points(
             if inlier.sum() >= 8:
                 pts0 = pts0[inlier]
                 pts1 = pts1[inlier]
-
     n_matches_used = int(pts0.shape[0])
+
     P0 = cam0["P"]
     P1 = cam1["P"]
     X_h = cv2.triangulatePoints(P0, P1, pts0.T, pts1.T).T
@@ -403,97 +386,7 @@ def triangulate_from_points(
     return X, colors, n_matches_raw, n_matches_used, pts0.astype(np.float32), pts1.astype(np.float32)
 
 
-def triangulate_pair(
-    kp0,
-    des0,
-    kp1,
-    des1,
-    cam0,
-    cam1,
-    img0_ud,
-    match_crosscheck,
-    reproj_thres,
-    use_ransac=False,
-    ransac_method="essential",
-    ransac_thres=1.0,
-    ransac_prob=0.999,
-    ransac_iters=2000,
-):
-    if des0 is None or des1 is None or len(kp0) < 8 or len(kp1) < 8:
-        return (
-            np.zeros((0, 3), dtype=np.float32),
-            np.zeros((0, 3), dtype=np.uint8),
-            0,
-            0,
-            np.zeros((0, 2), dtype=np.float32),
-            np.zeros((0, 2), dtype=np.float32),
-        )
-
-    matcher = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=match_crosscheck)
-    matches = matcher.match(des0, des1)
-    matches = sorted(matches, key=lambda m: m.distance)
-    pts0 = np.float32([kp0[m.queryIdx].pt for m in matches])
-    pts1 = np.float32([kp1[m.trainIdx].pt for m in matches])
-    return triangulate_from_points(
-        pts0,
-        pts1,
-        cam0,
-        cam1,
-        img0_ud,
-        reproj_thres,
-        use_ransac=use_ransac,
-        ransac_method=ransac_method,
-        ransac_thres=ransac_thres,
-        ransac_prob=ransac_prob,
-        ransac_iters=ransac_iters,
-    )
-
-def get_roma_matches(img0_ud, img1_ud, mask0, mask1, roma_model, args):
-    from PIL import Image
-
-    img0_rgb = cv2.cvtColor(img0_ud, cv2.COLOR_BGR2RGB)
-    img1_rgb = cv2.cvtColor(img1_ud, cv2.COLOR_BGR2RGB)
-    h0, w0 = img0_rgb.shape[:2]
-    h1, w1 = img1_rgb.shape[:2]
-
-    warp, certainty = roma_model.match(
-        Image.fromarray(img0_rgb),
-        Image.fromarray(img1_rgb),
-        device=args.roma_device,
-    )
-    matches, certainty = roma_model.sample(warp, certainty)
-    p0, p1 = roma_model.to_pixel_coordinates(matches, h0, w0, h1, w1)
-    p0 = p0.detach().cpu().numpy().astype(np.float32)
-    p1 = p1.detach().cpu().numpy().astype(np.float32)
-    cert = certainty.detach().cpu().numpy().reshape(-1).astype(np.float32)
-
-    valid = (
-        (p0[:, 0] >= 0) & (p0[:, 0] < w0) & (p0[:, 1] >= 0) & (p0[:, 1] < h0) &
-        (p1[:, 0] >= 0) & (p1[:, 0] < w1) & (p1[:, 1] >= 0) & (p1[:, 1] < h1)
-    )
-    if mask0 is not None:
-        x0 = np.clip(np.round(p0[:, 0]).astype(np.int32), 0, w0 - 1)
-        y0 = np.clip(np.round(p0[:, 1]).astype(np.int32), 0, h0 - 1)
-        valid &= mask0[y0, x0] > 0
-    if mask1 is not None:
-        x1 = np.clip(np.round(p1[:, 0]).astype(np.int32), 0, w1 - 1)
-        y1 = np.clip(np.round(p1[:, 1]).astype(np.int32), 0, h1 - 1)
-        valid &= mask1[y1, x1] > 0
-
-    p0 = p0[valid]
-    p1 = p1[valid]
-    cert = cert[valid]
-    if p0.shape[0] == 0:
-        return p0, p1
-
-    if args.roma_max_matches > 0 and p0.shape[0] > args.roma_max_matches:
-        idx = np.argsort(-cert)[: args.roma_max_matches]
-        p0 = p0[idx]
-        p1 = p1[idx]
-    return p0, p1
-
-
-def build_frame_cloud(frame, cameras, args, roma_model=None):
+def build_frame_cloud(frame, cameras, args):
     data = {}
     cams_ok = []
     for cam in cameras:
@@ -522,19 +415,18 @@ def build_frame_cloud(frame, cameras, args, roma_model=None):
             "points": 0,
         }
 
+    orb = cv2.ORB_create(
+        nfeatures=args.nfeatures,
+        scaleFactor=1.2,
+        nlevels=8,
+        edgeThreshold=15,
+        fastThreshold=args.fast_threshold,
+    )
     feats = {}
-    if args.matcher == "orb":
-        orb = cv2.ORB_create(
-            nfeatures=args.nfeatures,
-            scaleFactor=1.2,
-            nlevels=8,
-            edgeThreshold=15,
-            fastThreshold=args.fast_threshold,
-        )
-        for cam in cams_ok:
-            item = data[cam]
-            kp, des = orb.detectAndCompute(item["gray"], item["mask"])
-            feats[cam] = {"kp": kp, "des": des}
+    for cam in cams_ok:
+        item = data[cam]
+        kp, des = orb.detectAndCompute(item["gray"], item["mask"])
+        feats[cam] = {"kp": kp, "des": des}
 
     pair_cams = make_pairs(cams_ok, args.pair_mode)
     clouds = []
@@ -544,47 +436,22 @@ def build_frame_cloud(frame, cameras, args, roma_model=None):
     matches_total = 0
     ransac_inliers_total = 0
     for c0, c1 in pair_cams:
-        if args.matcher == "orb":
-            X, C, n_raw, n_used, uv0, uv1 = triangulate_pair(
-                feats[c0]["kp"],
-                feats[c0]["des"],
-                feats[c1]["kp"],
-                feats[c1]["des"],
-                data[c0]["cam"],
-                data[c1]["cam"],
-                data[c0]["img_ud"],
-                args.crosscheck,
-                args.reproj_thres,
-                use_ransac=args.ransac,
-                ransac_method=args.ransac_method,
-                ransac_thres=args.ransac_thres,
-                ransac_prob=args.ransac_prob,
-                ransac_iters=args.ransac_iters,
-            )
-        else:
-            if roma_model is None:
-                raise RuntimeError("matcher=roma requires initialized RoMa model")
-            p0, p1 = get_roma_matches(
-                data[c0]["img_ud"],
-                data[c1]["img_ud"],
-                data[c0]["mask"],
-                data[c1]["mask"],
-                roma_model,
-                args,
-            )
-            X, C, n_raw, n_used, uv0, uv1 = triangulate_from_points(
-                p0,
-                p1,
-                data[c0]["cam"],
-                data[c1]["cam"],
-                data[c0]["img_ud"],
-                args.reproj_thres,
-                use_ransac=args.ransac,
-                ransac_method=args.ransac_method,
-                ransac_thres=args.ransac_thres,
-                ransac_prob=args.ransac_prob,
-                ransac_iters=args.ransac_iters,
-            )
+        X, C, n_raw, n_used, uv0, uv1 = triangulate_pair(
+            feats[c0]["kp"],
+            feats[c0]["des"],
+            feats[c1]["kp"],
+            feats[c1]["des"],
+            data[c0]["cam"],
+            data[c1]["cam"],
+            data[c0]["img_ud"],
+            args.crosscheck,
+            args.reproj_thres,
+            use_ransac=args.ransac,
+            ransac_method=args.ransac_method,
+            ransac_thres=args.ransac_thres,
+            ransac_prob=args.ransac_prob,
+            ransac_iters=args.ransac_iters,
+        )
         matches_total += n_raw
         if args.ransac:
             ransac_inliers_total += n_used
@@ -921,12 +788,8 @@ def main():
     parser.add_argument("--max_frames", type=int, default=-1)
     parser.add_argument("--start", type=int, default=0)
     parser.add_argument("--pair_mode", type=str, default="all", choices=["ring", "all"])
-    parser.add_argument("--matcher", type=str, default="orb", choices=["orb", "roma"], help="feature matcher backend")
     parser.add_argument("--nfeatures", type=int, default=4000)
     parser.add_argument("--fast_threshold", type=int, default=10)
-    parser.add_argument("--roma_device", type=str, default="cuda", help="device for RoMa matcher")
-    parser.add_argument("--roma_max_matches", type=int, default=5000, help="max matches kept per pair for RoMa (-1 for all)")
-    parser.add_argument("--roma_use_custom_corr", type=str, default="auto", choices=["auto", "true", "false"], help="RoMa local corr backend")
     parser.add_argument("--crosscheck", action="store_true")
     parser.add_argument("--ransac", action="store_true", help="apply RANSAC filtering on 2D matches before triangulation")
     parser.add_argument("--ransac_method", type=str, default="essential", choices=["essential", "fundamental"])
@@ -955,8 +818,6 @@ def main():
     parser.add_argument("--ba_cam_sigma_t", type=float, default=50.0, help="camera translation prior sigma (world unit)")
     parser.add_argument("--force", action="store_true")
     args = parser.parse_args()
-    if args.roma_max_matches == 0:
-        args.roma_max_matches = -1
 
     intri_path = join(args.path, args.intri)
     extri_path = join(args.path, args.extri)
@@ -985,9 +846,6 @@ def main():
     out_root = join(args.path, args.out)
     out_points = join(out_root, "points")
     os.makedirs(out_points, exist_ok=True)
-    roma_model = None
-    if args.matcher == "roma":
-        roma_model = init_roma_model(args)
 
     clouds_all = []
     stats_all = []
@@ -1009,12 +867,7 @@ def main():
             stats_all.append({"frame": frame, "pairs": -1, "matches": -1, "points": int(data["xyz"].shape[0])})
             continue
 
-        X_cloud, C_cloud, stats, ba_pack = build_frame_cloud(
-            frame,
-            {k: cameras[k] for k in subs},
-            args,
-            roma_model=roma_model,
-        )
+        X_cloud, C_cloud, stats, ba_pack = build_frame_cloud(frame, {k: cameras[k] for k in subs}, args)
         cloud_start = sum([p.shape[0] for p in cloud_points_global]) if len(cloud_points_global) > 0 else 0
         cloud_end = cloud_start + X_cloud.shape[0]
         cloud_points_global.append(X_cloud.astype(np.float32))
