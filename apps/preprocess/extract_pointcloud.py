@@ -213,7 +213,12 @@ def triangulate_pair(
     ransac_iters=2000,
 ):
     if des0 is None or des1 is None or len(kp0) < 8 or len(kp1) < 8:
-        return np.zeros((0, 3), dtype=np.float32), np.zeros((0, 3), dtype=np.uint8), 0
+        return (
+            np.zeros((0, 3), dtype=np.float32),
+            np.zeros((0, 3), dtype=np.uint8),
+            0,
+            0,
+        )
 
     matcher = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=match_crosscheck)
     matches = matcher.match(des0, des1)
@@ -286,6 +291,210 @@ def triangulate_pair(
     return X, colors, n_matches_raw, n_matches_used
 
 
+def triangulate_multiview_dlt(obs_uv, cams):
+    # obs_uv: list of (camname, [u, v]) with undistorted pixel coordinates
+    A = []
+    for cam, uv in obs_uv:
+        P = cams[cam]["P"]
+        u, v = float(uv[0]), float(uv[1])
+        A.append(u * P[2] - P[0])
+        A.append(v * P[2] - P[1])
+    A = np.asarray(A, dtype=np.float64)
+    if A.shape[0] < 4:
+        return None
+    _, _, Vt = np.linalg.svd(A)
+    Xh = Vt[-1]
+    if abs(Xh[3]) < 1e-10:
+        return None
+    X = (Xh[:3] / Xh[3]).astype(np.float64)
+    return X
+
+
+def reproj_valid_multiview(X, obs_uv, cams, reproj_thres):
+    X = np.asarray(X, dtype=np.float64).reshape(1, 3)
+    for cam, uv in obs_uv:
+        R, T, K = cams[cam]["R"], cams[cam]["T"], cams[cam]["K"]
+        Xc = (R @ X.T + T).T
+        if Xc[0, 2] <= 1e-6:
+            return False
+        uvhat, _ = cv2.projectPoints(X, cv2.Rodrigues(R)[0], T, K, None)
+        err = np.linalg.norm(uvhat.reshape(2) - np.asarray(uv, dtype=np.float64))
+        if err > reproj_thres:
+            return False
+    return True
+
+
+def ransac_filter_points(pts0, pts1, cam0, args):
+    if pts0.shape[0] < 8 or (not args.ransac):
+        return np.ones((pts0.shape[0],), dtype=bool)
+    if args.ransac_method == "fundamental":
+        _, mask = cv2.findFundamentalMat(
+            pts0,
+            pts1,
+            method=cv2.FM_RANSAC,
+            ransacReprojThreshold=args.ransac_thres,
+            confidence=args.ransac_prob,
+            maxIters=args.ransac_iters,
+        )
+    else:
+        E, mask = cv2.findEssentialMat(
+            pts0,
+            pts1,
+            cameraMatrix=cam0["K"],
+            method=cv2.RANSAC,
+            prob=args.ransac_prob,
+            threshold=args.ransac_thres,
+            maxIters=args.ransac_iters,
+        )
+        if E is None:
+            mask = None
+    if mask is None:
+        return np.ones((pts0.shape[0],), dtype=bool)
+    inlier = mask.reshape(-1).astype(bool)
+    if inlier.sum() < 8:
+        return np.ones((pts0.shape[0],), dtype=bool)
+    return inlier
+
+
+def build_frame_cloud_global(data, cams_ok, feats, args):
+    ref_cam = cams_ok[0]
+    kp_ref = feats[ref_cam]["kp"]
+    des_ref = feats[ref_cam]["des"]
+    if des_ref is None or len(kp_ref) < 8:
+        return np.zeros((0, 3), dtype=np.float32), np.zeros((0, 3), dtype=np.uint8), {
+            "pairs": 0,
+            "matches": 0,
+            "ransac_inliers": 0,
+            "tracks": 0,
+            "points": 0,
+        }
+
+    tracks = {}
+    for i_ref, kp in enumerate(kp_ref):
+        tracks[i_ref] = {"obs": {ref_cam: np.asarray(kp.pt, dtype=np.float32)}, "best_dist": {}}
+
+    matches_total = 0
+    ransac_inliers_total = 0
+    pairs_used = 0
+    for cam in cams_ok[1:]:
+        kp = feats[cam]["kp"]
+        des = feats[cam]["des"]
+        if des is None or len(kp) < 8:
+            continue
+        matcher = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=args.crosscheck)
+        matches = matcher.match(des_ref, des)
+        if len(matches) < 8:
+            continue
+        pairs_used += 1
+        matches_total += len(matches)
+        matches = sorted(matches, key=lambda m: m.distance)
+
+        pts0 = np.float32([kp_ref[m.queryIdx].pt for m in matches])
+        pts1 = np.float32([kp[m.trainIdx].pt for m in matches])
+        inlier = ransac_filter_points(pts0, pts1, data[ref_cam]["cam"], args)
+        if args.ransac:
+            ransac_inliers_total += int(inlier.sum())
+
+        for keep, m in zip(inlier.tolist(), matches):
+            if not keep:
+                continue
+            q = int(m.queryIdx)
+            t = int(m.trainIdx)
+            d = float(m.distance)
+            rec = tracks[q]
+            prev = rec["best_dist"].get(cam, 1e9)
+            if d < prev:
+                rec["obs"][cam] = np.asarray(kp[t].pt, dtype=np.float32)
+                rec["best_dist"][cam] = d
+
+    clouds = []
+    colors = []
+    img_ref = data[ref_cam]["img_ud"]
+    h, w = img_ref.shape[:2]
+    for _, tr in tracks.items():
+        if len(tr["obs"]) < 2:
+            continue
+        obs_uv = [(cam, uv) for cam, uv in tr["obs"].items()]
+        X = triangulate_multiview_dlt(obs_uv, {cam: data[cam]["cam"] for cam in cams_ok})
+        if X is None:
+            continue
+        if not reproj_valid_multiview(X, obs_uv, {cam: data[cam]["cam"] for cam in cams_ok}, args.reproj_thres):
+            continue
+        u_ref, v_ref = tr["obs"][ref_cam]
+        x = int(np.clip(round(float(u_ref)), 0, w - 1))
+        y = int(np.clip(round(float(v_ref)), 0, h - 1))
+        b, g, r = img_ref[y, x]
+        clouds.append(X.astype(np.float32))
+        colors.append([r, g, b])
+
+    if len(clouds) == 0:
+        return np.zeros((0, 3), dtype=np.float32), np.zeros((0, 3), dtype=np.uint8), {
+            "pairs": pairs_used,
+            "matches": matches_total,
+            "ransac_inliers": ransac_inliers_total,
+            "tracks": 0,
+            "points": 0,
+        }
+    X = np.asarray(clouds, dtype=np.float32).reshape(-1, 3)
+    C = np.asarray(colors, dtype=np.uint8).reshape(-1, 3)
+    return X, C, {
+        "pairs": pairs_used,
+        "matches": matches_total,
+        "ransac_inliers": ransac_inliers_total,
+        "tracks": int(len(clouds)),
+        "points": int(X.shape[0]),
+    }
+
+
+def build_frame_cloud_pairwise(data, cams_ok, feats, args):
+    pair_cams = make_pairs(cams_ok, args.pair_mode)
+    clouds = []
+    colors = []
+    matches_total = 0
+    ransac_inliers_total = 0
+    for c0, c1 in pair_cams:
+        X, C, n_raw, n_used = triangulate_pair(
+            feats[c0]["kp"],
+            feats[c0]["des"],
+            feats[c1]["kp"],
+            feats[c1]["des"],
+            data[c0]["cam"],
+            data[c1]["cam"],
+            data[c0]["img_ud"],
+            args.crosscheck,
+            args.reproj_thres,
+            use_ransac=args.ransac,
+            ransac_method=args.ransac_method,
+            ransac_thres=args.ransac_thres,
+            ransac_prob=args.ransac_prob,
+            ransac_iters=args.ransac_iters,
+        )
+        matches_total += n_raw
+        if args.ransac:
+            ransac_inliers_total += n_used
+        if X.shape[0] == 0:
+            continue
+        clouds.append(X)
+        colors.append(C)
+    if len(clouds) == 0:
+        return np.zeros((0, 3), dtype=np.float32), np.zeros((0, 3), dtype=np.uint8), {
+            "pairs": len(pair_cams),
+            "matches": matches_total,
+            "ransac_inliers": ransac_inliers_total,
+            "tracks": 0,
+            "points": 0,
+        }
+    X = np.concatenate(clouds, axis=0)
+    C = np.concatenate(colors, axis=0)
+    return X, C, {
+        "pairs": len(pair_cams),
+        "matches": matches_total,
+        "ransac_inliers": ransac_inliers_total,
+        "tracks": int(X.shape[0]),
+        "points": int(X.shape[0]),
+    }
+
+
 def build_frame_cloud(frame, cameras, args):
     data = {}
     cams_ok = []
@@ -327,46 +536,10 @@ def build_frame_cloud(frame, cameras, args):
         item = data[cam]
         kp, des = orb.detectAndCompute(item["gray"], item["mask"])
         feats[cam] = {"kp": kp, "des": des}
-
-    pair_cams = make_pairs(cams_ok, args.pair_mode)
-    clouds = []
-    colors = []
-    matches_total = 0
-    ransac_inliers_total = 0
-    for c0, c1 in pair_cams:
-        X, C, n_raw, n_used = triangulate_pair(
-            feats[c0]["kp"],
-            feats[c0]["des"],
-            feats[c1]["kp"],
-            feats[c1]["des"],
-            data[c0]["cam"],
-            data[c1]["cam"],
-            data[c0]["img_ud"],
-            args.crosscheck,
-            args.reproj_thres,
-            use_ransac=args.ransac,
-            ransac_method=args.ransac_method,
-            ransac_thres=args.ransac_thres,
-            ransac_prob=args.ransac_prob,
-            ransac_iters=args.ransac_iters,
-        )
-        matches_total += n_raw
-        if args.ransac:
-            ransac_inliers_total += n_used
-        if X.shape[0] == 0:
-            continue
-        clouds.append(X)
-        colors.append(C)
-    if len(clouds) == 0:
-        return np.zeros((0, 3), dtype=np.float32), np.zeros((0, 3), dtype=np.uint8), {
-            "pairs": len(pair_cams),
-            "matches": matches_total,
-            "ransac_inliers": ransac_inliers_total,
-            "points": 0,
-        }
-
-    X = np.concatenate(clouds, axis=0)
-    C = np.concatenate(colors, axis=0)
+    if args.match_mode == "global":
+        X, C, stats = build_frame_cloud_global(data, cams_ok, feats, args)
+    else:
+        X, C, stats = build_frame_cloud_pairwise(data, cams_ok, feats, args)
 
     if args.voxel_size > 0:
         vox = np.floor(X / args.voxel_size).astype(np.int64)
@@ -380,12 +553,8 @@ def build_frame_cloud(frame, cameras, args):
         X = X[ids]
         C = C[ids]
 
-    return X, C, {
-        "pairs": len(pair_cams),
-        "matches": matches_total,
-        "ransac_inliers": ransac_inliers_total,
-        "points": int(X.shape[0]),
-    }
+    stats["points"] = int(X.shape[0])
+    return X, C, stats
 
 
 def main():
@@ -402,6 +571,7 @@ def main():
     parser.add_argument("--step", type=int, default=1)
     parser.add_argument("--max_frames", type=int, default=-1)
     parser.add_argument("--start", type=int, default=0)
+    parser.add_argument("--match_mode", type=str, default="global", choices=["global", "pairwise"])
     parser.add_argument("--pair_mode", type=str, default="all", choices=["ring", "all"])
     parser.add_argument("--nfeatures", type=int, default=4000)
     parser.add_argument("--fast_threshold", type=int, default=10)
