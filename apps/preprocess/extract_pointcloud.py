@@ -257,8 +257,20 @@ def init_roma_model(args):
             "RoMa is required for --matcher roma. "
             "Install dependency `romatch` in your environment."
         ) from e
-    print(f"[Matcher] loading RoMa on device={args.roma_device}")
-    return roma_outdoor(device=args.roma_device)
+    use_custom_corr = args.roma_use_custom_corr
+    if use_custom_corr == "auto":
+        use_custom_corr = "false" if args.roma_device.lower() == "cpu" else "true"
+    use_custom_corr = use_custom_corr == "true"
+    amp_dtype = torch.float32 if args.roma_device.lower() == "cpu" else torch.float16
+    print(
+        f"[Matcher] loading RoMa on device={args.roma_device} "
+        f"(use_custom_corr={use_custom_corr}, amp_dtype={amp_dtype})"
+    )
+    return roma_outdoor(
+        device=args.roma_device,
+        use_custom_corr=use_custom_corr,
+        amp_dtype=amp_dtype,
+    )
 
 
 def make_pairs(cams, pair_mode):
@@ -914,6 +926,7 @@ def main():
     parser.add_argument("--fast_threshold", type=int, default=10)
     parser.add_argument("--roma_device", type=str, default="cuda", help="device for RoMa matcher")
     parser.add_argument("--roma_max_matches", type=int, default=5000, help="max matches kept per pair for RoMa (-1 for all)")
+    parser.add_argument("--roma_use_custom_corr", type=str, default="auto", choices=["auto", "true", "false"], help="RoMa local corr backend")
     parser.add_argument("--crosscheck", action="store_true")
     parser.add_argument("--ransac", action="store_true", help="apply RANSAC filtering on 2D matches before triangulation")
     parser.add_argument("--ransac_method", type=str, default="essential", choices=["essential", "fundamental"])
