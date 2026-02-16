@@ -374,6 +374,7 @@ def triangulate_pair(
 
     X = X[good].astype(np.float32)
     pts0 = pts0[good]
+    pts1 = pts1[good]
     colors = []
     h, w = img0_ud.shape[:2]
     for p in pts0:
@@ -677,6 +678,8 @@ def run_joint_ba(args, cameras, camnames, ref_cam, cloud_pack, k3d_pack, out_roo
     x0 = np.concatenate([cam_init.reshape(-1), X_init.reshape(-1)], axis=0)
     obs_is_cloud = pt_idx < n_cloud
     obs_is_k3d = pt_idx >= n_cloud
+    n_obs_cloud = int(obs_is_cloud.sum())
+    n_obs_k3d = int(obs_is_k3d.sum())
     stats0 = compute_reproj_stats(cam_init, X_init)
     stats0_cloud = compute_reproj_stats(cam_init, X_init, obs_mask=obs_is_cloud)
     stats0_k3d = compute_reproj_stats(cam_init, X_init, obs_mask=obs_is_k3d)
@@ -685,6 +688,12 @@ def run_joint_ba(args, cameras, camnames, ref_cam, cloud_pack, k3d_pack, out_roo
         f"[BA] start: cams_opt={len(cam_order)} cloud_points={n_cloud} "
         f"k3d_points={n_k3d} obs={len(cam_idx)}"
     )
+    print(f"[BA] observations: cloud={n_obs_cloud}, k3d={n_obs_k3d}")
+    if n_k3d > 0 and n_obs_k3d == 0:
+        print(
+            "[BA][WARN] k3d points exist but no 2D keypoint observations loaded. "
+            "Check --annot path and --pid/--ba_kpt_conf."
+        )
     print(
         "[BA] reprojection BEFORE: "
         f"mean={stats0['mean']:.3f}px median={stats0['median']:.3f}px"
