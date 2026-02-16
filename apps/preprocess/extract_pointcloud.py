@@ -24,7 +24,12 @@ import cv2
 import numpy as np
 from tqdm import tqdm
 
-from easymocap.mytools import read_camera
+from easymocap.mytools import read_camera, write_intri, write_extri
+
+try:
+    from scipy.optimize import least_squares
+except Exception:
+    least_squares = None
 
 
 def load_subs(path, subs, image_dir):
@@ -151,6 +156,85 @@ def read_keypoints3d_json(filename, conf_thres=0.1):
     return np.concatenate(pts_all, axis=0).astype(np.float32)
 
 
+def read_keypoints3d_person(filename, pid=0, conf_thres=0.1):
+    if not exists(filename):
+        return np.zeros((0, 3), dtype=np.float32), np.zeros((0,), dtype=np.int32)
+    try:
+        with open(filename, "r") as f:
+            data = json.load(f)
+    except Exception:
+        return np.zeros((0, 3), dtype=np.float32), np.zeros((0,), dtype=np.int32)
+    if isinstance(data, dict):
+        data = data.get("annots", [])
+    if not isinstance(data, list) or len(data) == 0:
+        return np.zeros((0, 3), dtype=np.float32), np.zeros((0,), dtype=np.int32)
+
+    person = None
+    for ann in data:
+        ann_pid = ann.get("id", ann.get("personID", None))
+        if ann_pid == pid:
+            person = ann
+            break
+    if person is None:
+        person = data[0]
+    if "keypoints3d" not in person:
+        return np.zeros((0, 3), dtype=np.float32), np.zeros((0,), dtype=np.int32)
+
+    k3d = np.asarray(person["keypoints3d"], dtype=np.float32)
+    if k3d.ndim != 2 or k3d.shape[0] == 0:
+        return np.zeros((0, 3), dtype=np.float32), np.zeros((0,), dtype=np.int32)
+    ids = np.arange(k3d.shape[0], dtype=np.int32)
+    if k3d.shape[1] >= 4:
+        valid = k3d[:, 3] > conf_thres
+        k3d = k3d[valid, :3]
+        ids = ids[valid]
+    else:
+        k3d = k3d[:, :3]
+    return k3d.astype(np.float32), ids.astype(np.int32)
+
+
+def read_keypoints2d_person(filename, pid=0):
+    if not exists(filename):
+        return None
+    try:
+        with open(filename, "r") as f:
+            data = json.load(f)
+    except Exception:
+        return None
+    if isinstance(data, dict):
+        annots = data.get("annots", [])
+    elif isinstance(data, list):
+        annots = data
+    else:
+        annots = []
+    if len(annots) == 0:
+        return None
+    person = None
+    for ann in annots:
+        ann_pid = ann.get("id", ann.get("personID", None))
+        if ann_pid == pid:
+            person = ann
+            break
+    if person is None:
+        person = annots[0]
+    k2d = person.get("keypoints", person.get("keypoints2d", None))
+    if k2d is None:
+        return None
+    k2d = np.asarray(k2d, dtype=np.float32)
+    if k2d.ndim != 2 or k2d.shape[1] < 2:
+        return None
+    if k2d.shape[1] == 2:
+        k2d = np.hstack([k2d, np.ones((k2d.shape[0], 1), dtype=np.float32)])
+    return k2d
+
+
+def undistort_pixels(k2d, K, dist):
+    pts = np.asarray(k2d[:, :2], dtype=np.float32).reshape(-1, 1, 2)
+    pts_ud = cv2.undistortPoints(pts, K, dist, P=K).reshape(-1, 2)
+    conf = k2d[:, 2:3] if k2d.shape[1] >= 3 else np.ones((k2d.shape[0], 1), dtype=np.float32)
+    return np.hstack([pts_ud, conf]).astype(np.float32)
+
+
 def make_pairs(cams, pair_mode):
     if len(cams) < 2:
         return []
@@ -213,7 +297,14 @@ def triangulate_pair(
     ransac_iters=2000,
 ):
     if des0 is None or des1 is None or len(kp0) < 8 or len(kp1) < 8:
-        return np.zeros((0, 3), dtype=np.float32), np.zeros((0, 3), dtype=np.uint8), 0
+        return (
+            np.zeros((0, 3), dtype=np.float32),
+            np.zeros((0, 3), dtype=np.uint8),
+            0,
+            0,
+            np.zeros((0, 2), dtype=np.float32),
+            np.zeros((0, 2), dtype=np.float32),
+        )
 
     matcher = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=match_crosscheck)
     matches = matcher.match(des0, des1)
@@ -224,6 +315,8 @@ def triangulate_pair(
             np.zeros((0, 3), dtype=np.uint8),
             n_matches_raw,
             n_matches_raw,
+            np.zeros((0, 2), dtype=np.float32),
+            np.zeros((0, 2), dtype=np.float32),
         )
 
     matches = sorted(matches, key=lambda m: m.distance)
@@ -271,6 +364,8 @@ def triangulate_pair(
             np.zeros((0, 3), dtype=np.uint8),
             n_matches_raw,
             n_matches_used,
+            np.zeros((0, 2), dtype=np.float32),
+            np.zeros((0, 2), dtype=np.float32),
         )
 
     X = X[good].astype(np.float32)
@@ -283,7 +378,7 @@ def triangulate_pair(
         b, g, r = img0_ud[y, x]
         colors.append([r, g, b])
     colors = np.asarray(colors, dtype=np.uint8)
-    return X, colors, n_matches_raw, n_matches_used
+    return X, colors, n_matches_raw, n_matches_used, pts0.astype(np.float32), pts1.astype(np.float32)
 
 
 def build_frame_cloud(frame, cameras, args):
@@ -331,10 +426,12 @@ def build_frame_cloud(frame, cameras, args):
     pair_cams = make_pairs(cams_ok, args.pair_mode)
     clouds = []
     colors = []
+    obs_all = []
+    offset = 0
     matches_total = 0
     ransac_inliers_total = 0
     for c0, c1 in pair_cams:
-        X, C, n_raw, n_used = triangulate_pair(
+        X, C, n_raw, n_used, uv0, uv1 = triangulate_pair(
             feats[c0]["kp"],
             feats[c0]["des"],
             feats[c1]["kp"],
@@ -357,13 +454,26 @@ def build_frame_cloud(frame, cameras, args):
             continue
         clouds.append(X)
         colors.append(C)
+        if args.ba:
+            n = X.shape[0]
+            idx = np.arange(offset, offset + n, dtype=np.int32)
+            obs_all.append(
+                {
+                    "point_index": idx,
+                    "cam0": c0,
+                    "cam1": c1,
+                    "uv0": uv0,
+                    "uv1": uv1,
+                }
+            )
+            offset += n
     if len(clouds) == 0:
         return np.zeros((0, 3), dtype=np.float32), np.zeros((0, 3), dtype=np.uint8), {
             "pairs": len(pair_cams),
             "matches": matches_total,
             "ransac_inliers": ransac_inliers_total,
             "points": 0,
-        }
+        }, None
 
     X = np.concatenate(clouds, axis=0)
     C = np.concatenate(colors, axis=0)
@@ -380,11 +490,179 @@ def build_frame_cloud(frame, cameras, args):
         X = X[ids]
         C = C[ids]
 
+    ba_pack = None
+    if args.ba:
+        selected = np.arange(offset, dtype=np.int32)
+        if args.voxel_size > 0:
+            # After voxel dedup, keep only points still present.
+            selected = np.arange(X.shape[0], dtype=np.int32)
+        if args.max_points > 0 and X.shape[0] > 0 and X.shape[0] <= len(selected):
+            selected = np.arange(X.shape[0], dtype=np.int32)
+        # Build map from old pre-filter indices to final point indices.
+        # If voxel/max_points were applied, old-to-new cannot be fully recovered.
+        # In this case, we conservatively disable BA cloud constraints for this frame.
+        can_map = (args.voxel_size <= 0 and (args.max_points <= 0 or X.shape[0] == offset))
+        if can_map and len(obs_all) > 0:
+            obs_point = []
+            obs_cam = []
+            obs_uv = []
+            for item in obs_all:
+                pidx = item["point_index"]
+                obs_point.append(pidx)
+                obs_cam.append(np.array([item["cam0"]] * len(pidx)))
+                obs_uv.append(item["uv0"])
+                obs_point.append(pidx)
+                obs_cam.append(np.array([item["cam1"]] * len(pidx)))
+                obs_uv.append(item["uv1"])
+            ba_pack = {
+                "points3d": X.copy(),
+                "obs_point": np.concatenate(obs_point, axis=0).astype(np.int32),
+                "obs_cam": np.concatenate(obs_cam, axis=0),
+                "obs_uv": np.concatenate(obs_uv, axis=0).astype(np.float32),
+            }
+
     return X, C, {
         "pairs": len(pair_cams),
         "matches": matches_total,
         "ransac_inliers": ransac_inliers_total,
         "points": int(X.shape[0]),
+    }, ba_pack
+
+
+def pack_rt(rvec, tvec):
+    return np.hstack([rvec.reshape(3), tvec.reshape(3)])
+
+
+def unpack_rt(x):
+    return x[:3].reshape(3, 1), x[3:6].reshape(3, 1)
+
+
+def run_joint_ba(args, cameras, camnames, ref_cam, cloud_pack, k3d_pack, out_root):
+    if least_squares is None:
+        raise ImportError("scipy is required for --ba: pip install scipy")
+    if len(cloud_pack["points3d"]) == 0 and len(k3d_pack["points3d"]) == 0:
+        print("[BA] No cloud/k3d points available. Skip BA.")
+        return None
+
+    cam_order = [c for c in camnames if c != ref_cam]
+    cam_init = []
+    for cam in cam_order:
+        rvec = cameras[cam]["Rvec"]
+        tvec = cameras[cam]["T"]
+        cam_init.append(pack_rt(rvec, tvec))
+    cam_init = np.asarray(cam_init, dtype=np.float64).reshape(-1, 6)
+    cam_prior = cam_init.copy()
+
+    X_cloud = np.asarray(cloud_pack["points3d"], dtype=np.float64).reshape(-1, 3)
+    X_k3d = np.asarray(k3d_pack["points3d"], dtype=np.float64).reshape(-1, 3)
+    X_init = np.concatenate([X_cloud, X_k3d], axis=0) if X_k3d.size > 0 else X_cloud.copy()
+    n_cloud = X_cloud.shape[0]
+    n_k3d = X_k3d.shape[0]
+
+    cam_idx = []
+    pt_idx = []
+    uv_obs = []
+    w_obs = []
+    for o in cloud_pack["obs"]:
+        cam_idx.append(o[0])
+        pt_idx.append(o[1])
+        uv_obs.append([o[2], o[3]])
+        w_obs.append(float(o[4]))
+    for o in k3d_pack["obs"]:
+        cam_idx.append(o[0])
+        pt_idx.append(n_cloud + o[1])
+        uv_obs.append([o[2], o[3]])
+        w_obs.append(float(o[4]))
+    cam_idx = np.asarray(cam_idx, dtype=np.int32)
+    pt_idx = np.asarray(pt_idx, dtype=np.int32)
+    uv_obs = np.asarray(uv_obs, dtype=np.float64)
+    w_obs = np.asarray(w_obs, dtype=np.float64)
+
+    camid_to_name = {i: c for i, c in enumerate(camnames)}
+    opt_index = {cam: i for i, cam in enumerate(cam_order)}
+
+    def build_cam_state(cam_params):
+        state = {}
+        for cam in camnames:
+            if cam == ref_cam:
+                state[cam] = (cameras[cam]["R"], cameras[cam]["T"])
+            else:
+                i = opt_index[cam]
+                rvec, tvec = unpack_rt(cam_params[i])
+                R, _ = cv2.Rodrigues(rvec)
+                state[cam] = (R, tvec)
+        return state
+
+    def fun(x):
+        ncam = len(cam_order) * 6
+        cam_params = x[:ncam].reshape(-1, 6) if ncam > 0 else np.zeros((0, 6))
+        pts3d = x[ncam:].reshape(-1, 3)
+        cam_state = build_cam_state(cam_params)
+        res = []
+        for i in range(len(cam_idx)):
+            cam = camid_to_name[int(cam_idx[i])]
+            R, T = cam_state[cam]
+            K = cameras[cam]["K"]
+            X = pts3d[pt_idx[i]].reshape(1, 3)
+            rvec, _ = cv2.Rodrigues(R)
+            uv_hat, _ = cv2.projectPoints(X, rvec, T, K, None)
+            duv = (uv_hat.reshape(2) - uv_obs[i]) * w_obs[i]
+            res.extend(duv.tolist())
+        if len(cam_order) > 0:
+            sigma_r = max(float(args.ba_cam_sigma_r), 1e-8)
+            sigma_t = max(float(args.ba_cam_sigma_t), 1e-8)
+            for i in range(len(cam_order)):
+                res.extend(((cam_params[i, :3] - cam_prior[i, :3]) / sigma_r).tolist())
+                res.extend(((cam_params[i, 3:] - cam_prior[i, 3:]) / sigma_t).tolist())
+        return np.asarray(res, dtype=np.float64)
+
+    x0 = np.concatenate([cam_init.reshape(-1), X_init.reshape(-1)], axis=0)
+    print(
+        f"[BA] start: cams_opt={len(cam_order)} cloud_points={n_cloud} "
+        f"k3d_points={n_k3d} obs={len(cam_idx)}"
+    )
+    result = least_squares(
+        fun,
+        x0,
+        method="trf",
+        loss=args.ba_loss,
+        f_scale=float(args.ba_f_scale),
+        max_nfev=int(args.ba_max_nfev),
+        verbose=2,
+    )
+    print(f"[BA] done: success={result.success}, cost={result.cost:.4f}")
+
+    ncam = len(cam_order) * 6
+    cam_opt = result.x[:ncam].reshape(-1, 6) if ncam > 0 else np.zeros((0, 6))
+    pts_opt = result.x[ncam:].reshape(-1, 3)
+    cam_state = build_cam_state(cam_opt)
+
+    cams_out = {}
+    for cam in camnames:
+        R, T = cam_state[cam]
+        cams_out[cam] = {
+            "K": cameras[cam]["K"],
+            "dist": cameras[cam]["dist"],
+            "R": R,
+            "Rvec": cv2.Rodrigues(R)[0],
+            "T": T,
+        }
+        if "H" in cameras[cam]:
+            cams_out[cam]["H"] = cameras[cam]["H"]
+        if "W" in cameras[cam]:
+            cams_out[cam]["W"] = cameras[cam]["W"]
+    ba_root = join(out_root, "ba")
+    os.makedirs(ba_root, exist_ok=True)
+    write_intri(join(ba_root, "intri.yml"), cams_out)
+    write_extri(join(ba_root, "extri.yml"), cams_out)
+
+    return {
+        "success": bool(result.success),
+        "camnames": camnames,
+        "ref_cam": ref_cam,
+        "points_cloud_opt": pts_opt[:n_cloud].astype(np.float32),
+        "points_k3d_opt": pts_opt[n_cloud:].astype(np.float32),
+        "ba_root": ba_root,
     }
 
 
@@ -421,6 +699,16 @@ def main():
     parser.add_argument("--k3d", type=str, default="", help="3D keypoints folder (relative to path or absolute)")
     parser.add_argument("--k3d_conf", type=float, default=0.1, help="confidence threshold for keypoints3d[:,3]")
     parser.add_argument("--k3d_color", type=int, nargs=3, default=[0, 255, 0], help="RGB color for inserted 3D keypoints")
+    parser.add_argument("--pid", type=int, default=0, help="person id for k3d/2d association")
+    parser.add_argument("--ba", action="store_true", help="experimental joint BA for cameras + cloud + keypoints3d")
+    parser.add_argument("--ba_ref_cam", type=str, default="", help="fixed reference camera for BA (default first selected camera)")
+    parser.add_argument("--ba_max_cloud_points", type=int, default=6000, help="max cloud points used in BA (-1 for all)")
+    parser.add_argument("--ba_kpt_conf", type=float, default=0.1, help="2D keypoint confidence threshold for BA")
+    parser.add_argument("--ba_loss", type=str, default="huber", choices=["linear", "soft_l1", "huber", "cauchy", "arctan"])
+    parser.add_argument("--ba_f_scale", type=float, default=3.0)
+    parser.add_argument("--ba_max_nfev", type=int, default=40)
+    parser.add_argument("--ba_cam_sigma_r", type=float, default=0.05, help="camera rotation prior sigma (rad)")
+    parser.add_argument("--ba_cam_sigma_t", type=float, default=50.0, help="camera translation prior sigma (world unit)")
     parser.add_argument("--force", action="store_true")
     args = parser.parse_args()
 
@@ -454,6 +742,14 @@ def main():
 
     clouds_all = []
     stats_all = []
+    cam_to_idx = {cam: i for i, cam in enumerate(subs)}
+    cloud_points_global = []
+    cloud_obs_global = []
+    cloud_colors_global = []
+    k3d_points_global = []
+    k3d_obs_global = []
+    k3d_frame_info = []
+    k3d_root = args.k3d if args.k3d.startswith("/") else join(args.path, args.k3d)
     for frame in tqdm(common_frames, desc="extract pointcloud"):
         stem = frame.replace(args.ext, "")
         out_npz = join(out_points, stem + ".npz")
@@ -464,11 +760,25 @@ def main():
             stats_all.append({"frame": frame, "pairs": -1, "matches": -1, "points": int(data["xyz"].shape[0])})
             continue
 
-        X, C, stats = build_frame_cloud(frame, {k: cameras[k] for k in subs}, args)
+        X_cloud, C_cloud, stats, ba_pack = build_frame_cloud(frame, {k: cameras[k] for k in subs}, args)
+        cloud_start = sum([p.shape[0] for p in cloud_points_global]) if len(cloud_points_global) > 0 else 0
+        cloud_end = cloud_start + X_cloud.shape[0]
+        cloud_points_global.append(X_cloud.astype(np.float32))
+        cloud_colors_global.append(C_cloud.astype(np.uint8))
+        if args.ba and ba_pack is not None:
+            for i in range(ba_pack["obs_point"].shape[0]):
+                cam = str(ba_pack["obs_cam"][i])
+                if cam not in cam_to_idx:
+                    continue
+                pidx = int(ba_pack["obs_point"][i]) + cloud_start
+                u, v = ba_pack["obs_uv"][i]
+                cloud_obs_global.append((cam_to_idx[cam], pidx, float(u), float(v), 1.0))
+
+        X = X_cloud.copy()
+        C = C_cloud.copy()
         is_keypoint = np.zeros((X.shape[0],), dtype=np.uint8)
 
         if args.k3d != "":
-            k3d_root = args.k3d if args.k3d.startswith("/") else join(args.path, args.k3d)
             k3d_name = join(k3d_root, stem + ".json")
             X_k3d = read_keypoints3d_json(k3d_name, conf_thres=args.k3d_conf)
             if X_k3d.shape[0] > 0:
@@ -483,6 +793,32 @@ def main():
         else:
             stats["k3d_points"] = 0
 
+        if args.ba and args.k3d != "":
+            Xp, jids = read_keypoints3d_person(join(k3d_root, stem + ".json"), pid=args.pid, conf_thres=args.k3d_conf)
+            k3d_start = sum([p.shape[0] for p in k3d_points_global]) if len(k3d_points_global) > 0 else 0
+            k3d_points_global.append(Xp.astype(np.float32))
+            k3d_frame_info.append((k3d_start, k3d_start + Xp.shape[0], stem, jids))
+            if Xp.shape[0] > 0:
+                for cam in subs:
+                    annname = join(args.path, args.annot, cam, stem + ".json")
+                    k2d = read_keypoints2d_person(annname, pid=args.pid)
+                    if k2d is None:
+                        continue
+                    max_jid = int(jids.max()) if jids.size > 0 else -1
+                    if max_jid >= k2d.shape[0]:
+                        continue
+                    k2d_sel = k2d[jids]
+                    k2d_ud = undistort_pixels(k2d_sel, cameras[cam]["K"], cameras[cam]["dist"])
+                    valid = k2d_ud[:, 2] > args.ba_kpt_conf
+                    if valid.sum() == 0:
+                        continue
+                    vids = np.where(valid)[0]
+                    for vi in vids:
+                        u, v, conf = k2d_ud[vi]
+                        pidx = k3d_start + int(vi)
+                        w = float(np.clip(conf, 0.0, 1.0))
+                        k3d_obs_global.append((cam_to_idx[cam], pidx, float(u), float(v), w))
+
         np.savez_compressed(
             out_npz,
             xyz=X.astype(np.float32),
@@ -495,6 +831,64 @@ def main():
         clouds_all.append(X.astype(np.float32))
         stats["frame"] = frame
         stats_all.append(stats)
+
+    ba_result = None
+    if args.ba:
+        if args.ba_ref_cam != "":
+            ref_cam = args.ba_ref_cam
+        else:
+            ref_cam = subs[0]
+        cloud_points_all = np.concatenate(cloud_points_global, axis=0) if len(cloud_points_global) > 0 else np.zeros((0, 3), dtype=np.float32)
+        cloud_colors_all = np.concatenate(cloud_colors_global, axis=0) if len(cloud_colors_global) > 0 else np.zeros((0, 3), dtype=np.uint8)
+        cloud_obs = cloud_obs_global
+        if args.ba_max_cloud_points > 0 and cloud_points_all.shape[0] > args.ba_max_cloud_points:
+            rng = np.random.default_rng(args.seed)
+            keep = rng.choice(cloud_points_all.shape[0], size=args.ba_max_cloud_points, replace=False)
+            keep = np.sort(keep)
+            remap = np.full((cloud_points_all.shape[0],), -1, dtype=np.int64)
+            remap[keep] = np.arange(keep.shape[0], dtype=np.int64)
+            cloud_points_all = cloud_points_all[keep]
+            cloud_colors_all = cloud_colors_all[keep]
+            cloud_obs = [o for o in cloud_obs if remap[o[1]] >= 0]
+            cloud_obs = [(o[0], int(remap[o[1]]), o[2], o[3], o[4]) for o in cloud_obs]
+            print(f"[BA] sampled cloud points: {keep.shape[0]}")
+        k3d_points_all = np.concatenate(k3d_points_global, axis=0) if len(k3d_points_global) > 0 else np.zeros((0, 3), dtype=np.float32)
+        ba_result = run_joint_ba(
+            args,
+            cameras,
+            subs,
+            ref_cam,
+            {"points3d": cloud_points_all, "obs": cloud_obs, "colors": cloud_colors_all},
+            {"points3d": k3d_points_all, "obs": k3d_obs_global},
+            out_root,
+        )
+        if ba_result is not None:
+            # Save refined cloud points used by BA.
+            ba_points_dir = join(ba_result["ba_root"], "points")
+            os.makedirs(ba_points_dir, exist_ok=True)
+            np.savez_compressed(
+                join(ba_points_dir, "cloud_points_ba.npz"),
+                xyz=ba_result["points_cloud_opt"],
+                rgb=cloud_colors_all[: ba_result["points_cloud_opt"].shape[0]],
+            )
+            # Save refined keypoints3d as per-frame files.
+            if args.k3d != "" and ba_result["points_k3d_opt"].shape[0] > 0:
+                out_k3d = join(ba_result["ba_root"], "keypoints3d")
+                os.makedirs(out_k3d, exist_ok=True)
+                cursor = 0
+                for start, end, stem, jids in k3d_frame_info:
+                    n = end - start
+                    if n <= 0:
+                        continue
+                    pts = ba_result["points_k3d_opt"][cursor : cursor + n]
+                    cursor += n
+                    arr = np.zeros((int(jids.max()) + 1, 4), dtype=np.float32)
+                    arr[:, 3] = 0.0
+                    arr[jids, :3] = pts
+                    arr[jids, 3] = 1.0
+                    with open(join(out_k3d, stem + ".json"), "w") as f:
+                        json.dump([{"id": args.pid, "keypoints3d": arr.tolist()}], f, indent=2)
+                print(f"[BA] wrote refined keypoints3d: {out_k3d}")
 
     with open(join(out_root, "pointclouds.pkl"), "wb") as f:
         pickle.dump(clouds_all, f, protocol=pickle.HIGHEST_PROTOCOL)
