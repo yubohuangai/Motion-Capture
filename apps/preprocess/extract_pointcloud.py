@@ -241,6 +241,16 @@ def undistort_pixels(k2d, K, dist):
 
 def init_roma_model(args):
     try:
+        import torch
+    except Exception as e:
+        raise RuntimeError("PyTorch is required for --matcher roma.") from e
+    # Compatibility for older torch versions used in some easymocap envs.
+    if not hasattr(torch, "get_float32_matmul_precision"):
+        torch.get_float32_matmul_precision = lambda: "highest"
+    if not hasattr(torch, "set_float32_matmul_precision"):
+        torch.set_float32_matmul_precision = lambda *a, **k: None
+
+    try:
         from romatch import roma_outdoor
     except Exception as e:
         raise RuntimeError(
