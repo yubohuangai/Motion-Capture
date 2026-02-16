@@ -30,6 +30,10 @@ try:
     from scipy.optimize import least_squares
 except Exception:
     least_squares = None
+try:
+    from scipy.sparse import lil_matrix
+except Exception:
+    lil_matrix = None
 
 
 def load_subs(path, subs, image_dir):
@@ -580,6 +584,9 @@ def run_joint_ba(args, cameras, camnames, ref_cam, cloud_pack, k3d_pack, out_roo
 
     camid_to_name = {i: c for i, c in enumerate(camnames)}
     opt_index = {cam: i for i, cam in enumerate(cam_order)}
+    n_opt_cams = len(cam_order)
+    n_points = X_init.shape[0]
+    n_obs = len(cam_idx)
 
     def build_cam_state(cam_params):
         state = {}
@@ -616,15 +623,53 @@ def run_joint_ba(args, cameras, camnames, ref_cam, cloud_pack, k3d_pack, out_roo
                 res.extend(((cam_params[i, 3:] - cam_prior[i, 3:]) / sigma_t).tolist())
         return np.asarray(res, dtype=np.float64)
 
+    def build_jac_sparsity():
+        if lil_matrix is None:
+            return None
+        ncam_params = n_opt_cams * 6
+        npt_params = n_points * 3
+        n_params = ncam_params + npt_params
+        n_prior = ncam_params
+        n_residuals = 2 * n_obs + n_prior
+        A = lil_matrix((n_residuals, n_params), dtype=np.int8)
+
+        off_cam = 0
+        off_pt = ncam_params
+        for i in range(n_obs):
+            row0 = 2 * i
+            row1 = row0 + 1
+            cam_name = camid_to_name[int(cam_idx[i])]
+            if cam_name != ref_cam:
+                cidx = opt_index[cam_name]
+                cbase = off_cam + cidx * 6
+                A[row0, cbase : cbase + 6] = 1
+                A[row1, cbase : cbase + 6] = 1
+            pbase = off_pt + int(pt_idx[i]) * 3
+            A[row0, pbase : pbase + 3] = 1
+            A[row1, pbase : pbase + 3] = 1
+
+        row_base = 2 * n_obs
+        for i in range(ncam_params):
+            A[row_base + i, off_cam + i] = 1
+        return A
+
     x0 = np.concatenate([cam_init.reshape(-1), X_init.reshape(-1)], axis=0)
+    jac_sparsity = build_jac_sparsity()
     print(
         f"[BA] start: cams_opt={len(cam_order)} cloud_points={n_cloud} "
         f"k3d_points={n_k3d} obs={len(cam_idx)}"
     )
+    if jac_sparsity is not None:
+        print("[BA] using sparse Jacobian structure")
+    else:
+        print("[BA] sparse Jacobian unavailable, fallback to dense finite-difference")
     result = least_squares(
         fun,
         x0,
+        jac_sparsity=jac_sparsity,
         method="trf",
+        x_scale="jac",
+        ftol=1e-4,
         loss=args.ba_loss,
         f_scale=float(args.ba_f_scale),
         max_nfev=int(args.ba_max_nfev),
