@@ -139,8 +139,8 @@ def undistort_and_gray(img_bgr, K, dist):
 
 
 def filter_depth_and_reproj(X, cam0, cam1, pts0, pts1, reproj_thres):
-    R0, T0, K0, d0 = cam0["R"], cam0["T"], cam0["K"], cam0["dist"]
-    R1, T1, K1, d1 = cam1["R"], cam1["T"], cam1["K"], cam1["dist"]
+    R0, T0, K0 = cam0["R"], cam0["T"], cam0["K"]
+    R1, T1, K1 = cam1["R"], cam1["T"], cam1["K"]
 
     Xc0 = (R0 @ X.T + T0).T
     Xc1 = (R1 @ X.T + T1).T
@@ -151,8 +151,9 @@ def filter_depth_and_reproj(X, cam0, cam1, pts0, pts1, reproj_thres):
     Xv = X[valid]
     p0 = pts0[valid]
     p1 = pts1[valid]
-    r0, _ = cv2.projectPoints(Xv, cv2.Rodrigues(R0)[0], T0, K0, d0)
-    r1, _ = cv2.projectPoints(Xv, cv2.Rodrigues(R1)[0], T1, K1, d1)
+    # Features are extracted on undistorted images, so reprojection should use zero distortion.
+    r0, _ = cv2.projectPoints(Xv, cv2.Rodrigues(R0)[0], T0, K0, None)
+    r1, _ = cv2.projectPoints(Xv, cv2.Rodrigues(R1)[0], T1, K1, None)
     e0 = np.linalg.norm(r0.reshape(-1, 2) - p0, axis=1)
     e1 = np.linalg.norm(r1.reshape(-1, 2) - p1, axis=1)
     good_v = (e0 < reproj_thres) & (e1 < reproj_thres)
@@ -318,7 +319,7 @@ def main():
     parser.add_argument("--fast_threshold", type=int, default=10)
     parser.add_argument("--crosscheck", action="store_true")
     parser.add_argument("--reproj_thres", type=float, default=3.0)
-    parser.add_argument("--voxel_size", type=float, default=10.0, help="world unit dedup voxel size")
+    parser.add_argument("--voxel_size", type=float, default=0.0, help="world unit dedup voxel size (0 disables)")
     parser.add_argument("--max_points", type=int, default=20000)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--use_mask", action="store_true", default=True, help="use masks/{cam}/xxxxxx.png if available")
