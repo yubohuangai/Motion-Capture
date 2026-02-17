@@ -209,7 +209,11 @@ def vis_shape_silhouette_overlay(dataset, images, vertices, frame_points, nf, ar
         )
         mesh_xy = mesh_xy[valid_mesh]
         if mesh_xy.shape[0] > 0:
-            canvas[mesh_xy[:, 1], mesh_xy[:, 0]] = (0, 0, 255)  # red: projected mesh
+            # Draw larger points using dilation for better visibility.
+            mesh_layer = np.zeros((h, w), dtype=np.uint8)
+            mesh_layer[mesh_xy[:, 1], mesh_xy[:, 0]] = 255
+            mesh_layer = cv2.dilate(mesh_layer, np.ones((5, 5), dtype=np.uint8), iterations=1)
+            canvas[mesh_layer > 0] = (0, 0, 255)  # red: projected mesh
 
         mask_xy = frame_points[nv] if frame_points is not None else np.zeros((0, 2), dtype=np.float32)
         mask_xy = np.round(mask_xy).astype(np.int32)
@@ -219,7 +223,10 @@ def vis_shape_silhouette_overlay(dataset, images, vertices, frame_points, nf, ar
         )
         mask_xy = mask_xy[valid_mask]
         if mask_xy.shape[0] > 0:
-            canvas[mask_xy[:, 1], mask_xy[:, 0]] = (0, 255, 0)  # green: mask points
+            mask_layer = np.zeros((h, w), dtype=np.uint8)
+            mask_layer[mask_xy[:, 1], mask_xy[:, 0]] = 255
+            mask_layer = cv2.dilate(mask_layer, np.ones((5, 5), dtype=np.uint8), iterations=1)
+            canvas[mask_layer > 0] = (0, 255, 0)  # green: mask points
 
         cv2.putText(
             canvas,
