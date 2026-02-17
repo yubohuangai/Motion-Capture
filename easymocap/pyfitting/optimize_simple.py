@@ -206,10 +206,24 @@ def get_interp_by_keypoints(keypoints):
                 start = not_valid_frames[i]
         ranges.append((start, not_valid_frames[-1]))
     def interp_func(params):
+        nFrames = params['poses'].shape[0]
         for start, end in ranges:
-            # 对每个需要插值的区间: 这里直接使用最近帧进行插值了
+            # Handle boundary ranges safely (missing left/right valid frame).
             left = start - 1
             right = end + 1
+            if left < 0 and right >= nFrames:
+                # All frames invalid, keep as-is.
+                continue
+            if left < 0:
+                for nf in range(start, end + 1):
+                    for key in ['Rh', 'Th', 'poses']:
+                        params[key][nf] = params[key][right]
+                continue
+            if right >= nFrames:
+                for nf in range(start, end + 1):
+                    for key in ['Rh', 'Th', 'poses']:
+                        params[key][nf] = params[key][left]
+                continue
             for nf in range(start, end+1):
                 weight = (nf - left)/(right - left)
                 for key in ['Rh', 'Th', 'poses']:
@@ -234,10 +248,24 @@ def interp_by_k3d(conf, params):
                 ranges.append((start, end))
                 start = not_valid_frames[i]
         ranges.append((start, not_valid_frames[-1]))
+    nFrames = params['poses'].shape[0]
     for start, end in ranges:
-        # 对每个需要插值的区间: 这里直接使用最近帧进行插值了
+        # Handle boundary ranges safely (missing left/right valid frame).
         left = start - 1
         right = end + 1
+        if left < 0 and right >= nFrames:
+            # All frames invalid, keep as-is.
+            continue
+        if left < 0:
+            for nf in range(start, end + 1):
+                for key in ['Rh', 'Th', 'poses']:
+                    params[key][nf] = params[key][right]
+            continue
+        if right >= nFrames:
+            for nf in range(start, end + 1):
+                for key in ['Rh', 'Th', 'poses']:
+                    params[key][nf] = params[key][left]
+            continue
         for nf in range(start, end+1):
             weight = (nf - left)/(right - left)
             for key in ['Rh', 'Th', 'poses']:
