@@ -79,7 +79,7 @@ def optimizeShape(body_model, body_params, keypoints3d,
     body_params = {key:val.detach().cpu().numpy() for key, val in body_params.items()}
     return body_params
 
-def optimizeShapeSilhouette(body_model, body_params, silhouette_points, Pall, weight_loss, max_iter=20, max_verts=1000):
+def optimizeShapeSilhouette(body_model, body_params, silhouette_points, Pall, weight_loss, max_iter=20, max_verts=1000, max_pairs=200):
     """Refine shape with a one-directional silhouette Chamfer loss.
 
     Args:
@@ -123,6 +123,13 @@ def optimizeShapeSilhouette(body_model, body_params, silhouette_points, Pall, we
                 continue
             frame_points.append(torch.tensor(pts, dtype=torch.float32, device=device))
         points_t.append(frame_points)
+    valid_pairs = [(nf, nv) for nf in range(nFrames) for nv in range(nViews) if points_t[nf][nv] is not None]
+    if len(valid_pairs) == 0:
+        return body_params
+    if max_pairs is not None and max_pairs > 0 and len(valid_pairs) > max_pairs:
+        # Evenly sample frame-view pairs to cap memory for long multi-view sequences.
+        sample_idx = np.linspace(0, len(valid_pairs) - 1, max_pairs, dtype=int)
+        valid_pairs = [valid_pairs[i] for i in sample_idx]
 
     def closure(debug=False):
         optimizer.zero_grad()
@@ -139,14 +146,11 @@ def optimizeShapeSilhouette(body_model, body_params, silhouette_points, Pall, we
 
         chamfer_loss = torch.tensor(0., device=device)
         count = 0
-        for nf in range(nFrames):
-            for nv in range(nViews):
-                pts = points_t[nf][nv]
-                if pts is None:
-                    continue
-                dists = torch.cdist(proj[nv, nf], pts, p=2)
-                chamfer_loss = chamfer_loss + dists.min(dim=1)[0].mean()
-                count += 1
+        for nf, nv in valid_pairs:
+            pts = points_t[nf][nv]
+            dists = torch.cdist(proj[nv, nf], pts, p=2)
+            chamfer_loss = chamfer_loss + dists.min(dim=1)[0].mean()
+            count += 1
         if count > 0:
             chamfer_loss = chamfer_loss / count
 

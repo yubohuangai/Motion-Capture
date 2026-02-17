@@ -65,6 +65,8 @@ def load_parser():
         help='LBFGS max_iter for shape silhouette refinement')
     recon.add_argument('--shape_silhouette_vert_subsample', type=int, default=1000,
         help='number of mesh vertices sampled for silhouette Chamfer')
+    recon.add_argument('--shape_silhouette_max_pairs', type=int, default=200,
+        help='maximum frame-view silhouette pairs used per LBFGS closure (<=0 means all)')
     recon.add_argument('--shape_vis_max_mesh_points', type=int, default=4000,
         help='maximum projected mesh points to draw per view in silhouette debug overlays')
     # 

@@ -76,7 +76,8 @@ def smpl_from_keypoints3d2d(body_model, kp3ds, kp2ds, bboxes, Pall, config, args
         params = optimizeShapeSilhouette(
             body_model, params, silhouette_points, Pall,
             weight_shape, max_iter=args.shape_silhouette_iters,
-            max_verts=args.shape_silhouette_vert_subsample
+            max_verts=args.shape_silhouette_vert_subsample,
+            max_pairs=args.shape_silhouette_max_pairs
         )
     if weight_pose is None:
         weight_pose = load_weight_pose(model_type, args.opts)

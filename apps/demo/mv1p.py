@@ -191,7 +191,7 @@ def load_silhouette_points(dataset, start, end, args):
 def vis_shape_silhouette_overlay(dataset, images, vertices, frame_points, nf, args):
     out_root = join(args.out, 'shape_silhouette')
     proj = projectN3(vertices, dataset.Pall)[..., :2]
-    max_mesh_points = max(getattr(args, 'shape_vis_max_mesh_points', 4000), 0)
+    max_mesh_points = max(getattr(args, 'shape_vis_max_mesh_points', 2000), 0)
     rng = np.random.default_rng(0)
 
     for nv, cam in enumerate(dataset.cams):
