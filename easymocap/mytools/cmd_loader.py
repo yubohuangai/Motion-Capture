@@ -65,6 +65,8 @@ def load_parser():
         help='LBFGS max_iter for shape silhouette refinement')
     recon.add_argument('--shape_silhouette_vert_subsample', type=int, default=1000,
         help='number of mesh vertices sampled for silhouette Chamfer')
+    recon.add_argument('--shape_vis_max_mesh_points', type=int, default=4000,
+        help='maximum projected mesh points to draw per view in silhouette debug overlays')
     # 
     # visualization part
     # 
@@ -72,6 +74,8 @@ def load_parser():
     output.add_argument('--vis_det', action='store_true')
     output.add_argument('--vis_repro', action='store_true')
     output.add_argument('--vis_smpl', action='store_true')
+    output.add_argument('--vis_shape_silhouette', action='store_true',
+        help='save overlays of mask points and reprojected SMPL mesh points')
     output.add_argument('--write_smpl_full', action='store_true')
     parser.add_argument('--write_vertices', action='store_true')
     output.add_argument('--vis_mask', action='store_true')

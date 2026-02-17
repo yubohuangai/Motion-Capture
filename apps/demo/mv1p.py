@@ -85,7 +85,7 @@ def mv1pmf_smpl(dataset, args, weight_pose=None, weight_shape=None):
     bboxes = np.stack(bboxes)
     kp3ds = check_keypoints(kp3ds, 1)
     silhouette_points = None
-    if args.shape_silhouette:
+    if args.shape_silhouette or args.vis_shape_silhouette:
         silhouette_points = load_silhouette_points(dataset, start, end, args)
     # optimize the human shape
     with Timer('Loading {}, {}'.format(args.model, args.gender), not args.verbose):
@@ -96,21 +96,28 @@ def mv1pmf_smpl(dataset, args, weight_pose=None, weight_shape=None):
         silhouette_points=silhouette_points)
     # write out the results
     dataset.no_img = not (args.vis_smpl or args.vis_repro)
+    if args.vis_shape_silhouette and silhouette_points is None:
+        print('[Shape silhouette] no silhouette points loaded, skip visualization.')
     for nf in tqdm(range(start, end), desc='render'):
         images, annots = dataset[nf]
         param = select_nf(params, nf-start)
         dataset.write_smpl(param, nf)
+        vertices = None
+        if args.write_vertices or args.vis_smpl or args.vis_shape_silhouette:
+            vertices = body_model(return_verts=True, return_tensor=False, **param)
         if args.write_smpl_full:
             param_full = param.copy()
             param_full['poses'] = body_model.full_poses(param['poses'])
             dataset.write_smpl(param_full, nf, mode='smpl_full')
         if args.write_vertices:
-            vertices = body_model(return_verts=True, return_tensor=False, **param)
             write_data = [{'id': 0, 'vertices': vertices[0]}]
             dataset.write_vertices(write_data, nf)
         if args.vis_smpl:
-            vertices = body_model(return_verts=True, return_tensor=False, **param)
             dataset.vis_smpl(vertices=vertices[0], faces=body_model.faces, images=images, nf=nf, sub_vis=args.sub_vis, add_back=True)
+        if args.vis_shape_silhouette and silhouette_points is not None:
+            vis_shape_silhouette_overlay(
+                dataset, images, vertices[0], silhouette_points[nf-start], nf, args
+            )
         if args.vis_repro:
             keypoints = body_model(return_verts=False, return_tensor=False, **param)[0]
             kpts_repro = projectN3(keypoints, dataset.Pall)
@@ -179,6 +186,55 @@ def load_silhouette_points(dataset, start, end, args):
             frame_points.append(points)
         silhouettes.append(frame_points)
     return silhouettes
+
+
+def vis_shape_silhouette_overlay(dataset, images, vertices, frame_points, nf, args):
+    out_root = join(args.out, 'shape_silhouette')
+    proj = projectN3(vertices, dataset.Pall)[..., :2]
+    max_mesh_points = max(getattr(args, 'shape_vis_max_mesh_points', 4000), 0)
+    rng = np.random.default_rng(0)
+
+    for nv, cam in enumerate(dataset.cams):
+        canvas = images[nv].copy()
+        h, w = canvas.shape[:2]
+
+        mesh_xy = proj[nv]
+        if max_mesh_points > 0 and mesh_xy.shape[0] > max_mesh_points:
+            select = rng.choice(mesh_xy.shape[0], size=max_mesh_points, replace=False)
+            mesh_xy = mesh_xy[select]
+        mesh_xy = np.round(mesh_xy).astype(np.int32)
+        valid_mesh = (
+            (mesh_xy[:, 0] >= 0) & (mesh_xy[:, 0] < w) &
+            (mesh_xy[:, 1] >= 0) & (mesh_xy[:, 1] < h)
+        )
+        mesh_xy = mesh_xy[valid_mesh]
+        if mesh_xy.shape[0] > 0:
+            canvas[mesh_xy[:, 1], mesh_xy[:, 0]] = (0, 0, 255)  # red: projected mesh
+
+        mask_xy = frame_points[nv] if frame_points is not None else np.zeros((0, 2), dtype=np.float32)
+        mask_xy = np.round(mask_xy).astype(np.int32)
+        valid_mask = (
+            (mask_xy[:, 0] >= 0) & (mask_xy[:, 0] < w) &
+            (mask_xy[:, 1] >= 0) & (mask_xy[:, 1] < h)
+        )
+        mask_xy = mask_xy[valid_mask]
+        if mask_xy.shape[0] > 0:
+            canvas[mask_xy[:, 1], mask_xy[:, 0]] = (0, 255, 0)  # green: mask points
+
+        cv2.putText(
+            canvas,
+            f'mask(green): {mask_xy.shape[0]}  mesh(red): {mesh_xy.shape[0]}',
+            (12, 28),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.7,
+            (255, 255, 255),
+            2,
+            cv2.LINE_AA,
+        )
+
+        outname = join(out_root, cam, f'{nf:06d}.jpg')
+        os.makedirs(os.path.dirname(outname), exist_ok=True)
+        cv2.imwrite(outname, canvas)
 
 
 if __name__ == "__main__":
