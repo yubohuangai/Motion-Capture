@@ -51,7 +51,16 @@ def load_npz(npz_name):
         rgb = data["rgb"].astype(np.float64) / 255.0
     else:
         rgb = np.full((xyz.shape[0], 3), 0.8, dtype=np.float64)
-    return xyz, rgb
+    if "is_keypoint" in data:
+        is_keypoint = data["is_keypoint"].astype(bool).reshape(-1)
+    else:
+        # Fallback: treat green points as keypoints.
+        is_keypoint = (
+            (rgb[:, 1] > 0.8) &
+            (rgb[:, 0] < 0.2) &
+            (rgb[:, 2] < 0.2)
+        )
+    return xyz, rgb, is_keypoint
 
 
 def import_o3d():
@@ -81,16 +90,55 @@ def load_cloud(points_dir, stem):
             rgb = np.asarray(pcd.colors, dtype=np.float64)
         else:
             rgb = np.full((xyz.shape[0], 3), 0.8, dtype=np.float64)
-        return xyz, rgb
+        is_keypoint = (
+            (rgb[:, 1] > 0.8) &
+            (rgb[:, 0] < 0.2) &
+            (rgb[:, 2] < 0.2)
+        )
+        return xyz, rgb, is_keypoint
     raise FileNotFoundError(f"No point file for frame: {stem}")
 
 
-def subsample_points(xyz, rgb, max_points):
+def subsample_points(xyz, rgb, is_keypoint, max_points):
     if max_points <= 0 or xyz.shape[0] <= max_points:
-        return xyz, rgb
+        return xyz, rgb, is_keypoint
+    # Keep all keypoints first; subsample only the remaining cloud points.
+    key_idx = np.where(is_keypoint)[0]
+    non_key_idx = np.where(~is_keypoint)[0]
+    keep_key = key_idx
+    budget = max_points - keep_key.shape[0]
+    if budget <= 0:
+        sel = keep_key[:max_points]
+        return xyz[sel], rgb[sel], is_keypoint[sel]
     rng = np.random.default_rng(0)
-    idx = rng.choice(xyz.shape[0], size=max_points, replace=False)
-    return xyz[idx], rgb[idx]
+    sel_non_key = rng.choice(non_key_idx, size=min(budget, non_key_idx.shape[0]), replace=False)
+    idx = np.concatenate([keep_key, sel_non_key], axis=0)
+    return xyz[idx], rgb[idx], is_keypoint[idx]
+
+
+def enlarge_keypoints(xyz, rgb, is_keypoint, radius=0.01):
+    if is_keypoint.sum() == 0:
+        return xyz, rgb
+    key_xyz = xyz[is_keypoint]
+    key_rgb = rgb[is_keypoint]
+    # 3D "splat" offsets so keypoints look larger with a global point size.
+    offsets = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [radius, 0.0, 0.0],
+            [-radius, 0.0, 0.0],
+            [0.0, radius, 0.0],
+            [0.0, -radius, 0.0],
+            [0.0, 0.0, radius],
+            [0.0, 0.0, -radius],
+        ],
+        dtype=np.float64,
+    )
+    splat_xyz = (key_xyz[:, None, :] + offsets[None, :, :]).reshape(-1, 3)
+    splat_rgb = np.repeat(key_rgb, offsets.shape[0], axis=0)
+    xyz_out = np.concatenate([xyz, splat_xyz], axis=0)
+    rgb_out = np.concatenate([rgb, splat_rgb], axis=0)
+    return xyz_out, rgb_out
 
 
 def main():
@@ -100,7 +148,7 @@ def main():
         "path",
         type=str,
         nargs="?",
-        default="/Users/yubo/data/s2/seq1/gt/check/pointcloud/",
+        default="/Users/yubo/data/emily/pointcloud/",
         help="path to pointcloud folder",
     )
     parser.add_argument("--frame", type=int, default=-1, help="show one frame by index")
@@ -110,6 +158,7 @@ def main():
     parser.add_argument("--max_frames", type=int, default=-1)
     parser.add_argument("--max_points", type=int, default=50000, help="per-frame point cap for rendering")
     parser.add_argument("--point_size", type=float, default=2.0)
+    parser.add_argument("--keypoint_radius", type=float, default=0.01, help="3D splat radius to make keypoints appear larger")
     parser.add_argument("--reset_view_each_frame", action="store_true")
     args = parser.parse_args()
 
@@ -134,8 +183,9 @@ def main():
         args.play = False
 
     if not args.play:
-        xyz, rgb = load_cloud(points_dir, stems[0])
-        xyz, rgb = subsample_points(xyz, rgb, args.max_points)
+        xyz, rgb, is_keypoint = load_cloud(points_dir, stems[0])
+        xyz, rgb, is_keypoint = subsample_points(xyz, rgb, is_keypoint, args.max_points)
+        xyz, rgb = enlarge_keypoints(xyz, rgb, is_keypoint, radius=args.keypoint_radius)
         pcd = o3d.geometry.PointCloud()
         pcd.points = o3d.utility.Vector3dVector(xyz)
         pcd.colors = o3d.utility.Vector3dVector(rgb)
@@ -157,8 +207,9 @@ def main():
     opt.background_color = np.array([0.0, 0.0, 0.0], dtype=np.float64)
 
     # Initialize with first valid frame so view bbox is correct.
-    xyz0, rgb0 = load_cloud(points_dir, stems[0])
-    xyz0, rgb0 = subsample_points(xyz0, rgb0, args.max_points)
+    xyz0, rgb0, is_keypoint0 = load_cloud(points_dir, stems[0])
+    xyz0, rgb0, is_keypoint0 = subsample_points(xyz0, rgb0, is_keypoint0, args.max_points)
+    xyz0, rgb0 = enlarge_keypoints(xyz0, rgb0, is_keypoint0, radius=args.keypoint_radius)
     pcd = o3d.geometry.PointCloud()
     pcd.points = o3d.utility.Vector3dVector(xyz0)
     pcd.colors = o3d.utility.Vector3dVector(rgb0)
@@ -167,8 +218,9 @@ def main():
 
     delay = 1.0 / max(args.fps, 1e-6)
     for i, stem in enumerate(stems):
-        xyz, rgb = load_cloud(points_dir, stem)
-        xyz, rgb = subsample_points(xyz, rgb, args.max_points)
+        xyz, rgb, is_keypoint = load_cloud(points_dir, stem)
+        xyz, rgb, is_keypoint = subsample_points(xyz, rgb, is_keypoint, args.max_points)
+        xyz, rgb = enlarge_keypoints(xyz, rgb, is_keypoint, radius=args.keypoint_radius)
         pcd.points = o3d.utility.Vector3dVector(xyz)
         pcd.colors = o3d.utility.Vector3dVector(rgb)
         vis.update_geometry(pcd)
