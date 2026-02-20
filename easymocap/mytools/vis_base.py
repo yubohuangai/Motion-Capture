@@ -165,15 +165,18 @@ def plot_keypoints_auto(img, points, pid, vis_conf=False, use_limb_color=True, s
             19:'ochuman'}[len(points)]
     config = CONFIG[config_name]
     if lw == -1:
-        lw = img.shape[0]//200
-    if config_name == 'hand':
-        lw = img.shape[0]//120
-    lw = max(lw, 1)
+        lw_line = img.shape[0]//200
+        if config_name == 'hand':
+            lw_line = img.shape[0]//120
+    else:
+        lw_line = lw
+    lw_line = max(lw_line, 1)
     for ii, (i, j) in enumerate(config['kintree']):
         if i >= len(points) or j >= len(points):
             continue
+        _lw_line = lw_line
         if i >= 25 and config_name in ['bodyhand', 'total']:
-            lw = max(img.shape[0]//600, 1)
+            _lw_line = max(img.shape[0]//600, 1)
         pt1, pt2 = points[i], points[j]
         if use_limb_color:
             col = get_rgb(config['colors'][ii])
@@ -186,26 +189,30 @@ def plot_keypoints_auto(img, points, pid, vis_conf=False, use_limb_color=True, s
         if pt1[-1] > 0.01 and pt2[-1] > 0.01:
             image = cv2.line(
                 img, (int(pt1[0]*scale+0.5), int(pt1[1]*scale+0.5)), (int(pt2[0]*scale+0.5), int(pt2[1]*scale+0.5)),
-                col, lw)
-    lw = img.shape[0]//220
-    if config_name == 'hand':
-        lw = img.shape[0]//700
-    lw = max(lw, 1)
+                col, _lw_line)
+    if lw == -1:
+        lw_point = img.shape[0]//220
+        if config_name == 'hand':
+            lw_point = img.shape[0]//700
+    else:
+        lw_point = lw
+    lw_point = max(lw_point, 1)
     for i in range(len(points)):
         x, y = points[i][0]*scale, points[i][1]*scale
         if x < 0 or y < 0 or x >10000 or y >10000:
             continue
+        _lw_point = lw_point
         if i >= 25 and config_name in ['bodyhand', 'total']:
-            lw = max(img.shape[0]//700, 1)
+            _lw_point = max(img.shape[0]//700, 1)
         c = points[i][-1]
         if c > 0.01:
             col = get_rgb(pid)
             if len(points) == 1:
-                _lw = max(0, int(lw * lw_factor))
-                cv2.circle(img, (int(x+0.5), int(y+0.5)), _lw*2, col, lw*2)
-                plot_cross(img, int(x+0.5), int(y+0.5), width=_lw, col=col, lw=lw*2)
+                _lw = max(0, int(_lw_point * lw_factor))
+                cv2.circle(img, (int(x+0.5), int(y+0.5)), _lw*2, col, _lw_point*2)
+                plot_cross(img, int(x+0.5), int(y+0.5), width=_lw, col=col, lw=_lw_point*2)
             else:
-                cv2.circle(img, (int(x+0.5), int(y+0.5)), lw*2, col, -1)
+                cv2.circle(img, (int(x+0.5), int(y+0.5)), _lw_point*2, col, -1)
             if vis_conf:
                 cv2.putText(img, '{:.1f}'.format(c), (int(x), int(y)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, col, 2)
 
