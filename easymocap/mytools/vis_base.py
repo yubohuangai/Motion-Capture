@@ -225,7 +225,7 @@ def plot_keypoints_total(img, annots, scale, pid_offset=0):
             if key in ['handl2d', 'handr2d', 'face2d']:
                 lw = _lw // 4
             else:
-                lw = _lw
+                lw = _lw // 2
             lw = max(lw, 1)
             plot_keypoints_auto(img, annot[key], pid, vis_conf=False, use_limb_color=False, scale=scale, lw=lw)
             if 'bbox' not in annot.keys() or (annot['bbox'][0] < 0 or annot['bbox'][0] >10000):
