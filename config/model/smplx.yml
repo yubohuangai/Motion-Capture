@@ -1,9 +1,8 @@
-module: "easymocap.smplmodel.body_model.SMPLlayer"
+module: easymocap.bodymodel.smpl.SMPLModel
 args:
-  model_path: "data/smplx/smplx"
-  model_type: "smplx"
-  gender: "neutral"
-  device: "cuda"
-  regressor_path: "data/smplx/J_regressor_body25_smplx.txt"
+  model_path: data/smplx/smplx/SMPLX_NEUTRAL.pkl
+  device: cuda
+  regressor_path: data/smplx/J_regressor_body25_smplx.txt
+  NUM_SHAPES: 10
   use_pose_blending: True
   use_shape_blending: True
