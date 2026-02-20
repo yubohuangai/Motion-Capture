@@ -216,7 +216,7 @@ def plot_keypoints_total(img, annots, scale, pid_offset=0):
         for key in ['keypoints', 'handl2d', 'handr2d']:
             if key not in annot.keys():continue
             if key in ['handl2d', 'handr2d', 'face2d']:
-                lw = _lw // 2
+                lw = _lw // 4
             else:
                 lw = _lw
             lw = max(lw, 1)
