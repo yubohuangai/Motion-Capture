@@ -27,6 +27,7 @@ Outputs:
 import os
 import shutil
 import tempfile
+from collections import defaultdict
 from glob import glob
 from os.path import basename, join
 
@@ -61,6 +62,113 @@ def resolve_path(root, path_or_name):
     if os.path.isabs(path_or_name):
         return path_or_name
     return join(root, path_or_name)
+
+
+def parse_keypoints2d(data):
+    """
+    Robust parser for chessboard json formats.
+    Supports:
+      - {"keypoints2d": ...}
+      - [{"keypoints2d": ...}, ...] (use first valid item)
+      - raw list/array-like keypoints
+    """
+    if isinstance(data, dict):
+        if "keypoints2d" not in data:
+            return None
+        arr = np.array(data["keypoints2d"], dtype=np.float64)
+    elif isinstance(data, list):
+        if len(data) == 0:
+            return None
+        if isinstance(data[0], dict):
+            for item in data:
+                if isinstance(item, dict) and "keypoints2d" in item:
+                    arr = np.array(item["keypoints2d"], dtype=np.float64)
+                    break
+            else:
+                return None
+        else:
+            arr = np.array(data, dtype=np.float64)
+    else:
+        return None
+    if arr.ndim != 2 or arr.shape[1] < 2:
+        return None
+    if arr.shape[1] == 2:
+        arr = np.hstack([arr, np.ones((arr.shape[0], 1), dtype=np.float64)])
+    return arr
+
+
+def sample_frames_balanced(candidate_frames, frame_valid_cams, camnames, max_frames):
+    """
+    Select frames to be temporally spread while balancing camera coverage.
+    """
+    if max_frames <= 0 or len(candidate_frames) <= max_frames:
+        return list(candidate_frames)
+
+    n = len(candidate_frames)
+    target = int(max_frames)
+    selected = []
+    selected_set = set()
+    cam_counts = {cam: 0 for cam in camnames}
+    frame_to_idx = {fr: i for i, fr in enumerate(candidate_frames)}
+
+    # First pass: one frame per temporal bin, prioritizing under-represented cams.
+    edges = np.linspace(0, n, target + 1)
+    for bi in range(target):
+        s = int(np.floor(edges[bi]))
+        e = int(np.floor(edges[bi + 1]))
+        if e <= s:
+            e = min(s + 1, n)
+        if s >= n:
+            break
+        center = 0.5 * (s + e - 1)
+        best = None
+        best_key = None
+        for idx in range(s, e):
+            fr = candidate_frames[idx]
+            if fr in selected_set:
+                continue
+            valid = frame_valid_cams[fr]
+            # Prefer frames that contain currently under-represented cameras.
+            balance = sum(1.0 / (1.0 + cam_counts[c]) for c in valid)
+            temporal = -abs(idx - center)
+            key = (balance, len(valid), temporal)
+            if best_key is None or key > best_key:
+                best = fr
+                best_key = key
+        if best is None:
+            continue
+        selected.append(best)
+        selected_set.add(best)
+        for c in frame_valid_cams[best]:
+            cam_counts[c] += 1
+
+    # Fill any remaining slots using balance + temporal diversity.
+    while len(selected) < target:
+        chosen = None
+        chosen_key = None
+        selected_indices = [frame_to_idx[f] for f in selected] if selected else []
+        for idx, fr in enumerate(candidate_frames):
+            if fr in selected_set:
+                continue
+            valid = frame_valid_cams[fr]
+            balance = sum(1.0 / (1.0 + cam_counts[c]) for c in valid)
+            if selected_indices:
+                min_dist = min(abs(idx - j) for j in selected_indices)
+                spread = min_dist / max(1, n - 1)
+            else:
+                spread = 1.0
+            key = (balance + 0.5 * spread, len(valid), spread)
+            if chosen_key is None or key > chosen_key:
+                chosen = fr
+                chosen_key = key
+        if chosen is None:
+            break
+        selected.append(chosen)
+        selected_set.add(chosen)
+        for c in frame_valid_cams[chosen]:
+            cam_counts[c] += 1
+
+    return sorted(selected, key=lambda f: frame_to_idx[f])
 
 
 def undistort_uv(uv, K, dist):
@@ -299,27 +407,59 @@ def main(args):
         all_frames |= set(m.keys())
 
     all_frames = sorted(all_frames)
-    if args.max_frames > 0:
-        all_frames = all_frames[: args.max_frames]
     if not all_frames:
         raise RuntimeError("No chessboard json files found.")
 
-    tracks = []
-    kept_frames = 0
+    # Parse detections once and keep only frames with valid chessboard detections.
+    frame_k2d_cache = {}
+    frame_valid_cams = {}
+    bad_json = 0
     for fr in all_frames:
-        frame_k2d = {}
+        frame_k2d_cache[fr] = {}
+        valid_cams = set()
         for cam in camnames:
             p = cam_to_map[cam].get(fr)
             if p is None:
                 continue
             data = read_json(p)
-            k2d = np.array(data["keypoints2d"], dtype=np.float64)
-            if k2d.ndim != 2 or k2d.shape[1] < 2:
+            k2d = parse_keypoints2d(data)
+            if k2d is None:
+                bad_json += 1
                 continue
-            if k2d.shape[1] == 2:
-                k2d = np.hstack([k2d, np.ones((k2d.shape[0], 1), dtype=np.float64)])
-            frame_k2d[cam] = k2d
+            if float(np.max(k2d[:, 2])) < args.conf:
+                continue
+            frame_k2d_cache[fr][cam] = k2d
+            valid_cams.add(cam)
+        frame_valid_cams[fr] = valid_cams
 
+    candidate_frames = [fr for fr in all_frames if len(frame_valid_cams[fr]) >= args.min_views]
+    if len(candidate_frames) == 0:
+        raise RuntimeError("No frames with valid chessboard detections in enough views.")
+
+    if args.max_frames > 0 and len(candidate_frames) > args.max_frames:
+        used_frames = sample_frames_balanced(
+            candidate_frames=candidate_frames,
+            frame_valid_cams=frame_valid_cams,
+            camnames=camnames,
+            max_frames=args.max_frames,
+        )
+    else:
+        used_frames = candidate_frames
+
+    cam_frame_counts = {
+        cam: int(sum(cam in frame_valid_cams[fr] for fr in used_frames)) for cam in camnames
+    }
+    print(
+        f"[colmap-BA] frame selection: total_json_frames={len(all_frames)} "
+        f"valid_frames={len(candidate_frames)} used_frames={len(used_frames)} "
+        f"(max_frames={args.max_frames}) bad_or_invalid_json={bad_json}"
+    )
+    print(f"[colmap-BA] frame coverage per camera: {cam_frame_counts}")
+
+    tracks = []
+    kept_frames = 0
+    for fr in used_frames:
+        frame_k2d = frame_k2d_cache[fr]
         if len(frame_k2d) < args.min_views:
             continue
         kept_frames += 1
@@ -374,9 +514,13 @@ def main(args):
 
     points_init = np.asarray(points_init, dtype=np.float64)
     print(
-        f"[colmap-BA] frames={len(all_frames)} kept={kept_frames} "
+        f"[colmap-BA] frames_used={len(used_frames)} kept={kept_frames} "
         f"tracks={len(tracks)} triangulated={points_init.shape[0]} dropped={dropped} "
         f"observations={len(observations)}"
+    )
+    print(
+        f"[colmap-BA] corner points used: "
+        f"2D_observations={len(observations)} 3D_tracks={points_init.shape[0]}"
     )
 
     # ------------------------------------------------------------------
