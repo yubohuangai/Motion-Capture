@@ -246,7 +246,7 @@ def extract_2d(image_root, annot_root, config, to_openpose=True):
     detector = MMPoseDetector(
         model_cfg=config['pose2d'],
         model_weights=config['pose2d_weights'],
-        # config_name=config['config_name'],
+        config_name=config['config_name'],
         to_openpose=to_openpose
     )
     imgnames = sorted(glob(join(image_root, '*' + ext)))
