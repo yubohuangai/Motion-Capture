@@ -8,7 +8,7 @@ from mmpose.apis import MMPoseInferencer
 from tqdm import tqdm
 from glob import glob
 from os.path import join
-from .wrapper_base import check_result, save_annot
+from .wrapper_base import check_result, save_annot, bbox_from_keypoints
 from ..annotator.file_utils import read_json
 import contextlib
 import io
@@ -45,6 +45,15 @@ HALPE_TO_BODY25 = {
     25: 24
 }
 pairs = [[1, 8], [1, 2], [1, 5], [2, 3], [3, 4], [5, 6], [6, 7], [8, 9], [9, 10], [10, 11], [8, 12], [12, 13], [13, 14], [1, 0], [0,15], [15,17], [0,16], [16,18], [14,19], [19,20], [14,21], [11,22], [22,23], [11,24]]
+
+COCOWB_FOOT_IN_BODY25 = {
+    17: 19,  # left big toe
+    18: 20,  # left small toe
+    19: 21,  # left heel
+    20: 22,  # right big toe
+    21: 23,  # right small toe
+    22: 24   # right heel
+}
 
 def coco17tobody25(points2d):
     """
@@ -84,6 +93,58 @@ def halpe2body25(points2d):
         kpts[:, b_idx, :] = points2d[:, h_idx, :]
 
     return kpts
+
+
+def zeros_kpts(num, dtype=np.float32):
+    return np.zeros((num, 3), dtype=dtype)
+
+
+def convert_mmpose_person_to_openpose(points2d):
+    """
+    Convert one mmpose person keypoints to EasyMocap/OpenPose style dict:
+    - keypoints: BODY25 (25, 3)
+    - handl2d:   (21, 3)
+    - handr2d:   (21, 3)
+    - face2d:    (68, 3) for coco-wholebody
+    """
+    n_kpts = points2d.shape[0]
+    dtype = points2d.dtype
+
+    body25 = zeros_kpts(25, dtype=dtype)
+    handl2d = zeros_kpts(21, dtype=dtype)
+    handr2d = zeros_kpts(21, dtype=dtype)
+    face2d = zeros_kpts(68, dtype=dtype)
+
+    # COCO-WholeBody: 17 body + 6 foot + 68 face + 21 left hand + 21 right hand = 133
+    if n_kpts >= 133:
+        body17 = points2d[:17]
+        body25 = coco17tobody25(body17[None])[0]
+        for wb_idx, body25_idx in COCOWB_FOOT_IN_BODY25.items():
+            body25[body25_idx] = points2d[wb_idx]
+        face2d = points2d[23:23+68]
+        handl2d = points2d[91:91+21]
+        handr2d = points2d[112:112+21]
+    elif n_kpts == 26:
+        body25 = halpe2body25(points2d[None])[0]
+    elif n_kpts == 17:
+        body25 = coco17tobody25(points2d[None])[0]
+    elif n_kpts >= 25:
+        # fallback for models already in BODY25-like order
+        body25 = points2d[:25]
+    else:
+        # unknown format, keep as much as possible in BODY25 container
+        body25[:n_kpts] = points2d
+
+    return {
+        'keypoints': body25.tolist(),
+        'bbox': bbox_from_keypoints(body25),
+        'handl2d': handl2d.tolist(),
+        'bbox_handl2d': bbox_from_keypoints(handl2d),
+        'handr2d': handr2d.tolist(),
+        'bbox_handr2d': bbox_from_keypoints(handr2d),
+        'face2d': face2d.tolist(),
+        'bbox_face2d': bbox_from_keypoints(face2d)
+    }
 
 
 class MMPoseDetector:
@@ -145,15 +206,14 @@ class MMPoseDetector:
         else:
             kpts[:, 2] = conf
 
-        if self.to_openpose:
-            kpts = halpe2body25(kpts[None])[0]
-
         # map back to full image if cropped
         if bbox is not None:
             kpts[:, 0] += x1
             kpts[:, 1] += y1
 
-        return kpts.tolist()
+        if self.to_openpose:
+            return convert_mmpose_person_to_openpose(kpts)
+        return {'keypoints': kpts.tolist()}
 
 
     # def predict(self, image):
@@ -180,7 +240,7 @@ class MMPoseDetector:
     #     return kpts25_all
 
 
-def extract_2d(image_root, annot_root, config, to_openpose=False):
+def extract_2d(image_root, annot_root, config, to_openpose=True):
     config.pop('force')
     ext = config.pop('ext')
     detector = MMPoseDetector(
@@ -205,10 +265,11 @@ def extract_2d(image_root, annot_root, config, to_openpose=False):
                 # create a new annotation for the person
                 new_annot = {
                     'personID': 0,
-                    'bbox': full_bbox + [1.0],  # assume score=1.0
-                    'keypoints': kpts_all,
                     'isKeyframe': True
                 }
+                new_annot.update(kpts_all)
+                if 'bbox' not in new_annot:
+                    new_annot['bbox'] = full_bbox + [1.0]
                 annots['annots'].append(new_annot)
 
         else:
@@ -221,6 +282,6 @@ def extract_2d(image_root, annot_root, config, to_openpose=False):
                 if kpts is None:
                     continue
 
-                annot_['keypoints'] = kpts
+                annot_.update(kpts)
 
         save_annot(annotname, annots)
