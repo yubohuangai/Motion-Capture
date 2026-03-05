@@ -161,7 +161,7 @@ def plot_keypoints(img, points, pid, config, vis_conf=False, use_limb_color=True
 def plot_keypoints_auto(img, points, pid, vis_conf=False, use_limb_color=True, scale=1, lw=-1, config_name=None, lw_factor=1):
     from ..dataset.config import CONFIG
     if config_name is None:
-        config_name = {25: 'body25', 15: 'body15', 21: 'hand', 42:'handlr', 17: 'coco', 1:'points', 67:'bodyhand', 137: 'total', 79:'up',
+        config_name = {25: 'body25', 15: 'body15', 21: 'hand', 42:'handlr', 17: 'coco', 1:'points', 67:'bodyhand', 118:'bodyhandface', 137: 'total', 79:'up',
             19:'ochuman'}[len(points)]
     config = CONFIG[config_name]
     if lw == -1:
@@ -175,7 +175,7 @@ def plot_keypoints_auto(img, points, pid, vis_conf=False, use_limb_color=True, s
         if i >= len(points) or j >= len(points):
             continue
         _lw_line = lw_line
-        if i >= 25 and config_name in ['bodyhand', 'total']:
+        if i >= 25 and config_name in ['bodyhand', 'bodyhandface', 'total']:
             _lw_line = max(img.shape[0]//600, 1)
         pt1, pt2 = points[i], points[j]
         if use_limb_color:
@@ -202,7 +202,7 @@ def plot_keypoints_auto(img, points, pid, vis_conf=False, use_limb_color=True, s
         if x < 0 or y < 0 or x >10000 or y >10000:
             continue
         _lw_point = lw_point
-        if i >= 25 and config_name in ['bodyhand', 'total']:
+        if i >= 25 and config_name in ['bodyhand', 'bodyhandface', 'total']:
             _lw_point = max(img.shape[0]//700, 1)
         c = points[i][-1]
         if c > 0.01:
