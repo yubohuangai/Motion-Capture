@@ -243,6 +243,7 @@ class MMPoseDetector:
 def extract_2d(image_root, annot_root, config, to_openpose=True):
     config.pop('force')
     ext = config.pop('ext')
+    os.makedirs(annot_root, exist_ok=True)
     detector = MMPoseDetector(
         model_cfg=config['pose2d'],
         model_weights=config['pose2d_weights'],
@@ -253,9 +254,21 @@ def extract_2d(image_root, annot_root, config, to_openpose=True):
     for imgname in tqdm(imgnames, desc='{:10s}'.format(os.path.basename(annot_root))):
         base = os.path.basename(imgname).replace(ext, '')
         annotname = join(annot_root, base + '.json')
-        annots = read_json(annotname)
-        detections = np.array([data['bbox'] for data in annots['annots']])
         image = cv2.imread(imgname)
+        if image is None:
+            continue
+
+        if os.path.exists(annotname):
+            annots = read_json(annotname)
+        else:
+            annots = {
+                'filename': os.sep.join(imgname.split(os.sep)[-2:]),
+                'height': int(image.shape[0]),
+                'width': int(image.shape[1]),
+                'annots': [],
+                'isKeyframe': False
+            }
+        detections = np.array([data['bbox'] for data in annots['annots']])
 
         # If no bbox detected, create a dummy bbox for whole image
         if detections.shape[0] == 0:
