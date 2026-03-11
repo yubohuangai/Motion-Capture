@@ -844,14 +844,13 @@ def main(args):
     if args.vis_image:
         vis_cam, vis_frame = None, None
         if args.vis_image == "auto" or (isinstance(args.vis_image, str) and args.vis_image.strip().lower() == "auto"):
-            # Auto-select: first (cam, frame) that has observations (guaranteed to have corners)
+            # Auto-select: last (cam, frame) that has observations (guaranteed to have corners)
             for cam_idx, pt_idx, u, v, _ in observations:
                 if pt_idx < len(tracks):
                     vis_cam = camnames[cam_idx]
                     vis_frame = tracks[pt_idx]["frame"]
                     if vis_frame.endswith(".json"):
                         vis_frame = vis_frame[:-5]
-                    break
             if vis_cam is None or vis_frame is None:
                 print("[vis] No observations to visualize (no images with corners in BA).")
             else:
@@ -866,6 +865,14 @@ def main(args):
                 vis_cam, vis_frame = parts[0].strip(), parts[1].strip()
                 if vis_frame.endswith(".json"):
                     vis_frame = vis_frame[:-5]
+                # Validate: frame must be in used_frames (frames used in BA)
+                used_frames_norm = {f[:-5] if f.endswith(".json") else f for f in used_frames}
+                if vis_frame not in used_frames_norm:
+                    print(
+                        f"[vis] Frame '{vis_frame}' not in BA used_frames. "
+                        f"First/last used: {used_frames[0]}, {used_frames[-1]}"
+                    )
+                    vis_cam, vis_frame = None, None
 
         if vis_cam is not None and vis_frame is not None:
             try:
