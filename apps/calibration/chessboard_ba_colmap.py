@@ -239,6 +239,157 @@ def compute_reprojection_error(cams, camnames, points3d, observations):
     return np.array(errs)
 
 
+def visualize_reprojection(
+    root,
+    cam,
+    frame,
+    cams,
+    cams_opt,
+    points_init,
+    points3d_opt,
+    observations,
+    tracks,
+    camnames,
+    out_path=None,
+):
+    """
+    Visualize detected corners, reprojected before BA, and reprojected after BA
+    on a single image. Print per-point reprojection errors.
+    """
+    cam_to_idx = {c: i for i, c in enumerate(camnames)}
+    if cam not in cam_to_idx:
+        raise ValueError(f"Camera '{cam}' not in {camnames}")
+    cam_idx = cam_to_idx[cam]
+
+    # Filter observations for this (cam, frame)
+    obs_here = []
+    for k, (ci, pt_idx, u, v, conf) in enumerate(observations):
+        if ci != cam_idx:
+            continue
+        if pt_idx >= len(tracks):
+            continue
+        if tracks[pt_idx]["frame"] != frame:
+            continue
+        obs_here.append((k, pt_idx, u, v))
+
+    if not obs_here:
+        print(
+            f"[vis] No observations for cam={cam} frame={frame}. "
+            f"Use a frame from the BA run (e.g. from used_frames)."
+        )
+        return
+
+    # Load image (try images/cam/frame.ext, then cam/frame.ext)
+    img_path = None
+    for prefix in (join(root, "images", cam), join(root, cam)):
+        for ext in (".jpg", ".png", ".jpeg"):
+            p = join(prefix, frame + ext)
+            if os.path.exists(p):
+                img_path = p
+                break
+        if img_path is not None:
+            break
+    if img_path is None:
+        print(f"[vis] Image not found: tried {root}/images/{cam}/{frame}.jpg|.png and {root}/{cam}/{frame}.jpg|.png")
+        return
+
+    img = cv2.imread(img_path)
+    if img is None:
+        print(f"[vis] Failed to load {img_path}")
+        return
+
+    vis = img.copy()
+    h, w = vis.shape[:2]
+
+    # Collect data per point
+    pts_detected = []
+    pts_reproj_before = []
+    pts_reproj_after = []
+    errs_before = []
+    errs_after = []
+
+    for k, pt_idx, u, v in obs_here:
+        uv_before, _ = cv2.projectPoints(
+            points_init[pt_idx].reshape(1, 3),
+            cams[cam]["Rvec"],
+            cams[cam]["T"],
+            cams[cam]["K"],
+            cams[cam]["dist"],
+        )
+        uv_after, _ = cv2.projectPoints(
+            points3d_opt[pt_idx].reshape(1, 3),
+            cams_opt[cam]["Rvec"],
+            cams_opt[cam]["T"],
+            cams_opt[cam]["K"],
+            cams_opt[cam]["dist"],
+        )
+        uv_b = uv_before.reshape(2)
+        uv_a = uv_after.reshape(2)
+        eb = float(np.linalg.norm(uv_b - np.array([u, v])))
+        ea = float(np.linalg.norm(uv_a - np.array([u, v])))
+
+        pts_detected.append((u, v))
+        pts_reproj_before.append(uv_b)
+        pts_reproj_after.append(uv_a)
+        errs_before.append(eb)
+        errs_after.append(ea)
+
+    pts_detected = np.array(pts_detected)
+    pts_reproj_before = np.array(pts_reproj_before)
+    pts_reproj_after = np.array(pts_reproj_after)
+    errs_before = np.array(errs_before)
+    errs_after = np.array(errs_after)
+
+    # Draw: detected=green, reproj_before=red, reproj_after=blue
+    radius = max(2, min(w, h) // 400)
+    for i in range(len(pts_detected)):
+        xd, yd = int(round(pts_detected[i, 0])), int(round(pts_detected[i, 1]))
+        xb, yb = int(round(pts_reproj_before[i, 0])), int(round(pts_reproj_before[i, 1]))
+        xa, ya = int(round(pts_reproj_after[i, 0])), int(round(pts_reproj_after[i, 1]))
+
+        cv2.circle(vis, (xd, yd), radius, (0, 255, 0), -1)  # green: detected
+        cv2.circle(vis, (xb, yb), radius, (0, 0, 255), -1)   # red: before BA
+        cv2.circle(vis, (xa, ya), radius, (255, 0, 0), -1)   # blue: after BA
+
+        # Line from detected to reproj_after (main error)
+        cv2.line(vis, (xd, yd), (xa, ya), (255, 255, 0), 1)
+
+    # Legend
+    cv2.putText(
+        vis, "green: detected", (10, 25),
+        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 1
+    )
+    cv2.putText(
+        vis, "red: reproj before BA", (10, 45),
+        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 1
+    )
+    cv2.putText(
+        vis, "blue: reproj after BA", (10, 65),
+        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 1
+    )
+    cv2.putText(
+        vis, "yellow line: detected -> after", (10, 85),
+        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 1
+    )
+
+    # Print per-point errors
+    print(f"\n[vis] Reprojection errors for cam={cam} frame={frame} (n={len(errs_before)} points)")
+    print("  pt   err_before(px)   err_after(px)")
+    print("  " + "-" * 36)
+    for i in range(len(errs_before)):
+        print(f"  {i:3d}   {errs_before[i]:12.3f}   {errs_after[i]:12.3f}")
+    print("  " + "-" * 36)
+    print(f"  mean {errs_before.mean():12.3f}   {errs_after.mean():12.3f}")
+    print(f"  rms  {np.sqrt((errs_before**2).mean()):12.3f}   {np.sqrt((errs_after**2).mean()):12.3f}")
+
+    # Save
+    if out_path is None:
+        out_path = join(root, "output", f"reproj_vis_{cam}_{frame}.jpg")
+    os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+    cv2.imwrite(out_path, vis)
+    print(f"[vis] Saved: {out_path}")
+
+
 # ---------------------------------------------------------------------------
 # COLMAP sparse model I/O helpers
 # ---------------------------------------------------------------------------
@@ -682,6 +833,36 @@ def main(args):
     print(f"[colmap-BA] wrote points3d   : {out_points} (xyz, N={points3d_opt.shape[0]})")
     print(f"[colmap-BA] visualize: python apps/calibration/vis_chess_sfm_ba.py {root}")
 
+    # ------------------------------------------------------------------
+    # Optional: visualize reprojection on a selected image
+    # ------------------------------------------------------------------
+    if args.vis_image:
+        parts = args.vis_image.replace(",", " ").split()
+        if len(parts) != 2:
+            print(
+                f"[vis] --vis_image expects 'cam,frame' e.g. '01,000000'. Got: {args.vis_image}"
+            )
+        else:
+            vis_cam, vis_frame = parts[0].strip(), parts[1].strip()
+            if vis_frame.endswith(".json"):
+                vis_frame = vis_frame[:-5]
+            try:
+                visualize_reprojection(
+                    root=root,
+                    cam=vis_cam,
+                    frame=vis_frame,
+                    cams=cams,
+                    cams_opt=cams_opt,
+                    points_init=points_init,
+                    points3d_opt=points3d_opt,
+                    observations=observations,
+                    tracks=tracks,
+                    camnames=camnames,
+                    out_path=resolve_path(root, args.vis_out) if args.vis_out else None,
+                )
+            except Exception as e:
+                print(f"[vis] Error: {e}")
+
     if not args.keep_work_dir and not args.work_dir:
         shutil.rmtree(work_dir, ignore_errors=True)
         print(f"[colmap-BA] cleaned up temp dir: {work_dir}")
@@ -724,6 +905,19 @@ if __name__ == "__main__":
     parser.add_argument("--no-refine_intri", dest="refine_intri", action="store_false")
     parser.add_argument("--max_iter", type=int, default=500, help="BA max iterations")
     parser.add_argument("--func_tol", type=float, default=1e-6, help="BA function tolerance")
+
+    parser.add_argument(
+        "--vis_image",
+        type=str,
+        default="",
+        help="Visualize reprojection on image: 'cam,frame' e.g. '01,000000'",
+    )
+    parser.add_argument(
+        "--vis_out",
+        type=str,
+        default="",
+        help="Output path for reprojection vis (default: output/reproj_vis_<cam>_<frame>.jpg)",
+    )
 
     parser.set_defaults(refine_intri=True)
     main(parser.parse_args())
