@@ -275,7 +275,7 @@ def visualize_reprojection(
     if not obs_here:
         print(
             f"[vis] No observations for cam={cam} frame={frame}. "
-            f"Use a frame from the BA run (e.g. from used_frames)."
+            f"This image has no chessboard corners in the BA run. Use --vis_image auto to pick one that does."
         )
         return
 
@@ -837,15 +837,32 @@ def main(args):
     # Optional: visualize reprojection on a selected image
     # ------------------------------------------------------------------
     if args.vis_image:
-        parts = args.vis_image.replace(",", " ").split()
-        if len(parts) != 2:
-            print(
-                f"[vis] --vis_image expects 'cam,frame' e.g. '01,000000'. Got: {args.vis_image}"
-            )
+        vis_cam, vis_frame = None, None
+        if args.vis_image == "auto" or (isinstance(args.vis_image, str) and args.vis_image.strip().lower() == "auto"):
+            # Auto-select: first (cam, frame) that has observations (guaranteed to have corners)
+            for cam_idx, pt_idx, u, v, _ in observations:
+                if pt_idx < len(tracks):
+                    vis_cam = camnames[cam_idx]
+                    vis_frame = tracks[pt_idx]["frame"]
+                    if vis_frame.endswith(".json"):
+                        vis_frame = vis_frame[:-5]
+                    break
+            if vis_cam is None or vis_frame is None:
+                print("[vis] No observations to visualize (no images with corners in BA).")
+            else:
+                print(f"[vis] Auto-selected image with corners: cam={vis_cam} frame={vis_frame}")
         else:
-            vis_cam, vis_frame = parts[0].strip(), parts[1].strip()
-            if vis_frame.endswith(".json"):
-                vis_frame = vis_frame[:-5]
+            parts = args.vis_image.replace(",", " ").split()
+            if len(parts) != 2:
+                print(
+                    f"[vis] --vis_image expects 'auto' or 'cam,frame' e.g. '01,000000'. Got: {args.vis_image}"
+                )
+            else:
+                vis_cam, vis_frame = parts[0].strip(), parts[1].strip()
+                if vis_frame.endswith(".json"):
+                    vis_frame = vis_frame[:-5]
+
+        if vis_cam is not None and vis_frame is not None:
             try:
                 visualize_reprojection(
                     root=root,
@@ -908,9 +925,11 @@ if __name__ == "__main__":
 
     parser.add_argument(
         "--vis_image",
-        type=str,
+        nargs="?",
+        const="auto",
         default="",
-        help="Visualize reprojection on image: 'cam,frame' e.g. '01,000000'",
+        metavar="cam,frame",
+        help="Visualize reprojection: use 'auto' (default when flag given) to pick first image with corners, or 'cam,frame' e.g. '01,000000'",
     )
     parser.add_argument(
         "--vis_out",
