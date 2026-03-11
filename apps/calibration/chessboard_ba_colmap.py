@@ -716,8 +716,8 @@ if __name__ == "__main__":
     parser.add_argument("--conf", type=float, default=0.1, help="min keypoint confidence")
     parser.add_argument("--min_views", type=int, default=2, help="min cameras per track")
     parser.add_argument("--step", type=int, default=1, help="sample chessboard frames by step")
-    parser.add_argument("--max_frames", type=int, default=-1, help="limit number of frames")
-    parser.add_argument("--max_points", type=int, default=20000, help="cap tracks (-1 for all)")
+    parser.add_argument("--max_frames", type=int, default=300, help="limit number of frames")
+    parser.add_argument("--max_points", type=int, default=-1, help="cap tracks (-1 for all)")
     parser.add_argument("--seed", type=int, default=42)
 
     parser.add_argument("--refine_intri", dest="refine_intri", action="store_true")
