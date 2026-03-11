@@ -261,6 +261,9 @@ def visualize_reprojection(
         raise ValueError(f"Camera '{cam}' not in {camnames}")
     cam_idx = cam_to_idx[cam]
 
+    # Normalize frame for comparison (tracks store "000011.json", we may get "000011")
+    frame_norm = frame[:-5] if frame.endswith(".json") else frame
+
     # Filter observations for this (cam, frame)
     obs_here = []
     for k, (ci, pt_idx, u, v, conf) in enumerate(observations):
@@ -268,13 +271,15 @@ def visualize_reprojection(
             continue
         if pt_idx >= len(tracks):
             continue
-        if tracks[pt_idx]["frame"] != frame:
+        tr_frame = tracks[pt_idx]["frame"]
+        tr_frame_norm = tr_frame[:-5] if tr_frame.endswith(".json") else tr_frame
+        if tr_frame_norm != frame_norm:
             continue
         obs_here.append((k, pt_idx, u, v))
 
     if not obs_here:
         print(
-            f"[vis] No observations for cam={cam} frame={frame}. "
+            f"[vis] No observations for cam={cam} frame={frame_norm}. "
             f"This image has no chessboard corners in the BA run. Use --vis_image auto to pick one that does."
         )
         return
@@ -283,14 +288,14 @@ def visualize_reprojection(
     img_path = None
     for prefix in (join(root, "images", cam), join(root, cam)):
         for ext in (".jpg", ".png", ".jpeg"):
-            p = join(prefix, frame + ext)
+            p = join(prefix, frame_norm + ext)
             if os.path.exists(p):
                 img_path = p
                 break
         if img_path is not None:
             break
     if img_path is None:
-        print(f"[vis] Image not found: tried {root}/images/{cam}/{frame}.jpg|.png and {root}/{cam}/{frame}.jpg|.png")
+        print(f"[vis] Image not found: tried {root}/images/{cam}/{frame_norm}.jpg|.png and {root}/{cam}/{frame_norm}.jpg|.png")
         return
 
     img = cv2.imread(img_path)
@@ -373,7 +378,7 @@ def visualize_reprojection(
     )
 
     # Print per-point errors
-    print(f"\n[vis] Reprojection errors for cam={cam} frame={frame} (n={len(errs_before)} points)")
+    print(f"\n[vis] Reprojection errors for cam={cam} frame={frame_norm} (n={len(errs_before)} points)")
     print("  pt   err_before(px)   err_after(px)")
     print("  " + "-" * 36)
     for i in range(len(errs_before)):
@@ -384,7 +389,7 @@ def visualize_reprojection(
 
     # Save
     if out_path is None:
-        out_path = join(root, "output", f"reproj_vis_{cam}_{frame}.jpg")
+        out_path = join(root, "output", f"reproj_vis_{cam}_{frame_norm}.jpg")
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
     cv2.imwrite(out_path, vis)
     print(f"[vis] Saved: {out_path}")
