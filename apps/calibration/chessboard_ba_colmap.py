@@ -20,8 +20,9 @@ Inputs:
   - chessboard/<cam>/*.json
 
 Outputs:
-  - refined intri / extri yaml
-  - optimized 3D points npz
+  - refined intri / extri yaml (intri_colmap_ba.yml, extri_colmap_ba.yml)
+  - optimized 3D points npz (output/points_chess_colmap_ba.npz, key 'xyz')
+    compatible with: python apps/calibration/vis_chess_sfm_ba.py <path>
 """
 
 import os
@@ -357,6 +358,29 @@ def read_back_colmap_model(sparse_path, camnames):
     return cams_out, points3d_opt
 
 
+def align_world_to_camera(cams, points3d, origin_cam):
+    """
+    Transform world so that origin_cam is at origin (identity R, zero T).
+    Camera model: X_cam = R @ X_world + T. Camera center: C = -R^T @ T.
+    """
+    if origin_cam not in cams:
+        raise RuntimeError(f"origin_cam '{origin_cam}' not in cameras {list(cams.keys())}")
+    R0 = cams[origin_cam]["R"].astype(np.float64)
+    T0 = cams[origin_cam]["T"].astype(np.float64).reshape(3)
+    C0 = (-R0.T @ T0).reshape(3)
+
+    cams_new = {}
+    for cam, cd in cams.items():
+        R = cd["R"].astype(np.float64)
+        T = cd["T"].astype(np.float64).reshape(3)
+        R_new = R @ R0.T
+        T_new = (R @ C0 + T).reshape(3, 1)
+        Rvec_new, _ = cv2.Rodrigues(R_new)
+        cams_new[cam] = {**cd, "R": R_new, "T": T_new, "Rvec": Rvec_new}
+    pts_new = (R0 @ (points3d - C0).T).T
+    return cams_new, pts_new
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -634,6 +658,19 @@ def main(args):
     )
 
     # ------------------------------------------------------------------
+    # Align world so origin_cam is at origin
+    # ------------------------------------------------------------------
+    if args.origin_cam:
+        if args.origin_cam not in camnames:
+            raise RuntimeError(
+                f"--origin_cam '{args.origin_cam}' not in cameras. Available: {camnames}"
+            )
+        cams_opt, points3d_opt = align_world_to_camera(
+            cams_opt, points3d_opt, args.origin_cam
+        )
+        print(f"[colmap-BA] aligned world to camera '{args.origin_cam}' (origin)")
+
+    # ------------------------------------------------------------------
     # Write outputs
     # ------------------------------------------------------------------
     write_intri(out_intri, cams_opt)
@@ -642,7 +679,8 @@ def main(args):
     np.savez_compressed(out_points, xyz=points3d_opt)
     print(f"[colmap-BA] wrote intrinsics : {out_intri}")
     print(f"[colmap-BA] wrote extrinsics : {out_extri}")
-    print(f"[colmap-BA] wrote points3d   : {out_points}")
+    print(f"[colmap-BA] wrote points3d   : {out_points} (xyz, N={points3d_opt.shape[0]})")
+    print(f"[colmap-BA] visualize: python apps/calibration/vis_chess_sfm_ba.py {root}")
 
     if not args.keep_work_dir and not args.work_dir:
         shutil.rmtree(work_dir, ignore_errors=True)
@@ -665,6 +703,12 @@ if __name__ == "__main__":
     parser.add_argument("--out_extri", type=str, default="extri_colmap_ba.yml")
     parser.add_argument("--out_points", type=str, default="output/points_chess_colmap_ba.npz")
 
+    parser.add_argument(
+        "--origin_cam",
+        type=str,
+        default="01",
+        help="camera to use as world origin (identity R, zero T); '' to disable",
+    )
     parser.add_argument("--colmap", type=str, default="colmap", help="path to colmap binary")
     parser.add_argument("--work_dir", type=str, default="", help="temp workspace (auto if empty)")
     parser.add_argument("--keep_work_dir", action="store_true", help="keep the COLMAP workspace")

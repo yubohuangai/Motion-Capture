@@ -1,7 +1,7 @@
 """
-Visualize chessboard SfM-BA outputs:
-  - points_chess_sfm_ba.npz (xyz)
-  - intri_sfm_ba.yml / extri_sfm_ba.yml
+Visualize chessboard SfM-BA / COLMAP-BA outputs:
+  - points_chess_colmap_ba.npz (or points_chess_sfm_ba.npz)
+  - intri_colmap_ba.yml / extri_colmap_ba.yml
 
 Shows:
   - point cloud
@@ -198,9 +198,9 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument("path", type=str, help="dataset root")
-    parser.add_argument("--intri", type=str, default="intri_sfm_ba.yml")
-    parser.add_argument("--extri", type=str, default="extri_sfm_ba.yml")
-    parser.add_argument("--points", type=str, default="output/points_chess_sfm_ba.npz")
+    parser.add_argument("--intri", type=str, default="intri_colmap_ba.yml")
+    parser.add_argument("--extri", type=str, default="extri_colmap_ba.yml")
+    parser.add_argument("--points", type=str, default="output/points_chess_colmap_ba.npz")
     parser.add_argument("--subs", type=str, nargs="+", default=[], help="camera subset to visualize")
     parser.add_argument("--max_points", type=int, default=120000, help="random subsample for visualization")
     parser.add_argument("--seed", type=int, default=42)
