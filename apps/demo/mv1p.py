@@ -124,16 +124,22 @@ def mv1pmf_smpl(dataset, args, weight_pose=None, weight_shape=None):
         if args.vis_smpl:
             dataset.vis_smpl(vertices=vertices[0], faces=body_model.faces, images=images, nf=nf, sub_vis=args.sub_vis, add_back=True)
         if vis_sil:
-            verts_before = None
-            if pre_refine_shapes is not None:
-                param_before = param.copy()
-                param_before['shapes'] = pre_refine_shapes
-                verts_before = body_model(
-                    return_verts=True, return_tensor=False, **param_before)[0]
-            vis_shape_silhouette_overlay(
-                dataset, images, vertices[0], silhouette_points[nf-start], nf, args,
-                vertices_before=verts_before
-            )
+            frame_pts = silhouette_points[nf-start]
+            has_contour = any(
+                (p.shape[0] > 0 if isinstance(p, np.ndarray) else len(p) > 0)
+                for p in frame_pts)
+            if has_contour:
+                verts_before = None
+                if pre_refine_shapes is not None:
+                    param_before = param.copy()
+                    param_before['shapes'] = pre_refine_shapes
+                    verts_before = body_model(
+                        return_verts=True, return_tensor=False,
+                        **param_before)[0]
+                vis_shape_silhouette_overlay(
+                    dataset, images, vertices[0], frame_pts, nf, args,
+                    vertices_before=verts_before
+                )
         if args.vis_repro:
             keypoints = body_model(return_verts=False, return_tensor=False, **param)[0]
             kpts_repro = projectN3(keypoints, dataset.Pall)

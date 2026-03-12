@@ -30,9 +30,9 @@ def load_weight_shape_refine(model, opts):
         weight = {
             'k3d_shape': 1.,
             'k2d_shape': 1e-4,
-            'chamfer': 5e-6,
+            'chamfer': 1e-3,
             'reg_shapes': 5e-3,
-            'init_shape': 1e-1,
+            'init_shape': 1e-2,
         }
     elif model == 'mano':
         weight = {

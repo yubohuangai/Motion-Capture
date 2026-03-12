@@ -149,7 +149,8 @@ def optimizeShapeSilhouette(body_model, body_params, silhouette_points, Pall, we
         for nf, nv in valid_pairs:
             pts = points_t[nf][nv]
             dists = torch.cdist(proj[nv, nf], pts, p=2)
-            chamfer_loss = chamfer_loss + dists.min(dim=1)[0].mean()
+            chamfer_loss = chamfer_loss + (dists.min(dim=1)[0].mean()
+                                           + dists.min(dim=0)[0].mean())
             count += 1
         if count > 0:
             chamfer_loss = chamfer_loss / count
@@ -310,7 +311,11 @@ def optimizeShapeWithPose(body_model, body_params, keypoints3d,
             for nf, nv in valid_pairs:
                 pts = sil_pts_t[nf][nv]
                 dists = torch.cdist(proj_v_2d[nv, nf], pts, p=2)
-                chamfer_loss = chamfer_loss + dists.min(dim=1)[0].mean()
+                # Bi-directional Chamfer:
+                #   forward  (mesh→contour): penalizes mesh extending beyond body
+                #   backward (contour→mesh): penalizes mesh being too small
+                chamfer_loss = chamfer_loss + (dists.min(dim=1)[0].mean()
+                                               + dists.min(dim=0)[0].mean())
                 count += 1
             if count > 0:
                 chamfer_loss = chamfer_loss / count
