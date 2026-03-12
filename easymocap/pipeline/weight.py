@@ -28,11 +28,11 @@ def load_weight_shape_refine(model, opts):
     """
     if model in ['smpl', 'smplh', 'smplx']:
         weight = {
-            'k3d_shape': 1.,
+            'k3d_shape': 0.,
             'k2d_shape': 1e-4,
-            'chamfer': 1e-3,
+            'chamfer': 5e-2,
             'reg_shapes': 5e-3,
-            'init_shape': 1e-2,
+            'init_shape': 5e-3,
         }
     elif model == 'mano':
         weight = {

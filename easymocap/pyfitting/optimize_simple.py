@@ -260,37 +260,40 @@ def optimizeShapeWithPose(body_model, body_params, keypoints3d,
             idx = np.linspace(0, len(valid_pairs) - 1, max_pairs, dtype=int)
             valid_pairs = [valid_pairs[i] for i in idx]
 
-    optimizer = LBFGS(opt_params, line_search_fn='strong_wolfe', max_iter=15)
+    optimizer = LBFGS(opt_params, line_search_fn='strong_wolfe', max_iter=30)
     ones_cache = {}
 
     def closure(debug=False):
         optimizer.zero_grad()
-        joints = body_model(return_verts=False, return_tensor=True,
-                            **body_params)
-        nJ = min(joints.shape[1], kp3d_pos.shape[1])
 
         loss_dict = {}
 
-        if weight_loss.get('k3d_shape', 0.) > 0.:
-            diff = (joints[:, :nJ, :3] - kp3d_pos[:, :nJ]) * kp3d_conf[:, :nJ]
-            loss_dict['k3d_shape'] = torch.sum(diff ** 2) / nFrames
+        need_joints = (weight_loss.get('k3d_shape', 0.) > 0. or has_2d)
+        if need_joints:
+            joints = body_model(return_verts=False, return_tensor=True,
+                                **body_params)
+            nJ = min(joints.shape[1], kp3d_pos.shape[1])
 
-        if has_2d:
-            nJ_homo = joints.shape[1]
-            key_homo = nJ_homo
-            if key_homo not in ones_cache:
-                ones_cache[key_homo] = torch.ones(
-                    nFrames, nJ_homo, 1, device=device)
-            joints_h = torch.cat([joints[..., :3], ones_cache[key_homo]],
-                                 dim=-1)
-            point_cam = torch.einsum('vab,fnb->vfna', Pall_t, joints_h)
-            proj_2d = point_cam[..., :2] / torch.clamp(
-                point_cam[..., 2:3], min=1e-6)
-            nJ2d = min(proj_2d.shape[2], kp2d_pos.shape[2])
-            diff_2d = ((proj_2d[:, :, :nJ2d] - kp2d_pos[:, :, :nJ2d])
-                       * kp2d_conf[:, :, :nJ2d]
-                       * inv_bbox.unsqueeze(2))
-            loss_dict['k2d_shape'] = torch.sum(diff_2d ** 2) / nFrames / nViews
+            if weight_loss.get('k3d_shape', 0.) > 0.:
+                diff = (joints[:, :nJ, :3] - kp3d_pos[:, :nJ]) * kp3d_conf[:, :nJ]
+                loss_dict['k3d_shape'] = torch.sum(diff ** 2) / nFrames
+
+            if has_2d:
+                nJ_homo = joints.shape[1]
+                key_homo = nJ_homo
+                if key_homo not in ones_cache:
+                    ones_cache[key_homo] = torch.ones(
+                        nFrames, nJ_homo, 1, device=device)
+                joints_h = torch.cat([joints[..., :3], ones_cache[key_homo]],
+                                     dim=-1)
+                point_cam = torch.einsum('vab,fnb->vfna', Pall_t, joints_h)
+                proj_2d = point_cam[..., :2] / torch.clamp(
+                    point_cam[..., 2:3], min=1e-6)
+                nJ2d = min(proj_2d.shape[2], kp2d_pos.shape[2])
+                diff_2d = ((proj_2d[:, :, :nJ2d] - kp2d_pos[:, :, :nJ2d])
+                           * kp2d_conf[:, :, :nJ2d]
+                           * inv_bbox.unsqueeze(2))
+                loss_dict['k2d_shape'] = torch.sum(diff_2d ** 2) / nFrames / nViews
 
         if has_sil and len(valid_pairs) > 0:
             verts = body_model(return_verts=True, return_tensor=True,
@@ -311,9 +314,6 @@ def optimizeShapeWithPose(body_model, body_params, keypoints3d,
             for nf, nv in valid_pairs:
                 pts = sil_pts_t[nf][nv]
                 dists = torch.cdist(proj_v_2d[nv, nf], pts, p=2)
-                # Bi-directional Chamfer:
-                #   forward  (mesh→contour): penalizes mesh extending beyond body
-                #   backward (contour→mesh): penalizes mesh being too small
                 chamfer_loss = chamfer_loss + (dists.min(dim=1)[0].mean()
                                                + dists.min(dim=0)[0].mean())
                 count += 1
@@ -333,10 +333,28 @@ def optimizeShapeWithPose(body_model, body_params, keypoints3d,
         loss.backward()
         return loss
 
-    fitting = FittingMonitor(ftol=1e-4)
+    # Log loss before optimization.
+    with torch.no_grad():
+        ld_before = closure(debug=True)
+    print('[Shape refine] BEFORE: ' + '  '.join(
+        '{} {:.4f}(w={})'.format(k, v.item(), weight_loss.get(k, 0.))
+        for k, v in ld_before.items()))
+    print('[Shape refine] betas: ' + ' '.join(
+        '{:.3f}'.format(b) for b in body_params['shapes'].detach().cpu().view(-1).tolist()))
+
+    fitting = FittingMonitor(ftol=1e-5)
     fitting.run_fitting(optimizer, closure, opt_params)
     fitting.close()
     grad_require(opt_params, False)
+
+    with torch.no_grad():
+        ld_after = closure(debug=True)
+    print('[Shape refine] AFTER:  ' + '  '.join(
+        '{} {:.4f}(w={})'.format(k, v.item(), weight_loss.get(k, 0.))
+        for k, v in ld_after.items()))
+    print('[Shape refine] betas: ' + ' '.join(
+        '{:.3f}'.format(b) for b in body_params['shapes'].detach().cpu().view(-1).tolist()))
+
     body_params = {key: val.detach().cpu().numpy()
                    for key, val in body_params.items()}
     return body_params
