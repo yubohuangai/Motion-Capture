@@ -5,6 +5,7 @@
   @ LastEditTime: 2021-05-25 19:51:12
   @ FilePath: /EasyMocap/easymocap/pyfitting/optimize_simple.py
 '''
+import cv2
 import numpy as np
 import torch
 from .lbfgs import LBFGS 
@@ -67,6 +68,31 @@ def _silhouette_vertex_indices(proj_2d, faces_t, edge_v_t, edge_f_t):
     if not sil_mask.any():
         return torch.empty(0, dtype=torch.long, device=proj_2d.device)
     return torch.unique(edge_v_t[sil_mask].reshape(-1))
+
+
+def _outside_gt_contour(gt_pts_np, query_pts_np):
+    """Return boolean mask: True for query points outside the GT contour polygon.
+
+    Renders the GT contour as a filled polygon and tests each query point.
+    Points outside the image bounds are considered outside.
+    """
+    nq = query_pts_np.shape[0]
+    if gt_pts_np.shape[0] < 3:
+        return np.ones(nq, dtype=bool)
+    all_pts = np.concatenate([gt_pts_np, query_pts_np], axis=0)
+    max_xy = np.ceil(all_pts.max(axis=0)).astype(int) + 2
+    h = int(max(min(max_xy[1], 4096), 1))
+    w = int(max(min(max_xy[0], 4096), 1))
+    mask = np.zeros((h, w), dtype=np.uint8)
+    poly = gt_pts_np.reshape(-1, 1, 2).astype(np.int32)
+    cv2.fillPoly(mask, [poly], 255)
+    qi = query_pts_np.astype(np.int32)
+    oob = (qi[:, 0] < 0) | (qi[:, 0] >= w) | (qi[:, 1] < 0) | (qi[:, 1] >= h)
+    qi = np.clip(qi, 0, np.array([w - 1, h - 1]))
+    result = mask[qi[:, 1], qi[:, 0]] == 0
+    result[oob] = True
+    return result
+
 
 def optimizeShape(body_model, body_params, keypoints3d,
     weight_loss, kintree, cfg=None):
@@ -211,10 +237,15 @@ def optimizeShapeSilhouette(body_model, body_params, silhouette_points, Pall, we
             if sil_idx.numel() == 0:
                 continue
             mesh_contour = pv[sil_idx]
-            dists = torch.cdist(mesh_contour, gt_contour, p=2)
-            fwd = dists.min(dim=1)[0].mean()
-            bwd = dists.min(dim=0)[0].mean()
-            chamfer_loss = chamfer_loss + fwd + bwd
+            outside = _outside_gt_contour(
+                gt_contour.detach().cpu().numpy(),
+                mesh_contour.detach().cpu().numpy())
+            outside_t = torch.tensor(outside, dtype=torch.bool,
+                                     device=device)
+            if not outside_t.any():
+                continue
+            dists = torch.cdist(mesh_contour[outside_t], gt_contour, p=2)
+            chamfer_loss = chamfer_loss + dists.min(dim=1)[0].mean()
             count += 1
         if count > 0:
             chamfer_loss = chamfer_loss / count
@@ -388,10 +419,15 @@ def optimizeShapeWithPose(body_model, body_params, keypoints3d,
                 if sil_idx.numel() == 0:
                     continue
                 mesh_contour = pv[sil_idx]        # (S, 2)
-                dists = torch.cdist(mesh_contour, gt_contour, p=2)
-                fwd = dists.min(dim=1)[0].mean()  # mesh→gt
-                bwd = dists.min(dim=0)[0].mean()  # gt→mesh
-                chamfer_loss = chamfer_loss + fwd + bwd
+                outside = _outside_gt_contour(
+                    gt_contour.detach().cpu().numpy(),
+                    mesh_contour.detach().cpu().numpy())
+                outside_t = torch.tensor(outside, dtype=torch.bool,
+                                         device=device)
+                if not outside_t.any():
+                    continue
+                dists = torch.cdist(mesh_contour[outside_t], gt_contour, p=2)
+                chamfer_loss = chamfer_loss + dists.min(dim=1)[0].mean()
                 count += 1
             if count > 0:
                 chamfer_loss = chamfer_loss / count
