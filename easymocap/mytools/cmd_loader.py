@@ -51,6 +51,12 @@ def load_parser():
     recon.add_argument('--MAX_SPEED_ERROR', type=int,
         help='The threshold of reprojection error', default=50)
     recon.add_argument('--robust3d', action='store_true')
+    recon.add_argument('--refine_shape', action='store_true',
+        help='after initial pose fitting, refine shape using 3D joint matching, '
+             '2D reprojection, and optional silhouette, then re-fit pose '
+             '(inspired by smplfitter)')
+    recon.add_argument('--refine_shape_iters', type=int, default=1,
+        help='number of shape-pose alternation iterations for --refine_shape')
     recon.add_argument('--shape_silhouette', action='store_true',
         help='refine shape using silhouette Chamfer loss after initial pose fitting')
     recon.add_argument('--shape_mask_root', type=str, default='masks',

@@ -174,6 +174,169 @@ def optimizeShapeSilhouette(body_model, body_params, silhouette_points, Pall, we
     body_params = {key: val.detach().cpu().numpy() for key, val in body_params.items()}
     return body_params
 
+def optimizeShapeWithPose(body_model, body_params, keypoints3d,
+    keypoints2d, bboxes, Pall, weight_loss,
+    silhouette_points=None, max_verts=1000, max_pairs=200):
+    """Refine shape parameters using the current pose estimate.
+
+    Inspired by smplfitter's vertex/joint-level shape fitting, but adapted for
+    multi-view scenarios with 2D keypoints and camera matrices.
+
+    Unlike optimizeShape (which only matches bone lengths in T-pose), this
+    function uses the fitted pose to leverage:
+      - Direct 3D joint position matching (many more constraints than bone lengths)
+      - Multi-view 2D joint reprojection (uses image evidence from all cameras)
+      - Optional silhouette Chamfer loss (captures body width/depth)
+
+    Args:
+        body_model: SMPL/SMPLX body model.
+        body_params: dict of current fitted parameters (poses/Rh/Th/shapes/expression).
+        keypoints3d: (nFrames, nJoints, 4) triangulated 3D keypoints with confidence.
+        keypoints2d: (nFrames, nViews, nJoints, 3) multi-view 2D keypoints, or None.
+        bboxes: (nFrames, nViews, 5) bounding boxes per view, or None.
+        Pall: (nViews, 3, 4) projection matrices.
+        weight_loss: dict of loss weights (k3d_shape, k2d_shape, chamfer,
+                     reg_shapes, init_shape).
+        silhouette_points: nested list [nFrames][nViews] of (N, 2) arrays, or None.
+        max_verts: vertex subsample count for silhouette Chamfer.
+        max_pairs: max frame-view pairs for silhouette loss.
+    """
+    device = body_model.device
+    nFrames = keypoints3d.shape[0]
+
+    body_params = {key: torch.Tensor(val).to(device)
+                   for key, val in body_params.items()}
+    body_params_init = {key: val.clone() for key, val in body_params.items()}
+
+    opt_params = [body_params['shapes']]
+    grad_require(opt_params, True)
+
+    kp3d = torch.Tensor(keypoints3d).to(device)
+    kp3d_conf = kp3d[..., 3:]
+    kp3d_pos = kp3d[..., :3]
+
+    has_2d = (keypoints2d is not None and bboxes is not None
+              and Pall is not None
+              and weight_loss.get('k2d_shape', 0.) > 0.)
+    if has_2d:
+        kp2d = torch.Tensor(keypoints2d).to(device).transpose(0, 1)
+        kp2d_conf = kp2d[..., 2:3]
+        kp2d_pos = kp2d[..., :2]
+        nViews = kp2d.shape[0]
+        bbox = torch.Tensor(bboxes).to(device).transpose(0, 1)
+        bbox_size = torch.clamp(
+            (bbox[..., 2:4] - bbox[..., :2]).max(dim=-1, keepdim=True)[0],
+            min=1.)
+        inv_bbox = 1. / bbox_size
+        Pall_t = torch.Tensor(Pall).to(device)
+    else:
+        nViews = 0
+        Pall_t = (torch.Tensor(Pall).to(device)
+                  if Pall is not None else None)
+
+    chamfer_weight = weight_loss.get('chamfer', 0.)
+    has_sil = (silhouette_points is not None and chamfer_weight > 0.)
+    valid_pairs = []
+    sil_pts_t = []
+    if has_sil:
+        if Pall_t is None:
+            Pall_t = torch.Tensor(Pall).to(device)
+        for nf in range(len(silhouette_points)):
+            frame_pts = []
+            for nv_pts in silhouette_points[nf]:
+                if nv_pts is None or len(nv_pts) == 0:
+                    frame_pts.append(None)
+                else:
+                    frame_pts.append(
+                        torch.tensor(nv_pts, dtype=torch.float32,
+                                     device=device))
+            sil_pts_t.append(frame_pts)
+        nSilViews = len(silhouette_points[0]) if len(silhouette_points) > 0 else 0
+        valid_pairs = [
+            (nf, nv) for nf in range(len(silhouette_points))
+            for nv in range(nSilViews) if sil_pts_t[nf][nv] is not None]
+        if 0 < max_pairs < len(valid_pairs):
+            idx = np.linspace(0, len(valid_pairs) - 1, max_pairs, dtype=int)
+            valid_pairs = [valid_pairs[i] for i in idx]
+
+    optimizer = LBFGS(opt_params, line_search_fn='strong_wolfe', max_iter=15)
+    ones_cache = {}
+
+    def closure(debug=False):
+        optimizer.zero_grad()
+        joints = body_model(return_verts=False, return_tensor=True,
+                            **body_params)
+        nJ = min(joints.shape[1], kp3d_pos.shape[1])
+
+        loss_dict = {}
+
+        if weight_loss.get('k3d_shape', 0.) > 0.:
+            diff = (joints[:, :nJ, :3] - kp3d_pos[:, :nJ]) * kp3d_conf[:, :nJ]
+            loss_dict['k3d_shape'] = torch.sum(diff ** 2) / nFrames
+
+        if has_2d:
+            nJ_homo = joints.shape[1]
+            key_homo = nJ_homo
+            if key_homo not in ones_cache:
+                ones_cache[key_homo] = torch.ones(
+                    nFrames, nJ_homo, 1, device=device)
+            joints_h = torch.cat([joints[..., :3], ones_cache[key_homo]],
+                                 dim=-1)
+            point_cam = torch.einsum('vab,fnb->vfna', Pall_t, joints_h)
+            proj_2d = point_cam[..., :2] / torch.clamp(
+                point_cam[..., 2:3], min=1e-6)
+            nJ2d = min(proj_2d.shape[2], kp2d_pos.shape[2])
+            diff_2d = ((proj_2d[:, :, :nJ2d] - kp2d_pos[:, :, :nJ2d])
+                       * kp2d_conf[:, :, :nJ2d]
+                       * inv_bbox.unsqueeze(2))
+            loss_dict['k2d_shape'] = torch.sum(diff_2d ** 2) / nFrames / nViews
+
+        if has_sil and len(valid_pairs) > 0:
+            verts = body_model(return_verts=True, return_tensor=True,
+                               **body_params)
+            if verts.shape[1] > max_verts:
+                step = max(verts.shape[1] // max_verts, 1)
+                verts = verts[:, ::step]
+            nv_verts = verts.shape[1]
+            if nv_verts not in ones_cache:
+                ones_cache[nv_verts] = torch.ones(
+                    nFrames, nv_verts, 1, dtype=verts.dtype, device=device)
+            verts_h = torch.cat([verts, ones_cache[nv_verts]], dim=2)
+            proj_v = torch.einsum('vab,fnb->vfna', Pall_t, verts_h)
+            proj_v_2d = proj_v[..., :2] / torch.clamp(
+                proj_v[..., 2:3], min=1e-6)
+            chamfer_loss = torch.tensor(0., device=device)
+            count = 0
+            for nf, nv in valid_pairs:
+                pts = sil_pts_t[nf][nv]
+                dists = torch.cdist(proj_v_2d[nv, nf], pts, p=2)
+                chamfer_loss = chamfer_loss + dists.min(dim=1)[0].mean()
+                count += 1
+            if count > 0:
+                chamfer_loss = chamfer_loss / count
+            loss_dict['chamfer'] = chamfer_loss
+
+        loss_dict['reg_shapes'] = torch.sum(body_params['shapes'] ** 2)
+        if weight_loss.get('init_shape', 0.) > 0.:
+            loss_dict['init_shape'] = torch.sum(
+                (body_params['shapes'] - body_params_init['shapes']) ** 2)
+
+        loss = sum([loss_dict[key] * weight_loss.get(key, 0.)
+                    for key in loss_dict.keys()])
+        if debug:
+            return loss_dict
+        loss.backward()
+        return loss
+
+    fitting = FittingMonitor(ftol=1e-4)
+    fitting.run_fitting(optimizer, closure, opt_params)
+    fitting.close()
+    grad_require(opt_params, False)
+    body_params = {key: val.detach().cpu().numpy()
+                   for key, val in body_params.items()}
+    return body_params
+
+
 N_BODY = 25
 N_HAND = 21
 

@@ -17,6 +17,39 @@ def load_weight_shape(model, opts):
             weight[key] = opts[key]
     return weight
 
+def load_weight_shape_refine(model, opts):
+    """Weights for shape refinement with pose (optimizeShapeWithPose).
+
+    k3d_shape  – direct 3D joint position matching (much richer than bone lengths).
+    k2d_shape  – multi-view 2D reprojection (uses image evidence from all cameras).
+    chamfer    – silhouette Chamfer loss (captures body width/depth if masks available).
+    reg_shapes – L2 prior on betas.
+    init_shape – stay close to the initial bone-length-based shape estimate.
+    """
+    if model in ['smpl', 'smplh', 'smplx']:
+        weight = {
+            'k3d_shape': 1.,
+            'k2d_shape': 1e-4,
+            'chamfer': 5e-6,
+            'reg_shapes': 5e-3,
+            'init_shape': 1e-1,
+        }
+    elif model == 'mano':
+        weight = {
+            'k3d_shape': 1e2,
+            'k2d_shape': 1e-3,
+            'chamfer': 0.,
+            'reg_shapes': 5e-5,
+            'init_shape': 1e-1,
+        }
+    else:
+        raise NotImplementedError
+    for key in opts.keys():
+        if key in weight.keys():
+            weight[key] = opts[key]
+    return weight
+
+
 def load_weight_pose(model, opts):
     if model == 'smpl':
         # weight = {

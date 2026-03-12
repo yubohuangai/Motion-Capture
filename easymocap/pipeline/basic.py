@@ -5,11 +5,11 @@
   @ LastEditTime: 2021-06-14 15:32:24
   @ FilePath: /EasyMocap/easymocap/pipeline/basic.py
 '''
-from ..pyfitting import optimizeShape, optimizePose2D, optimizePose3D
+from ..pyfitting import optimizeShape, optimizePose2D, optimizePose3D, optimizeShapeWithPose
 from ..pyfitting.optimize_simple import optimizeShapeSilhouette
 from ..mytools import Timer
 from ..dataset import CONFIG
-from .weight import load_weight_pose, load_weight_shape
+from .weight import load_weight_pose, load_weight_shape, load_weight_shape_refine
 from .config import Config
 
 def multi_stage_optimize(body_model, params, kp3ds, kp2ds=None, bboxes=None, Pall=None, weight={}, cfg=None):
@@ -60,14 +60,11 @@ def smpl_from_keypoints3d2d(body_model, kp3ds, kp2ds, bboxes, Pall, config, args
     if weight_shape is None:
         weight_shape = load_weight_shape(model_type, args.opts)
     if model_type in ['smpl', 'smplh', 'smplx']:
-        # when use SMPL model, optimize the shape only with first 1-14 limbs, 
-        # don't use (nose, neck)
         params_shape = optimizeShape(body_model, params_init, kp3ds, 
             weight_loss=weight_shape, kintree=CONFIG['body15']['kintree'][1:])
     else:
         params_shape = optimizeShape(body_model, params_init, kp3ds, 
             weight_loss=weight_shape, kintree=config['kintree'])
-    # optimize 3D pose
     cfg = Config(args)
     cfg.device = body_model.device
     params = body_model.init_params(nFrames=kp3ds.shape[0])
@@ -81,8 +78,34 @@ def smpl_from_keypoints3d2d(body_model, kp3ds, kp2ds, bboxes, Pall, config, args
         )
     if weight_pose is None:
         weight_pose = load_weight_pose(model_type, args.opts)
-    # We divide this step to two functions, because we can have different initialization method
     params = multi_stage_optimize(body_model, params, kp3ds, kp2ds, bboxes, Pall, weight_pose, cfg)
+
+    # Shape-pose refinement loop (inspired by smplfitter's alternating strategy).
+    # After the initial fit, the pose is reasonable, so we can use richer
+    # constraints (3D joint positions, 2D reprojection, silhouette) to refine
+    # the shape, then re-fit the pose with the improved shape.
+    n_refine = getattr(args, 'refine_shape_iters', 0)
+    if getattr(args, 'refine_shape', False):
+        n_refine = max(n_refine, 1)
+    if n_refine > 0:
+        weight_sr = load_weight_shape_refine(model_type, args.opts)
+        max_verts = getattr(args, 'shape_silhouette_vert_subsample', 1000)
+        max_pairs = getattr(args, 'shape_silhouette_max_pairs', 200)
+        for it in range(n_refine):
+            with Timer('Refine shape iter {}/{}'.format(it + 1, n_refine)):
+                params = optimizeShapeWithPose(
+                    body_model, params, kp3ds,
+                    keypoints2d=kp2ds, bboxes=bboxes, Pall=Pall,
+                    weight_loss=weight_sr,
+                    silhouette_points=silhouette_points,
+                    max_verts=max_verts, max_pairs=max_pairs)
+            with Timer('Re-fit pose iter {}/{}'.format(it + 1, n_refine)):
+                cfg_re = Config(args)
+                cfg_re.device = body_model.device
+                params = multi_stage_optimize(
+                    body_model, params, kp3ds, kp2ds, bboxes, Pall,
+                    weight_pose, cfg_re)
+
     return params
 
 def smpl_from_keypoints3d(body_model, kp3ds, config, args, 

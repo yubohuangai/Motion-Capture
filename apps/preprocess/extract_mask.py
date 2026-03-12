@@ -106,6 +106,27 @@ def points_from_mask(mask, max_points, rng):
     return points
 
 
+def points_from_mask_contour(mask, max_points, rng):
+    """Extract points along the mask contour instead of random interior points.
+
+    Contour points are much better for silhouette Chamfer loss because the loss
+    measures distance from projected mesh vertices to the silhouette *boundary*.
+    Interior points provide biased gradients since they pull mesh vertices inward
+    rather than toward the correct outline.
+    """
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+    if len(contours) == 0:
+        return np.zeros((0, 2), dtype=np.float32)
+    all_pts = np.concatenate([c.reshape(-1, 2) for c in contours], axis=0)
+    all_pts = all_pts.astype(np.float32)
+    if all_pts.shape[0] == 0:
+        return np.zeros((0, 2), dtype=np.float32)
+    if all_pts.shape[0] > max_points:
+        idx = np.linspace(0, all_pts.shape[0] - 1, max_points, dtype=int)
+        all_pts = all_pts[idx]
+    return all_pts
+
+
 def extract_mask_one_sub(image_root, annot_root, mask_root, args):
     try:
         from segment_anything import sam_model_registry, SamPredictor
@@ -123,8 +144,24 @@ def extract_mask_one_sub(image_root, annot_root, mask_root, args):
     predictor = SamPredictor(sam)
     rng = np.random.default_rng(0)
 
+    point_fn = points_from_mask_contour if args.contour else points_from_mask
+
     imgnames = sorted([n for n in os.listdir(image_root) if n.endswith(args.ext)])
-    for imgname in tqdm(imgnames, desc=f"mask {os.path.basename(annot_root) or 'root'}"):
+    # Apply frame range / step so SAM only runs on the frames we need.
+    total = len(imgnames)
+    start = max(0, min(args.start, total))
+    end = min(args.end, total)
+    step = max(1, args.step)
+    selected_indices = set(range(start, end, step))
+
+    for idx, imgname in enumerate(
+        tqdm(imgnames, desc=f"mask {os.path.basename(annot_root) or 'root'}")
+    ):
+        if idx < start or idx >= end:
+            continue
+        if idx not in selected_indices:
+            continue
+
         base = imgname.replace(args.ext, "")
         outname = join(mask_root, base + ".png")
         annotname = join(annot_root, base + ".json")
@@ -160,7 +197,7 @@ def extract_mask_one_sub(image_root, annot_root, mask_root, args):
             if args.dilation > 0:
                 kernel = np.ones((args.dilation, args.dilation), np.uint8)
                 mask_person = cv2.dilate(mask_person, kernel, iterations=1)
-            points = points_from_mask(mask_person, args.mask_max_points, rng)
+            points = point_fn(mask_person, args.mask_max_points, rng)
             annot["mask"] = points.tolist()
             mask_all = np.maximum(mask_all, mask_person)
 
@@ -189,6 +226,15 @@ def main():
     parser.add_argument("--sam_model_type", type=str, default="vit_b", choices=["vit_h", "vit_l", "vit_b"])
     parser.add_argument("--device", type=str, default="cuda")
     parser.add_argument("--mask_max_points", type=int, default=2000)
+    parser.add_argument("--contour", action="store_true", default=True,
+        help="extract contour points (default); much better for silhouette Chamfer loss")
+    parser.add_argument("--interior", dest="contour", action="store_false",
+        help="sample random interior points instead of contour (legacy behavior)")
+    parser.add_argument("--start", type=int, default=0, help="first frame index")
+    parser.add_argument("--end", type=int, default=100000, help="last frame index (exclusive)")
+    parser.add_argument("--step", type=int, default=1,
+        help="process every N-th frame; shape is constant so a subset suffices "
+             "(e.g. --step 5 processes 20%% of frames)")
     parser.add_argument("--save_mask_images", action="store_true")
     parser.add_argument("--erosion", type=int, default=0)
     parser.add_argument("--dilation", type=int, default=0)
@@ -215,7 +261,12 @@ def main():
             cmd += f" --prompt {args.prompt} --bbox_thres {args.bbox_thres} --kpt_thres {args.kpt_thres}"
             cmd += f" --sam_checkpoint {args.sam_checkpoint} --sam_model_type {args.sam_model_type} --device cuda"
             cmd += f" --mask_max_points {args.mask_max_points}"
+            cmd += f" --start {args.start} --end {args.end} --step {args.step}"
             cmd += f" --erosion {args.erosion} --dilation {args.dilation}"
+            if args.contour:
+                cmd += " --contour"
+            else:
+                cmd += " --interior"
             if args.save_mask_images:
                 cmd += " --save_mask_images"
             if args.force:

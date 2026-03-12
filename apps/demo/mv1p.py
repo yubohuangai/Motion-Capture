@@ -85,7 +85,9 @@ def mv1pmf_smpl(dataset, args, weight_pose=None, weight_shape=None):
     bboxes = np.stack(bboxes)
     kp3ds = check_keypoints(kp3ds, 1)
     silhouette_points = None
-    if args.shape_silhouette or args.vis_shape_silhouette:
+    need_sil = (args.shape_silhouette or args.vis_shape_silhouette
+                or getattr(args, 'refine_shape', False))
+    if need_sil:
         silhouette_points = load_silhouette_points(dataset, start, end, args)
     # optimize the human shape
     with Timer('Loading {}, {}'.format(args.model, args.gender), not args.verbose):
@@ -134,6 +136,8 @@ def load_silhouette_points(dataset, start, end, args):
     rng = np.random.default_rng(0)
     silhouettes = []
     pid = getattr(args, 'pid', 0)
+    if isinstance(pid, (list, tuple)):
+        pid = pid[0]
     for nf in tqdm(range(start, end), desc='loading masks'):
         frame_points = []
         use_frame = ((nf - start) % max(args.shape_mask_frame_step, 1) == 0)
