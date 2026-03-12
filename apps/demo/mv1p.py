@@ -96,16 +96,23 @@ def mv1pmf_smpl(dataset, args, weight_pose=None, weight_shape=None):
         dataset.Pall, config=dataset.config, args=args,
         weight_shape=weight_shape, weight_pose=weight_pose,
         silhouette_points=silhouette_points)
+
+    # Extract pre-refinement shapes (stashed by smpl_from_keypoints3d2d) for
+    # before/after visualization.
+    pre_refine_shapes = params.pop('_pre_refine_shapes', None)
+
     # write out the results
-    dataset.no_img = not (args.vis_smpl or args.vis_repro)
-    if args.vis_shape_silhouette and silhouette_points is None:
+    vis_sil = args.vis_shape_silhouette
+    dataset.no_img = not (args.vis_smpl or args.vis_repro or vis_sil)
+    if vis_sil and silhouette_points is None:
         print('[Shape silhouette] no silhouette points loaded, skip visualization.')
+        vis_sil = False
     for nf in tqdm(range(start, end), desc='render'):
         images, annots = dataset[nf]
         param = select_nf(params, nf-start)
         dataset.write_smpl(param, nf)
         vertices = None
-        if args.write_vertices or args.vis_smpl or args.vis_shape_silhouette:
+        if args.write_vertices or args.vis_smpl or vis_sil:
             vertices = body_model(return_verts=True, return_tensor=False, **param)
         if args.write_smpl_full:
             param_full = param.copy()
@@ -116,9 +123,16 @@ def mv1pmf_smpl(dataset, args, weight_pose=None, weight_shape=None):
             dataset.write_vertices(write_data, nf)
         if args.vis_smpl:
             dataset.vis_smpl(vertices=vertices[0], faces=body_model.faces, images=images, nf=nf, sub_vis=args.sub_vis, add_back=True)
-        if args.vis_shape_silhouette and silhouette_points is not None:
+        if vis_sil:
+            verts_before = None
+            if pre_refine_shapes is not None:
+                param_before = param.copy()
+                param_before['shapes'] = pre_refine_shapes
+                verts_before = body_model(
+                    return_verts=True, return_tensor=False, **param_before)[0]
             vis_shape_silhouette_overlay(
-                dataset, images, vertices[0], silhouette_points[nf-start], nf, args
+                dataset, images, vertices[0], silhouette_points[nf-start], nf, args,
+                vertices_before=verts_before
             )
         if args.vis_repro:
             keypoints = body_model(return_verts=False, return_tensor=False, **param)[0]
@@ -192,56 +206,69 @@ def load_silhouette_points(dataset, start, end, args):
     return silhouettes
 
 
-def vis_shape_silhouette_overlay(dataset, images, vertices, frame_points, nf, args):
+def _draw_silhouette_overlay(image, mesh_xy_all, mask_xy_all, label, max_mesh_points, rng):
+    """Draw projected mesh (red) and mask contour (green) on a single image."""
+    canvas = image.copy()
+    h, w = canvas.shape[:2]
+
+    mesh_xy = mesh_xy_all.copy()
+    if max_mesh_points > 0 and mesh_xy.shape[0] > max_mesh_points:
+        select = rng.choice(mesh_xy.shape[0], size=max_mesh_points, replace=False)
+        mesh_xy = mesh_xy[select]
+    mesh_xy = np.round(mesh_xy).astype(np.int32)
+    valid = ((mesh_xy[:, 0] >= 0) & (mesh_xy[:, 0] < w) &
+             (mesh_xy[:, 1] >= 0) & (mesh_xy[:, 1] < h))
+    mesh_xy = mesh_xy[valid]
+    if mesh_xy.shape[0] > 0:
+        layer = np.zeros((h, w), dtype=np.uint8)
+        layer[mesh_xy[:, 1], mesh_xy[:, 0]] = 255
+        layer = cv2.dilate(layer, np.ones((5, 5), np.uint8), iterations=1)
+        canvas[layer > 0] = (0, 0, 255)
+
+    mask_xy = np.round(mask_xy_all).astype(np.int32)
+    valid = ((mask_xy[:, 0] >= 0) & (mask_xy[:, 0] < w) &
+             (mask_xy[:, 1] >= 0) & (mask_xy[:, 1] < h))
+    mask_xy = mask_xy[valid]
+    if mask_xy.shape[0] > 0:
+        layer = np.zeros((h, w), dtype=np.uint8)
+        layer[mask_xy[:, 1], mask_xy[:, 0]] = 255
+        layer = cv2.dilate(layer, np.ones((5, 5), np.uint8), iterations=1)
+        canvas[layer > 0] = (0, 255, 0)
+
+    cv2.putText(canvas, label, (12, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.7,
+                (255, 255, 255), 2, cv2.LINE_AA)
+    return canvas
+
+
+def vis_shape_silhouette_overlay(dataset, images, vertices, frame_points, nf, args,
+                                 vertices_before=None):
+    """Visualize projected mesh vs mask contour.
+
+    When vertices_before is provided (pre-refinement mesh), a side-by-side
+    BEFORE | AFTER comparison is saved so the user can see the shape improvement.
+    """
     out_root = join(args.out, 'shape_silhouette')
     proj = projectN3(vertices, dataset.Pall)[..., :2]
-    max_mesh_points = max(getattr(args, 'shape_vis_max_mesh_points', 2000), 0)
+    proj_before = (projectN3(vertices_before, dataset.Pall)[..., :2]
+                   if vertices_before is not None else None)
+    max_mesh_points = max(getattr(args, 'shape_vis_max_mesh_points', 4000), 0)
     rng = np.random.default_rng(0)
 
     for nv, cam in enumerate(dataset.cams):
-        canvas = images[nv].copy()
-        h, w = canvas.shape[:2]
+        mask_pts = (frame_points[nv] if frame_points is not None
+                    else np.zeros((0, 2), dtype=np.float32))
 
-        mesh_xy = proj[nv]
-        if max_mesh_points > 0 and mesh_xy.shape[0] > max_mesh_points:
-            select = rng.choice(mesh_xy.shape[0], size=max_mesh_points, replace=False)
-            mesh_xy = mesh_xy[select]
-        mesh_xy = np.round(mesh_xy).astype(np.int32)
-        valid_mesh = (
-            (mesh_xy[:, 0] >= 0) & (mesh_xy[:, 0] < w) &
-            (mesh_xy[:, 1] >= 0) & (mesh_xy[:, 1] < h)
-        )
-        mesh_xy = mesh_xy[valid_mesh]
-        if mesh_xy.shape[0] > 0:
-            # Draw larger points using dilation for better visibility.
-            mesh_layer = np.zeros((h, w), dtype=np.uint8)
-            mesh_layer[mesh_xy[:, 1], mesh_xy[:, 0]] = 255
-            mesh_layer = cv2.dilate(mesh_layer, np.ones((5, 5), dtype=np.uint8), iterations=1)
-            canvas[mesh_layer > 0] = (0, 0, 255)  # red: projected mesh
+        after = _draw_silhouette_overlay(
+            images[nv], proj[nv], mask_pts,
+            'AFTER  contour(green) mesh(red)', max_mesh_points, rng)
 
-        mask_xy = frame_points[nv] if frame_points is not None else np.zeros((0, 2), dtype=np.float32)
-        mask_xy = np.round(mask_xy).astype(np.int32)
-        valid_mask = (
-            (mask_xy[:, 0] >= 0) & (mask_xy[:, 0] < w) &
-            (mask_xy[:, 1] >= 0) & (mask_xy[:, 1] < h)
-        )
-        mask_xy = mask_xy[valid_mask]
-        if mask_xy.shape[0] > 0:
-            mask_layer = np.zeros((h, w), dtype=np.uint8)
-            mask_layer[mask_xy[:, 1], mask_xy[:, 0]] = 255
-            mask_layer = cv2.dilate(mask_layer, np.ones((5, 5), dtype=np.uint8), iterations=1)
-            canvas[mask_layer > 0] = (0, 255, 0)  # green: mask points
-
-        cv2.putText(
-            canvas,
-            f'mask(green): {mask_xy.shape[0]}  mesh(red): {mesh_xy.shape[0]}',
-            (12, 28),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.7,
-            (255, 255, 255),
-            2,
-            cv2.LINE_AA,
-        )
+        if proj_before is not None:
+            before = _draw_silhouette_overlay(
+                images[nv], proj_before[nv], mask_pts,
+                'BEFORE  contour(green) mesh(red)', max_mesh_points, rng)
+            canvas = np.concatenate([before, after], axis=1)
+        else:
+            canvas = after
 
         outname = join(out_root, cam, f'{nf:06d}.jpg')
         os.makedirs(os.path.dirname(outname), exist_ok=True)

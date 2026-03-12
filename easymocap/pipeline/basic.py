@@ -88,6 +88,7 @@ def smpl_from_keypoints3d2d(body_model, kp3ds, kp2ds, bboxes, Pall, config, args
     if getattr(args, 'refine_shape', False):
         n_refine = max(n_refine, 1)
     if n_refine > 0:
+        params['_pre_refine_shapes'] = params['shapes'].copy()
         weight_sr = load_weight_shape_refine(model_type, args.opts)
         max_verts = getattr(args, 'shape_silhouette_vert_subsample', 1000)
         max_pairs = getattr(args, 'shape_silhouette_max_pairs', 200)
