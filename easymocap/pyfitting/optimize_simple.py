@@ -5,12 +5,36 @@
   @ LastEditTime: 2021-05-25 19:51:12
   @ FilePath: /EasyMocap/easymocap/pyfitting/optimize_simple.py
 '''
+import cv2
 import numpy as np
 import torch
 from .lbfgs import LBFGS 
 from .optimize import FittingMonitor, grad_require, FittingLog
 from .lossfactory import LossSmoothBodyMean, LossRegPoses
 from .lossfactory import LossKeypoints3D, LossKeypointsMV2D, LossSmoothBody, LossRegPosesZero, LossInit, LossSmoothPoses
+
+
+def _vertices_outside_contour(contour_pts_np, proj_pts_np):
+    """Return a boolean mask: True for projected vertices outside the contour polygon.
+
+    Rasterises the contour as a filled polygon and tests each query point
+    against the resulting mask.  Points that fall outside the image bounds
+    are treated as outside.
+    """
+    n = proj_pts_np.shape[0]
+    if contour_pts_np.shape[0] < 3:
+        return np.ones(n, dtype=bool)
+    max_xy = np.ceil(contour_pts_np.max(axis=0)).astype(int) + 2
+    h, w = int(max(min(max_xy[1], 4096), 1)), int(max(min(max_xy[0], 4096), 1))
+    mask = np.zeros((h, w), dtype=np.uint8)
+    poly = contour_pts_np.reshape(-1, 1, 2).astype(np.int32)
+    cv2.fillPoly(mask, [poly], 255)
+    qi = proj_pts_np.astype(np.int32)
+    out_of_bounds = (qi[:, 0] < 0) | (qi[:, 0] >= w) | (qi[:, 1] < 0) | (qi[:, 1] >= h)
+    qi = np.clip(qi, 0, np.array([w - 1, h - 1]))
+    result = mask[qi[:, 1], qi[:, 0]] == 0
+    result[out_of_bounds] = True
+    return result
 
 def optimizeShape(body_model, body_params, keypoints3d,
     weight_loss, kintree, cfg=None):
@@ -148,9 +172,18 @@ def optimizeShapeSilhouette(body_model, body_params, silhouette_points, Pall, we
         count = 0
         for nf, nv in valid_pairs:
             pts = points_t[nf][nv]
-            dists = torch.cdist(proj[nv, nf], pts, p=2)
-            chamfer_loss = chamfer_loss + (dists.min(dim=1)[0].mean()
-                                           + dists.min(dim=0)[0].mean())
+            pv = proj[nv, nf]
+            dists = torch.cdist(pv, pts, p=2)
+            outside = _vertices_outside_contour(
+                pts.detach().cpu().numpy(),
+                pv.detach().cpu().numpy())
+            outside_t = torch.tensor(outside, dtype=torch.bool,
+                                     device=device)
+            fwd = (dists[outside_t].min(dim=1)[0].mean()
+                   if outside_t.any()
+                   else torch.tensor(0., device=device))
+            bwd = dists.min(dim=0)[0].mean()
+            chamfer_loss = chamfer_loss + fwd + bwd
             count += 1
         if count > 0:
             chamfer_loss = chamfer_loss / count
@@ -313,9 +346,18 @@ def optimizeShapeWithPose(body_model, body_params, keypoints3d,
             count = 0
             for nf, nv in valid_pairs:
                 pts = sil_pts_t[nf][nv]
-                dists = torch.cdist(proj_v_2d[nv, nf], pts, p=2)
-                chamfer_loss = chamfer_loss + (dists.min(dim=1)[0].mean()
-                                               + dists.min(dim=0)[0].mean())
+                proj = proj_v_2d[nv, nf]
+                dists = torch.cdist(proj, pts, p=2)
+                outside = _vertices_outside_contour(
+                    pts.detach().cpu().numpy(),
+                    proj.detach().cpu().numpy())
+                outside_t = torch.tensor(outside, dtype=torch.bool,
+                                         device=device)
+                fwd = (dists[outside_t].min(dim=1)[0].mean()
+                       if outside_t.any()
+                       else torch.tensor(0., device=device))
+                bwd = dists.min(dim=0)[0].mean()
+                chamfer_loss = chamfer_loss + fwd + bwd
                 count += 1
             if count > 0:
                 chamfer_loss = chamfer_loss / count
