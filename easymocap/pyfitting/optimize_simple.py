@@ -5,7 +5,6 @@
   @ LastEditTime: 2021-05-25 19:51:12
   @ FilePath: /EasyMocap/easymocap/pyfitting/optimize_simple.py
 '''
-import cv2
 import numpy as np
 import torch
 from .lbfgs import LBFGS 
@@ -14,27 +13,60 @@ from .lossfactory import LossSmoothBodyMean, LossRegPoses
 from .lossfactory import LossKeypoints3D, LossKeypointsMV2D, LossSmoothBody, LossRegPosesZero, LossInit, LossSmoothPoses
 
 
-def _vertices_outside_contour(contour_pts_np, proj_pts_np):
-    """Return a boolean mask: True for projected vertices outside the contour polygon.
+def _build_edge_face_adjacency(faces_np):
+    """Build edge-to-face adjacency from triangle mesh topology (called once).
 
-    Rasterises the contour as a filled polygon and tests each query point
-    against the resulting mask.  Points that fall outside the image bounds
-    are treated as outside.
+    Returns:
+        edges:      (E, 2) int64 – vertex-index pair per edge
+        edge_faces: (E, 2) int64 – face-index pair per edge (-1 for boundary)
     """
-    n = proj_pts_np.shape[0]
-    if contour_pts_np.shape[0] < 3:
-        return np.ones(n, dtype=bool)
-    max_xy = np.ceil(contour_pts_np.max(axis=0)).astype(int) + 2
-    h, w = int(max(min(max_xy[1], 4096), 1)), int(max(min(max_xy[0], 4096), 1))
-    mask = np.zeros((h, w), dtype=np.uint8)
-    poly = contour_pts_np.reshape(-1, 1, 2).astype(np.int32)
-    cv2.fillPoly(mask, [poly], 255)
-    qi = proj_pts_np.astype(np.int32)
-    out_of_bounds = (qi[:, 0] < 0) | (qi[:, 0] >= w) | (qi[:, 1] < 0) | (qi[:, 1] >= h)
-    qi = np.clip(qi, 0, np.array([w - 1, h - 1]))
-    result = mask[qi[:, 1], qi[:, 0]] == 0
-    result[out_of_bounds] = True
-    return result
+    from collections import defaultdict
+    emap = defaultdict(list)
+    for fi in range(faces_np.shape[0]):
+        for j in range(3):
+            v0, v1 = int(faces_np[fi, j]), int(faces_np[fi, (j + 1) % 3])
+            key = (min(v0, v1), max(v0, v1))
+            emap[key].append(fi)
+    E = len(emap)
+    edges = np.empty((E, 2), dtype=np.int64)
+    edge_faces = np.full((E, 2), -1, dtype=np.int64)
+    for i, (key, fids) in enumerate(emap.items()):
+        edges[i] = key
+        edge_faces[i, 0] = fids[0]
+        if len(fids) > 1:
+            edge_faces[i, 1] = fids[1]
+    return edges, edge_faces
+
+
+def _silhouette_vertex_indices(proj_2d, faces_t, edge_v_t, edge_f_t):
+    """Return unique vertex indices on the projected-mesh silhouette boundary.
+
+    A silhouette edge separates a front-facing triangle from a back-facing one
+    (or is a boundary edge of a front-facing triangle).  The 2D face
+    orientation is determined by the sign of the cross-product of two edge
+    vectors in screen space.
+
+    All inputs/outputs live on the same device (GPU-friendly, no CPU round-trips).
+    """
+    v0 = proj_2d[faces_t[:, 0]]
+    v1 = proj_2d[faces_t[:, 1]]
+    v2 = proj_2d[faces_t[:, 2]]
+    cross_z = ((v1[:, 0] - v0[:, 0]) * (v2[:, 1] - v0[:, 1]) -
+               (v1[:, 1] - v0[:, 1]) * (v2[:, 0] - v0[:, 0]))
+    front = cross_z > 0
+
+    boundary = edge_f_t[:, 1] < 0
+    f0_front = front[edge_f_t[:, 0]]
+    safe_f1 = edge_f_t[:, 1].clamp(min=0)
+    f1_front = front[safe_f1]
+
+    interior_sil = (~boundary) & (f0_front != f1_front)
+    boundary_sil = boundary & f0_front
+    sil_mask = interior_sil | boundary_sil
+
+    if not sil_mask.any():
+        return torch.empty(0, dtype=torch.long, device=proj_2d.device)
+    return torch.unique(edge_v_t[sil_mask].reshape(-1))
 
 def optimizeShape(body_model, body_params, keypoints3d,
     weight_loss, kintree, cfg=None):
@@ -104,7 +136,7 @@ def optimizeShape(body_model, body_params, keypoints3d,
     return body_params
 
 def optimizeShapeSilhouette(body_model, body_params, silhouette_points, Pall, weight_loss, max_iter=20, max_verts=1000, max_pairs=200):
-    """Refine shape with a one-directional silhouette Chamfer loss.
+    """Refine shape with contour-to-contour silhouette Chamfer loss.
 
     Args:
         body_model: SMPL body model.
@@ -113,7 +145,8 @@ def optimizeShapeSilhouette(body_model, body_params, silhouette_points, Pall, we
         Pall: (nViews, 3, 4) projection matrices.
         weight_loss: dict, uses keys {'chamfer', 'reg_shapes'}.
         max_iter: LBFGS max iterations.
-        max_verts: number of mesh vertices sampled for Chamfer.
+        max_verts: unused (kept for API compat).
+        max_pairs: max frame-view pairs for silhouette loss.
     """
     if silhouette_points is None:
         return body_params
@@ -125,8 +158,6 @@ def optimizeShapeSilhouette(body_model, body_params, silhouette_points, Pall, we
         return body_params
     if weight_loss.get('chamfer', 0.) <= 0.:
         return body_params
-    if max_verts <= 0:
-        max_verts = 1000
 
     device = body_model.device
     Pall_t = torch.tensor(Pall, dtype=torch.float32, device=device)
@@ -151,37 +182,37 @@ def optimizeShapeSilhouette(body_model, body_params, silhouette_points, Pall, we
     if len(valid_pairs) == 0:
         return body_params
     if max_pairs is not None and max_pairs > 0 and len(valid_pairs) > max_pairs:
-        # Evenly sample frame-view pairs to cap memory for long multi-view sequences.
         sample_idx = np.linspace(0, len(valid_pairs) - 1, max_pairs, dtype=int)
         valid_pairs = [valid_pairs[i] for i in sample_idx]
+
+    edge_v, edge_f = _build_edge_face_adjacency(body_model.faces)
+    edge_v_t = torch.tensor(edge_v, dtype=torch.long, device=device)
+    edge_f_t = torch.tensor(edge_f, dtype=torch.long, device=device)
+    faces_t = body_model.faces_tensor.to(device)
 
     def closure(debug=False):
         optimizer.zero_grad()
         verts = body_model(return_verts=True, return_tensor=True, **body_params)
-        if verts.shape[1] > max_verts:
-            step = max(verts.shape[1] // max_verts, 1)
-            verts = verts[:, ::step, :]
-        nv_verts = verts.shape[1]
-        if nv_verts not in ones_cache:
-            ones_cache[nv_verts] = torch.ones((verts.shape[0], nv_verts, 1), dtype=verts.dtype, device=device)
-        verts_h = torch.cat([verts, ones_cache[nv_verts]], dim=2)
+        nv_all = verts.shape[1]
+        if nv_all not in ones_cache:
+            ones_cache[nv_all] = torch.ones(
+                (verts.shape[0], nv_all, 1), dtype=verts.dtype, device=device)
+        verts_h = torch.cat([verts, ones_cache[nv_all]], dim=2)
         point_cam = torch.einsum('vab,fnb->vfna', Pall_t, verts_h)
         proj = point_cam[..., :2] / torch.clamp(point_cam[..., 2:3], min=1e-6)
 
         chamfer_loss = torch.tensor(0., device=device)
         count = 0
         for nf, nv in valid_pairs:
-            pts = points_t[nf][nv]
+            gt_contour = points_t[nf][nv]
             pv = proj[nv, nf]
-            dists = torch.cdist(pv, pts, p=2)
-            outside = _vertices_outside_contour(
-                pts.detach().cpu().numpy(),
-                pv.detach().cpu().numpy())
-            outside_t = torch.tensor(outside, dtype=torch.bool,
-                                     device=device)
-            fwd = (dists[outside_t].min(dim=1)[0].mean()
-                   if outside_t.any()
-                   else torch.tensor(0., device=device))
+            sil_idx = _silhouette_vertex_indices(
+                pv, faces_t, edge_v_t, edge_f_t)
+            if sil_idx.numel() == 0:
+                continue
+            mesh_contour = pv[sil_idx]
+            dists = torch.cdist(mesh_contour, gt_contour, p=2)
+            fwd = dists.min(dim=1)[0].mean()
             bwd = dists.min(dim=0)[0].mean()
             chamfer_loss = chamfer_loss + fwd + bwd
             count += 1
@@ -293,6 +324,14 @@ def optimizeShapeWithPose(body_model, body_params, keypoints3d,
             idx = np.linspace(0, len(valid_pairs) - 1, max_pairs, dtype=int)
             valid_pairs = [valid_pairs[i] for i in idx]
 
+    # Precompute mesh edge-face adjacency (topology only, done once)
+    edge_v_t, edge_f_t, faces_t = None, None, None
+    if has_sil and len(valid_pairs) > 0:
+        edge_v, edge_f = _build_edge_face_adjacency(body_model.faces)
+        edge_v_t = torch.tensor(edge_v, dtype=torch.long, device=device)
+        edge_f_t = torch.tensor(edge_f, dtype=torch.long, device=device)
+        faces_t = body_model.faces_tensor.to(device)
+
     optimizer = LBFGS(opt_params, line_search_fn='strong_wolfe', max_iter=30)
     ones_cache = {}
 
@@ -331,32 +370,27 @@ def optimizeShapeWithPose(body_model, body_params, keypoints3d,
         if has_sil and len(valid_pairs) > 0:
             verts = body_model(return_verts=True, return_tensor=True,
                                **body_params)
-            if verts.shape[1] > max_verts:
-                step = max(verts.shape[1] // max_verts, 1)
-                verts = verts[:, ::step]
-            nv_verts = verts.shape[1]
-            if nv_verts not in ones_cache:
-                ones_cache[nv_verts] = torch.ones(
-                    nFrames, nv_verts, 1, dtype=verts.dtype, device=device)
-            verts_h = torch.cat([verts, ones_cache[nv_verts]], dim=2)
+            nv_all = verts.shape[1]
+            if nv_all not in ones_cache:
+                ones_cache[nv_all] = torch.ones(
+                    nFrames, nv_all, 1, dtype=verts.dtype, device=device)
+            verts_h = torch.cat([verts, ones_cache[nv_all]], dim=2)
             proj_v = torch.einsum('vab,fnb->vfna', Pall_t, verts_h)
             proj_v_2d = proj_v[..., :2] / torch.clamp(
                 proj_v[..., 2:3], min=1e-6)
             chamfer_loss = torch.tensor(0., device=device)
             count = 0
             for nf, nv in valid_pairs:
-                pts = sil_pts_t[nf][nv]
-                proj = proj_v_2d[nv, nf]
-                dists = torch.cdist(proj, pts, p=2)
-                outside = _vertices_outside_contour(
-                    pts.detach().cpu().numpy(),
-                    proj.detach().cpu().numpy())
-                outside_t = torch.tensor(outside, dtype=torch.bool,
-                                         device=device)
-                fwd = (dists[outside_t].min(dim=1)[0].mean()
-                       if outside_t.any()
-                       else torch.tensor(0., device=device))
-                bwd = dists.min(dim=0)[0].mean()
+                gt_contour = sil_pts_t[nf][nv]
+                pv = proj_v_2d[nv, nf]           # (V, 2)
+                sil_idx = _silhouette_vertex_indices(
+                    pv, faces_t, edge_v_t, edge_f_t)
+                if sil_idx.numel() == 0:
+                    continue
+                mesh_contour = pv[sil_idx]        # (S, 2)
+                dists = torch.cdist(mesh_contour, gt_contour, p=2)
+                fwd = dists.min(dim=1)[0].mean()  # mesh→gt
+                bwd = dists.min(dim=0)[0].mean()  # gt→mesh
                 chamfer_loss = chamfer_loss + fwd + bwd
                 count += 1
             if count > 0:

@@ -138,7 +138,8 @@ def mv1pmf_smpl(dataset, args, weight_pose=None, weight_shape=None):
                         **param_before)[0]
                 vis_shape_silhouette_overlay(
                     dataset, images, vertices[0], frame_pts, nf, args,
-                    vertices_before=verts_before
+                    vertices_before=verts_before,
+                    faces=body_model.faces
                 )
         if args.vis_repro:
             keypoints = body_model(return_verts=False, return_tensor=False, **param)[0]
@@ -212,34 +213,49 @@ def load_silhouette_points(dataset, start, end, args):
     return silhouettes
 
 
-def _draw_silhouette_overlay(image, mesh_xy_all, mask_xy_all, label, max_mesh_points, rng):
-    """Draw projected mesh (red) and mask contour (green) on a single image."""
+def _mesh_silhouette_contour(mesh_xy_all, faces, h, w):
+    """Rasterise the projected mesh to a mask and return its contours."""
+    if faces is not None and mesh_xy_all.shape[0] > 0:
+        tris = mesh_xy_all[faces].astype(np.int32)  # (F, 3, 2)
+        mask = np.zeros((h, w), dtype=np.uint8)
+        cv2.fillPoly(mask, tris, 255)
+        contours, _ = cv2.findContours(
+            mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        return contours
+    if mesh_xy_all.shape[0] >= 3:
+        hull = cv2.convexHull(np.round(mesh_xy_all).astype(np.int32))
+        return [hull]
+    return None
+
+
+def _draw_silhouette_overlay(image, mesh_xy_all, mask_xy_all, label,
+                             faces=None):
+    """Draw mesh silhouette contour (red) and GT mask contour (green).
+
+    When *faces* is provided the mesh is rasterised via its triangles so we
+    can extract a true silhouette contour.  Otherwise falls back to the convex
+    hull of the projected vertices.
+    """
     canvas = image.copy()
     h, w = canvas.shape[:2]
 
-    mesh_xy = mesh_xy_all.copy()
-    if max_mesh_points > 0 and mesh_xy.shape[0] > max_mesh_points:
-        select = rng.choice(mesh_xy.shape[0], size=max_mesh_points, replace=False)
-        mesh_xy = mesh_xy[select]
-    mesh_xy = np.round(mesh_xy).astype(np.int32)
-    valid = ((mesh_xy[:, 0] >= 0) & (mesh_xy[:, 0] < w) &
-             (mesh_xy[:, 1] >= 0) & (mesh_xy[:, 1] < h))
-    mesh_xy = mesh_xy[valid]
-    if mesh_xy.shape[0] > 0:
-        layer = np.zeros((h, w), dtype=np.uint8)
-        layer[mesh_xy[:, 1], mesh_xy[:, 0]] = 255
-        layer = cv2.dilate(layer, np.ones((5, 5), np.uint8), iterations=1)
-        canvas[layer > 0] = (0, 0, 255)
+    # --- mesh silhouette contour (red) ---
+    mesh_contour = _mesh_silhouette_contour(mesh_xy_all, faces, h, w)
+    if mesh_contour is not None and len(mesh_contour) > 0:
+        cv2.drawContours(canvas, mesh_contour, -1, (0, 0, 255), 2)
 
+    # --- GT mask contour (green) ---
     mask_xy = np.round(mask_xy_all).astype(np.int32)
     valid = ((mask_xy[:, 0] >= 0) & (mask_xy[:, 0] < w) &
              (mask_xy[:, 1] >= 0) & (mask_xy[:, 1] < h))
     mask_xy = mask_xy[valid]
     if mask_xy.shape[0] > 0:
-        layer = np.zeros((h, w), dtype=np.uint8)
-        layer[mask_xy[:, 1], mask_xy[:, 0]] = 255
-        layer = cv2.dilate(layer, np.ones((5, 5), np.uint8), iterations=1)
-        canvas[layer > 0] = (0, 255, 0)
+        gt_mask = np.zeros((h, w), dtype=np.uint8)
+        gt_mask[mask_xy[:, 1], mask_xy[:, 0]] = 255
+        gt_mask = cv2.dilate(gt_mask, np.ones((3, 3), np.uint8), iterations=1)
+        gt_contours, _ = cv2.findContours(
+            gt_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        cv2.drawContours(canvas, gt_contours, -1, (0, 255, 0), 2)
 
     cv2.putText(canvas, label, (12, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.7,
                 (255, 255, 255), 2, cv2.LINE_AA)
@@ -247,8 +263,8 @@ def _draw_silhouette_overlay(image, mesh_xy_all, mask_xy_all, label, max_mesh_po
 
 
 def vis_shape_silhouette_overlay(dataset, images, vertices, frame_points, nf, args,
-                                 vertices_before=None):
-    """Visualize projected mesh vs mask contour.
+                                 vertices_before=None, faces=None):
+    """Visualize projected mesh silhouette contour vs GT mask contour.
 
     When vertices_before is provided (pre-refinement mesh), a side-by-side
     BEFORE | AFTER comparison is saved so the user can see the shape improvement.
@@ -257,8 +273,6 @@ def vis_shape_silhouette_overlay(dataset, images, vertices, frame_points, nf, ar
     proj = projectN3(vertices, dataset.Pall)[..., :2]
     proj_before = (projectN3(vertices_before, dataset.Pall)[..., :2]
                    if vertices_before is not None else None)
-    max_mesh_points = max(getattr(args, 'shape_vis_max_mesh_points', 4000), 0)
-    rng = np.random.default_rng(0)
 
     for nv, cam in enumerate(dataset.cams):
         mask_pts = (frame_points[nv] if frame_points is not None
@@ -266,12 +280,12 @@ def vis_shape_silhouette_overlay(dataset, images, vertices, frame_points, nf, ar
 
         after = _draw_silhouette_overlay(
             images[nv], proj[nv], mask_pts,
-            'AFTER  contour(green) mesh(red)', max_mesh_points, rng)
+            'AFTER  GT(green) mesh(red)', faces=faces)
 
         if proj_before is not None:
             before = _draw_silhouette_overlay(
                 images[nv], proj_before[nv], mask_pts,
-                'BEFORE  contour(green) mesh(red)', max_mesh_points, rng)
+                'BEFORE  GT(green) mesh(red)', faces=faces)
             canvas = np.concatenate([before, after], axis=1)
         else:
             canvas = after
