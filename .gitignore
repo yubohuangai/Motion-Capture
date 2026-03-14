@@ -121,6 +121,7 @@ yolov5m.pt
 output/
 tmp/
 res/
+docs/
 
 # MacOS
 .idea/

@@ -6,8 +6,13 @@ Visualize chessboard SfM-BA / COLMAP-BA outputs:
 Shows:
   - point cloud
   - camera centers + frustum wireframes
+  - camera name labels below each camera
+  - distance lines + labels for specified camera pairs (e.g. 01-02, 01-06)
+
+Saves camera_info.json with centers and pairwise distances.
 """
 
+import json
 import os
 from os.path import join
 
@@ -153,6 +158,81 @@ def to_point_cloud(points, color=(0.85, 0.85, 0.85)):
     return pcd
 
 
+def parse_dist_pairs(s):
+    """Parse '01-02,01-06' into [('01','02'), ('01','06')]."""
+    if not s:
+        return []
+    pairs = []
+    for part in s.split(","):
+        part = part.strip()
+        if "-" in part:
+            a, b = part.split("-", 1)
+            pairs.append((a.strip(), b.strip()))
+    return pairs
+
+
+def get_default_mat(color=(0.15, 0.65, 1.0), shader="defaultUnlit"):
+    mat = o3d.visualization.rendering.MaterialRecord()
+    mat.shader = shader
+    mat.base_color = [color[0], color[1], color[2], 1.0]
+    return mat
+
+
+def run_gui_visualization(geometries, labels, bbox_expand=1.5):
+    """Run Open3D GUI with 3D labels. labels: list of (position [x,y,z], text)."""
+    gui = o3d.visualization.gui
+    rendering = o3d.visualization.rendering
+
+    gui.Application.instance.initialize()
+    window = gui.Application.instance.create_window("Chessboard SfM-BA", 1280, 720)
+    widget = gui.SceneWidget()
+    widget.scene = rendering.Open3DScene(window.renderer)
+    widget.scene.set_background([0.2, 0.2, 0.2, 1.0])
+    widget.scene.scene.set_sun_light([-1, -1, -1], [1, 1, 1], 100000)
+    widget.scene.scene.enable_sun_light(True)
+    window.add_child(widget)
+
+    # Add geometries
+    for i, geom in enumerate(geometries):
+        if isinstance(geom, o3d.geometry.PointCloud):
+            mat = get_default_mat((0.8, 0.8, 0.8), "defaultUnlit")
+        elif isinstance(geom, o3d.geometry.LineSet):
+            mat = get_default_mat((0.15, 0.65, 1.0), "defaultUnlit")
+        elif isinstance(geom, o3d.geometry.TriangleMesh):
+            mat = get_default_mat((1, 1, 1), "defaultLit")
+        else:
+            mat = get_default_mat()
+        widget.scene.add_geometry(f"geom_{i}", geom, mat)
+
+    # Add 3D labels
+    for pos, text in labels:
+        pos = np.asarray(pos, dtype=np.float64)
+        lbl = widget.add_3d_label(pos, str(text))
+        lbl.color = gui.Color(1.0, 1.0, 1.0)
+        lbl.scale = 1.2
+
+    # Setup camera to fit bbox
+    all_pts = []
+    for g in geometries:
+        if hasattr(g, "points"):
+            all_pts.append(np.asarray(g.points))
+        elif hasattr(g, "vertices"):
+            all_pts.append(np.asarray(g.vertices))
+    if all_pts:
+        pts = np.vstack(all_pts)
+        center = pts.mean(axis=0)
+        r = float(np.max(np.linalg.norm(pts - center, axis=1)) * bbox_expand) + 1e-6
+        bbox = o3d.geometry.AxisAlignedBoundingBox(
+            center - r, center + r
+        )
+    else:
+        bbox = o3d.geometry.AxisAlignedBoundingBox([-5, -5, -5], [5, 5, 5])
+        center = np.zeros(3)
+    widget.setup_camera(60, bbox, center)
+
+    gui.Application.instance.run()
+
+
 def main(args):
     root = args.path
     intri_path = resolve_path(root, args.intri)
@@ -183,14 +263,61 @@ def main(args):
     if len(args.subs) > 0:
         camnames = [c for c in camnames if c in args.subs]
 
+    # Compute camera centers
+    cam_centers = {}
+    for cam in camnames:
+        c = get_camera_center(cameras[cam]).reshape(3)
+        cam_centers[cam] = c.tolist()
+
+    # Compute pairwise distances and save camera_info.json
+    dist_pairs = parse_dist_pairs(args.dist_pairs)
+    distances = {}
+    for a, b in dist_pairs:
+        if a in cam_centers and b in cam_centers:
+            d = float(np.linalg.norm(np.array(cam_centers[a]) - np.array(cam_centers[b])))
+            key = f"{a}-{b}"
+            distances[key] = d
+
+    camera_info = {
+        "centers": cam_centers,
+        "distances": distances,
+    }
+    info_path = resolve_path(root, args.camera_info)
+    os.makedirs(os.path.dirname(info_path) or ".", exist_ok=True)
+    with open(info_path, "w") as f:
+        json.dump(camera_info, f, indent=2)
+    print(f"[VIS] saved camera_info: {info_path}")
+
+    # Build geometries and labels
+    label_offset = np.array([0, -args.label_offset, 0], dtype=np.float64)  # below camera
+
     print(f"[VIS] points={xyz.shape[0]} cameras={len(camnames)}")
+    labels = []
     for cam in camnames:
         pts, lines = make_frustum_lines(cameras[cam], scale=args.frustum_size)
         geometries.append(make_line_set(pts, lines, color=(0.15, 0.65, 1.0)))
-        center = get_camera_center(cameras[cam]).reshape(3)
+        center = np.array(cam_centers[cam], dtype=np.float64)
+        labels.append((center + label_offset, cam))
         print(f"[VIS] {cam} center: {center}")
 
-    o3d.visualization.draw_geometries(geometries)
+    # Add distance lines and labels
+    for a, b in dist_pairs:
+        if a in cam_centers and b in cam_centers:
+            ca = np.array(cam_centers[a], dtype=np.float64)
+            cb = np.array(cam_centers[b], dtype=np.float64)
+            line_pts = np.stack([ca, cb], axis=0)
+            line_lines = np.array([[0, 1]], dtype=np.int32)
+            geometries.append(make_line_set(line_pts, line_lines, color=(1.0, 0.5, 0.0)))
+            mid = (ca + cb) / 2
+            d = distances.get(f"{a}-{b}", np.linalg.norm(cb - ca))
+            labels.append((mid, f"{a}-{b}: {d:.3f}m"))
+            print(f"[VIS] {a}-{b} distance: {d:.3f}m")
+
+    if args.legacy:
+        o3d.visualization.draw_geometries(geometries)
+        print("[VIS] (legacy mode: no labels; use default viz for labels)")
+    else:
+        run_gui_visualization(geometries, labels)
 
 
 if __name__ == "__main__":
@@ -200,11 +327,20 @@ if __name__ == "__main__":
     parser.add_argument("path", type=str, help="dataset root")
     parser.add_argument("--intri", type=str, default="intri_colmap_ba.yml")
     parser.add_argument("--extri", type=str, default="extri_colmap_ba.yml")
-    parser.add_argument("--points", type=str, default="points_chess_colmap_ba.npz")
+    parser.add_argument("--points", type=str, default="output/points_chess_colmap_ba.npz")
+    parser.add_argument("--camera_info", type=str, default="output/camera_info.json")
+    parser.add_argument(
+        "--dist_pairs",
+        type=str,
+        default="01-02,01-06",
+        help="camera pairs to show distance (e.g. 01-02,01-06)",
+    )
+    parser.add_argument("--label_offset", type=float, default=0.08, help="label offset below camera")
     parser.add_argument("--subs", type=str, nargs="+", default=[], help="camera subset to visualize")
     parser.add_argument("--max_points", type=int, default=-1, help="random subsample for visualization")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--frustum_size", type=float, default=0.35)
     parser.add_argument("--axis_size", type=float, default=0.4)
+    parser.add_argument("--legacy", action="store_true", help="use draw_geometries (no labels)")
     args = parser.parse_args()
     main(args)
