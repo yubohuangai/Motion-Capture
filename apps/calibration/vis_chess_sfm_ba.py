@@ -10,6 +10,9 @@ Shows:
   - distance lines + labels for specified camera pairs (e.g. 01-02, 01-06)
 
 Saves camera_info.json with centers and pairwise distances.
+
+Applies OpenCV→Open3D coordinate transform (flip Y) so the scene displays
+right-side-up (OpenCV uses Y-down, Open3D/OpenGL uses Y-up).
 """
 
 import json
@@ -77,6 +80,16 @@ def resolve_path(root, path_or_name):
     if os.path.isabs(path_or_name):
         return path_or_name
     return join(root, path_or_name)
+
+
+def opencv_to_opengl(pts):
+    """Transform OpenCV (Y-down) to Open3D/OpenGL (Y-up). Flips Y axis."""
+    pts = np.asarray(pts, dtype=np.float64)
+    if pts.ndim == 1:
+        pts = pts.reshape(1, -1)
+    out = pts.copy()
+    out[:, 1] = -out[:, 1]
+    return out.squeeze()
 
 
 def world_from_camera(camera, Xc):
@@ -178,19 +191,40 @@ def get_default_mat(color=(0.15, 0.65, 1.0), shader="defaultUnlit"):
     return mat
 
 
-def run_gui_visualization(geometries, labels, bbox_expand=1.5):
-    """Run Open3D GUI with 3D labels. labels: list of (position [x,y,z], text)."""
+def run_gui_visualization(geometries, labels, distance_labels=None, bbox_expand=0.8):
+    """Run Open3D GUI with 3D labels. labels: camera (position, text). distance_labels: [(pair, dist_str)] for side panel."""
     gui = o3d.visualization.gui
     rendering = o3d.visualization.rendering
 
     gui.Application.instance.initialize()
-    window = gui.Application.instance.create_window("Chessboard SfM-BA", 1280, 720)
+    window = gui.Application.instance.create_window("Chessboard SfM-BA", 1600, 900)
+    em = window.theme.font_size
+
+    # Side panel for distances (aside the main graph)
+    panel = gui.Vert(em, gui.Margins(0.5 * em, 0.5 * em, 0.5 * em, 0.5 * em))
+    panel.add_child(gui.Label("Distances"))
+    if distance_labels:
+        for pair, dist_str in distance_labels:
+            panel.add_child(gui.Label(f"  {pair}: {dist_str}"))
+    else:
+        panel.add_child(gui.Label("  (no pairs)"))
+
+    # Scene widget
     widget = gui.SceneWidget()
     widget.scene = rendering.Open3DScene(window.renderer)
     widget.scene.set_background([0.2, 0.2, 0.2, 1.0])
     widget.scene.scene.set_sun_light([-1, -1, -1], [1, 1, 1], 100000)
     widget.scene.scene.enable_sun_light(True)
+
+    def _on_layout(ctx):
+        rect = window.content_rect
+        panel_width = max(200, int(rect.width * 0.21))
+        widget.frame = gui.Rect(rect.x, rect.y, rect.width - panel_width, rect.height)
+        panel.frame = gui.Rect(rect.x + rect.width - panel_width, rect.y, panel_width, rect.height)
+
+    window.set_on_layout(_on_layout)
     window.add_child(widget)
+    window.add_child(panel)
 
     # Add geometries
     for i, geom in enumerate(geometries):
@@ -204,7 +238,7 @@ def run_gui_visualization(geometries, labels, bbox_expand=1.5):
             mat = get_default_mat()
         widget.scene.add_geometry(f"geom_{i}", geom, mat)
 
-    # Add 3D labels
+    # Add 3D labels (camera names only; distances go in side panel)
     for pos, text in labels:
         pos = np.asarray(pos, dtype=np.float64)
         lbl = widget.add_3d_label(pos, str(text))
@@ -257,7 +291,8 @@ def main(args):
         xyz = xyz[keep]
 
     geometries = []
-    geometries.append(to_point_cloud(xyz, color=(0.8, 0.8, 0.8)))
+    xyz_vis = opencv_to_opengl(xyz)
+    geometries.append(to_point_cloud(xyz_vis, color=(0.8, 0.8, 0.8)))
     geometries.append(o3d.geometry.TriangleMesh.create_coordinate_frame(size=args.axis_size, origin=[0, 0, 0]))
 
     if len(args.subs) > 0:
@@ -295,29 +330,32 @@ def main(args):
     labels = []
     for cam in camnames:
         pts, lines = make_frustum_lines(cameras[cam], scale=args.frustum_size)
-        geometries.append(make_line_set(pts, lines, color=(0.15, 0.65, 1.0)))
+        pts_vis = opencv_to_opengl(pts)
+        geometries.append(make_line_set(pts_vis, lines, color=(0.15, 0.65, 1.0)))
         center = np.array(cam_centers[cam], dtype=np.float64)
-        labels.append((center + label_offset, cam))
+        label_pos = opencv_to_opengl(center + label_offset)
+        labels.append((label_pos, cam))
         print(f"[VIS] {cam} center: {center}")
 
-    # Add distance lines and labels
+    # Add distance lines (labels shown in side panel)
+    distance_labels = []
     for a, b in dist_pairs:
         if a in cam_centers and b in cam_centers:
             ca = np.array(cam_centers[a], dtype=np.float64)
             cb = np.array(cam_centers[b], dtype=np.float64)
             line_pts = np.stack([ca, cb], axis=0)
+            line_pts_vis = opencv_to_opengl(line_pts)
             line_lines = np.array([[0, 1]], dtype=np.int32)
-            geometries.append(make_line_set(line_pts, line_lines, color=(1.0, 0.5, 0.0)))
-            mid = (ca + cb) / 2
+            geometries.append(make_line_set(line_pts_vis, line_lines, color=(1.0, 0.5, 0.0)))
             d = distances.get(f"{a}-{b}", np.linalg.norm(cb - ca))
-            labels.append((mid, f"{a}-{b}: {d:.3f}m"))
+            distance_labels.append((f"{a}-{b}", f"{d:.3f}m"))
             print(f"[VIS] {a}-{b} distance: {d:.3f}m")
 
     if args.legacy:
         o3d.visualization.draw_geometries(geometries)
         print("[VIS] (legacy mode: no labels; use default viz for labels)")
     else:
-        run_gui_visualization(geometries, labels)
+        run_gui_visualization(geometries, labels, distance_labels=distance_labels)
 
 
 if __name__ == "__main__":
@@ -327,7 +365,7 @@ if __name__ == "__main__":
     parser.add_argument("path", type=str, help="dataset root")
     parser.add_argument("--intri", type=str, default="intri_colmap_ba.yml")
     parser.add_argument("--extri", type=str, default="extri_colmap_ba.yml")
-    parser.add_argument("--points", type=str, default="output/points_chess_colmap_ba.npz")
+    parser.add_argument("--points", type=str, default="points_chess_colmap_ba.npz")
     parser.add_argument("--camera_info", type=str, default="output/camera_info.json")
     parser.add_argument(
         "--dist_pairs",

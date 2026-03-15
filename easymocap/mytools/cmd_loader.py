@@ -84,6 +84,8 @@ def load_parser():
     output.add_argument('--vis_smpl', action='store_true')
     output.add_argument('--vis_shape_silhouette', action='store_true',
         help='save overlays of mask points and reprojected SMPL mesh points')
+    output.add_argument('--vis_silhouette_points', action='store_true',
+        help='draw silhouette as points instead of contours (shows point counts)')
     output.add_argument('--write_smpl_full', action='store_true')
     parser.add_argument('--write_vertices', action='store_true')
     output.add_argument('--vis_mask', action='store_true')

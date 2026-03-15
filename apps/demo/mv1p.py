@@ -229,33 +229,58 @@ def _mesh_silhouette_contour(mesh_xy_all, faces, h, w):
 
 
 def _draw_silhouette_overlay(image, mesh_xy_all, mask_xy_all, label,
-                             faces=None):
+                             faces=None, draw_points=False,
+                             mesh_sil_indices=None):
     """Draw mesh silhouette contour (red) and GT mask contour (green).
 
     When *faces* is provided the mesh is rasterised via its triangles so we
     can extract a true silhouette contour.  Otherwise falls back to the convex
     hull of the projected vertices.
+
+    When draw_points=True, draws individual points instead of contours so you
+    can see how many points are used. mesh_sil_indices: vertex indices for
+    mesh silhouette boundary (from _silhouette_vertex_indices).
     """
     canvas = image.copy()
     h, w = canvas.shape[:2]
+    pt_radius = 2
 
-    # --- mesh silhouette contour (red) ---
-    mesh_contour = _mesh_silhouette_contour(mesh_xy_all, faces, h, w)
-    if mesh_contour is not None and len(mesh_contour) > 0:
-        cv2.drawContours(canvas, mesh_contour, -1, (0, 0, 255), 2)
+    if draw_points:
+        # --- mesh silhouette points (red) ---
+        if mesh_sil_indices is not None and mesh_sil_indices.shape[0] > 0:
+            mesh_pts = mesh_xy_all[mesh_sil_indices]
+            for pt in mesh_pts:
+                x, y = int(round(pt[0])), int(round(pt[1]))
+                if 0 <= x < w and 0 <= y < h:
+                    cv2.circle(canvas, (x, y), pt_radius, (0, 0, 255), -1)
+        # --- GT mask points (green) ---
+        mask_xy = np.round(mask_xy_all).astype(np.int32)
+        valid = ((mask_xy[:, 0] >= 0) & (mask_xy[:, 0] < w) &
+                 (mask_xy[:, 1] >= 0) & (mask_xy[:, 1] < h))
+        mask_xy = mask_xy[valid]
+        for pt in mask_xy:
+            cv2.circle(canvas, tuple(pt), pt_radius, (0, 255, 0), -1)
+        n_mesh = mesh_sil_indices.shape[0] if mesh_sil_indices is not None else 0
+        n_gt = mask_xy.shape[0]
+        label = f'{label}  mesh:{n_mesh}  GT:{n_gt}'
+    else:
+        # --- mesh silhouette contour (red) ---
+        mesh_contour = _mesh_silhouette_contour(mesh_xy_all, faces, h, w)
+        if mesh_contour is not None and len(mesh_contour) > 0:
+            cv2.drawContours(canvas, mesh_contour, -1, (0, 0, 255), 2)
 
-    # --- GT mask contour (green) ---
-    mask_xy = np.round(mask_xy_all).astype(np.int32)
-    valid = ((mask_xy[:, 0] >= 0) & (mask_xy[:, 0] < w) &
-             (mask_xy[:, 1] >= 0) & (mask_xy[:, 1] < h))
-    mask_xy = mask_xy[valid]
-    if mask_xy.shape[0] > 0:
-        gt_mask = np.zeros((h, w), dtype=np.uint8)
-        gt_mask[mask_xy[:, 1], mask_xy[:, 0]] = 255
-        gt_mask = cv2.dilate(gt_mask, np.ones((3, 3), np.uint8), iterations=1)
-        gt_contours, _ = cv2.findContours(
-            gt_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        cv2.drawContours(canvas, gt_contours, -1, (0, 255, 0), 2)
+        # --- GT mask contour (green) ---
+        mask_xy = np.round(mask_xy_all).astype(np.int32)
+        valid = ((mask_xy[:, 0] >= 0) & (mask_xy[:, 0] < w) &
+                 (mask_xy[:, 1] >= 0) & (mask_xy[:, 1] < h))
+        mask_xy = mask_xy[valid]
+        if mask_xy.shape[0] > 0:
+            gt_mask = np.zeros((h, w), dtype=np.uint8)
+            gt_mask[mask_xy[:, 1], mask_xy[:, 0]] = 255
+            gt_mask = cv2.dilate(gt_mask, np.ones((3, 3), np.uint8), iterations=1)
+            gt_contours, _ = cv2.findContours(
+                gt_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            cv2.drawContours(canvas, gt_contours, -1, (0, 255, 0), 2)
 
     cv2.putText(canvas, label, (12, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.7,
                 (255, 255, 255), 2, cv2.LINE_AA)
@@ -268,24 +293,52 @@ def vis_shape_silhouette_overlay(dataset, images, vertices, frame_points, nf, ar
 
     When vertices_before is provided (pre-refinement mesh), a side-by-side
     BEFORE | AFTER comparison is saved so the user can see the shape improvement.
+
+    When args.vis_silhouette_points is True, draws points instead of contours
+    and shows mesh/GT point counts in the label.
     """
+    import torch
+    from easymocap.pyfitting.optimize_simple import (
+        _build_edge_face_adjacency,
+        _silhouette_vertex_indices,
+    )
+
     out_root = join(args.out, 'shape_silhouette')
     proj = projectN3(vertices, dataset.Pall)[..., :2]
     proj_before = (projectN3(vertices_before, dataset.Pall)[..., :2]
                    if vertices_before is not None else None)
 
+    draw_points = getattr(args, 'vis_silhouette_points', False)
+    edge_v_t = edge_f_t = faces_t = None
+    if draw_points and faces is not None:
+        edge_v, edge_f = _build_edge_face_adjacency(faces)
+        edge_v_t = torch.tensor(edge_v, dtype=torch.long)
+        edge_f_t = torch.tensor(edge_f, dtype=torch.long)
+        faces_t = torch.tensor(faces, dtype=torch.long)
+
+    def _mesh_sil_idx(proj_nv):
+        if edge_v_t is None or proj_nv.shape[0] == 0:
+            return None
+        p = torch.tensor(proj_nv, dtype=torch.float32)
+        idx = _silhouette_vertex_indices(p, faces_t, edge_v_t, edge_f_t)
+        return idx.cpu().numpy()
+
     for nv, cam in enumerate(dataset.cams):
         mask_pts = (frame_points[nv] if frame_points is not None
                     else np.zeros((0, 2), dtype=np.float32))
 
+        mesh_sil_idx = _mesh_sil_idx(proj[nv]) if draw_points else None
         after = _draw_silhouette_overlay(
             images[nv], proj[nv], mask_pts,
-            'AFTER  GT(green) mesh(red)', faces=faces)
+            'AFTER  GT(green) mesh(red)', faces=faces,
+            draw_points=draw_points, mesh_sil_indices=mesh_sil_idx)
 
         if proj_before is not None:
+            mesh_sil_idx_before = _mesh_sil_idx(proj_before[nv]) if draw_points else None
             before = _draw_silhouette_overlay(
                 images[nv], proj_before[nv], mask_pts,
-                'BEFORE  GT(green) mesh(red)', faces=faces)
+                'BEFORE  GT(green) mesh(red)', faces=faces,
+                draw_points=draw_points, mesh_sil_indices=mesh_sil_idx_before)
             canvas = np.concatenate([before, after], axis=1)
         else:
             canvas = after
