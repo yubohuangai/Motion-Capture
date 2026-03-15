@@ -94,6 +94,51 @@ def _outside_gt_contour(gt_pts_np, query_pts_np):
     return result
 
 
+def _outer_silhouette_vertex_indices(proj_2d, faces_t, edge_v_t, edge_f_t,
+                                     gt_pts_np, device):
+    """Return vertex indices on the OUTER silhouette boundary only.
+
+    Excludes internal boundaries (arm-hole, mouth opening, ear cavity, etc.)
+    by rasterizing the mesh and keeping only vertices on the outer contour.
+    Matches the contour visualization (RETR_EXTERNAL).
+    """
+    sil_idx = _silhouette_vertex_indices(proj_2d, faces_t, edge_v_t, edge_f_t)
+    if sil_idx.numel() == 0:
+        return sil_idx
+
+    proj_np = proj_2d.detach().cpu().numpy()
+    faces_np = faces_t.cpu().numpy()
+    sil_idx_np = sil_idx.cpu().numpy()
+
+    all_pts = np.concatenate([gt_pts_np, proj_np[sil_idx_np]], axis=0)
+    max_xy = np.ceil(all_pts.max(axis=0)).astype(int) + 2
+    h = int(max(min(max_xy[1], 4096), 1))
+    w = int(max(min(max_xy[0], 4096), 1))
+
+    tris = proj_np[faces_np].astype(np.int32)
+    mask = np.zeros((h, w), dtype=np.uint8)
+    cv2.fillPoly(mask, tris, 255)
+    contours, _ = cv2.findContours(
+        mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+    if len(contours) == 0:
+        return sil_idx
+
+    contour_mask = np.zeros((h, w), dtype=np.uint8)
+    cv2.drawContours(contour_mask, contours, -1, 255, 2)
+
+    keep = []
+    for i in range(sil_idx_np.shape[0]):
+        idx = sil_idx_np[i]
+        x = int(round(proj_np[idx, 0]))
+        y = int(round(proj_np[idx, 1]))
+        if 0 <= x < w and 0 <= y < h and contour_mask[y, x] > 0:
+            keep.append(i)
+    if len(keep) == 0:
+        return sil_idx
+    out_indices = sil_idx_np[keep]
+    return torch.tensor(out_indices, dtype=torch.long, device=device)
+
+
 def optimizeShape(body_model, body_params, keypoints3d,
     weight_loss, kintree, cfg=None):
     """ simple function for optimizing model shape given 3d keypoints
@@ -232,8 +277,9 @@ def optimizeShapeSilhouette(body_model, body_params, silhouette_points, Pall, we
         for nf, nv in valid_pairs:
             gt_contour = points_t[nf][nv]
             pv = proj[nv, nf]
-            sil_idx = _silhouette_vertex_indices(
-                pv, faces_t, edge_v_t, edge_f_t)
+            sil_idx = _outer_silhouette_vertex_indices(
+                pv, faces_t, edge_v_t, edge_f_t,
+                gt_contour.detach().cpu().numpy(), device)
             if sil_idx.numel() == 0:
                 continue
             mesh_contour = pv[sil_idx]
@@ -414,8 +460,9 @@ def optimizeShapeWithPose(body_model, body_params, keypoints3d,
             for nf, nv in valid_pairs:
                 gt_contour = sil_pts_t[nf][nv]
                 pv = proj_v_2d[nv, nf]           # (V, 2)
-                sil_idx = _silhouette_vertex_indices(
-                    pv, faces_t, edge_v_t, edge_f_t)
+                sil_idx = _outer_silhouette_vertex_indices(
+                    pv, faces_t, edge_v_t, edge_f_t,
+                    gt_contour.detach().cpu().numpy(), device)
                 if sil_idx.numel() == 0:
                     continue
                 mesh_contour = pv[sil_idx]        # (S, 2)

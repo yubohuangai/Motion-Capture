@@ -300,7 +300,7 @@ def vis_shape_silhouette_overlay(dataset, images, vertices, frame_points, nf, ar
     import torch
     from easymocap.pyfitting.optimize_simple import (
         _build_edge_face_adjacency,
-        _silhouette_vertex_indices,
+        _outer_silhouette_vertex_indices,
     )
 
     out_root = join(args.out, 'shape_silhouette')
@@ -310,6 +310,7 @@ def vis_shape_silhouette_overlay(dataset, images, vertices, frame_points, nf, ar
 
     draw_points = getattr(args, 'vis_silhouette_points', False)
     edge_v_t = edge_f_t = faces_t = None
+    device = torch.device('cpu')
     if draw_points and faces is not None:
         faces_np = np.asarray(faces, dtype=np.int64)
         edge_v, edge_f = _build_edge_face_adjacency(faces_np)
@@ -317,25 +318,27 @@ def vis_shape_silhouette_overlay(dataset, images, vertices, frame_points, nf, ar
         edge_f_t = torch.tensor(edge_f, dtype=torch.long)
         faces_t = torch.tensor(faces_np, dtype=torch.long)
 
-    def _mesh_sil_idx(proj_nv):
+    def _mesh_sil_idx(proj_nv, mask_pts_np):
         if edge_v_t is None or proj_nv.shape[0] == 0:
             return None
+        gt_np = mask_pts_np if mask_pts_np.shape[0] > 0 else proj_nv
         p = torch.tensor(proj_nv, dtype=torch.float32)
-        idx = _silhouette_vertex_indices(p, faces_t, edge_v_t, edge_f_t)
+        idx = _outer_silhouette_vertex_indices(
+            p, faces_t, edge_v_t, edge_f_t, gt_np, device)
         return idx.cpu().numpy()
 
     for nv, cam in enumerate(dataset.cams):
         mask_pts = (frame_points[nv] if frame_points is not None
                     else np.zeros((0, 2), dtype=np.float32))
 
-        mesh_sil_idx = _mesh_sil_idx(proj[nv]) if draw_points else None
+        mesh_sil_idx = _mesh_sil_idx(proj[nv], mask_pts) if draw_points else None
         after = _draw_silhouette_overlay(
             images[nv], proj[nv], mask_pts,
             'AFTER  GT(green) mesh(red)', faces=faces,
             draw_points=draw_points, mesh_sil_indices=mesh_sil_idx)
 
         if proj_before is not None:
-            mesh_sil_idx_before = _mesh_sil_idx(proj_before[nv]) if draw_points else None
+            mesh_sil_idx_before = _mesh_sil_idx(proj_before[nv], mask_pts) if draw_points else None
             before = _draw_silhouette_overlay(
                 images[nv], proj_before[nv], mask_pts,
                 'BEFORE  GT(green) mesh(red)', faces=faces,
