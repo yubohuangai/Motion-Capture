@@ -311,10 +311,11 @@ def vis_shape_silhouette_overlay(dataset, images, vertices, frame_points, nf, ar
     draw_points = getattr(args, 'vis_silhouette_points', False)
     edge_v_t = edge_f_t = faces_t = None
     if draw_points and faces is not None:
-        edge_v, edge_f = _build_edge_face_adjacency(faces)
+        faces_np = np.asarray(faces, dtype=np.int64)
+        edge_v, edge_f = _build_edge_face_adjacency(faces_np)
         edge_v_t = torch.tensor(edge_v, dtype=torch.long)
         edge_f_t = torch.tensor(edge_f, dtype=torch.long)
-        faces_t = torch.tensor(faces, dtype=torch.long)
+        faces_t = torch.tensor(faces_np, dtype=torch.long)
 
     def _mesh_sil_idx(proj_nv):
         if edge_v_t is None or proj_nv.shape[0] == 0:
