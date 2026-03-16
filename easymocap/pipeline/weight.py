@@ -23,7 +23,9 @@ def load_weight_shape_refine(model, opts):
     k3d_shape   – direct 3D joint position matching (much richer than bone lengths).
     k2d_shape   – multi-view 2D reprojection (uses image evidence from all cameras).
     chamfer     – silhouette Chamfer loss for vertices OUTSIDE GT (shrink where too large).
+                  Primary constraint: shape must not exceed clothed silhouette.
     chamfer_in  – silhouette Chamfer loss for vertices INSIDE GT (expand where too small).
+                  Secondary; set to 0 by default so outside term dominates.
     reg_shapes  – L2 prior on betas.
     init_shape  – stay close to the initial bone-length-based shape estimate.
     """
@@ -32,9 +34,9 @@ def load_weight_shape_refine(model, opts):
             'k3d_shape': 0.,
             'k2d_shape': 1e-4,
             'chamfer': 1e-1,
-            'chamfer_in': 1e-1,
-            'reg_shapes': 5e-3,
-            'init_shape': 5e-3,
+            'chamfer_in': 0.,   # outside term dominates; enable for slight expansion
+            'reg_shapes': 0.,
+            'init_shape': 0.,
         }
     elif model == 'mano':
         weight = {
