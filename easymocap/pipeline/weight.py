@@ -34,7 +34,7 @@ def load_weight_shape_refine(model, opts):
             'k3d_shape': 0.,
             'k2d_shape': 0.,
             'chamfer': 1e-1,
-            'chamfer_in': 5e-2,  # half of chamfer; slight expansion where too small
+            'chamfer_in': 1e-2,  # half of chamfer; slight expansion where too small
             'reg_shapes': 0.,
             'init_shape': 0.,
         }
