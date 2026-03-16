@@ -227,7 +227,7 @@ def optimizeShapeSilhouette(body_model, body_params, silhouette_points, Pall, we
     nViews = len(silhouette_points[0]) if len(silhouette_points[0]) > 0 else 0
     if nViews == 0:
         return body_params
-    if weight_loss.get('chamfer', 0.) <= 0.:
+    if weight_loss.get('chamfer', 0.) <= 0. and weight_loss.get('chamfer_in', 0.) <= 0.:
         return body_params
 
     device = body_model.device
@@ -273,7 +273,8 @@ def optimizeShapeSilhouette(body_model, body_params, silhouette_points, Pall, we
         proj = point_cam[..., :2] / torch.clamp(point_cam[..., 2:3], min=1e-6)
 
         chamfer_loss = torch.tensor(0., device=device)
-        count = 0
+        chamfer_in_loss = torch.tensor(0., device=device)
+        count_out, count_in = 0, 0
         for nf, nv in valid_pairs:
             gt_contour = points_t[nf][nv]
             pv = proj[nv, nf]
@@ -288,16 +289,23 @@ def optimizeShapeSilhouette(body_model, body_params, silhouette_points, Pall, we
                 mesh_contour.detach().cpu().numpy())
             outside_t = torch.tensor(outside, dtype=torch.bool,
                                      device=device)
-            if not outside_t.any():
-                continue
-            dists = torch.cdist(mesh_contour[outside_t], gt_contour, p=2)
-            chamfer_loss = chamfer_loss + dists.min(dim=1)[0].mean()
-            count += 1
-        if count > 0:
-            chamfer_loss = chamfer_loss / count
+            inside_t = ~outside_t
+            dists = torch.cdist(mesh_contour, gt_contour, p=2)
+            min_dists = dists.min(dim=1)[0]
+            if outside_t.any():
+                chamfer_loss = chamfer_loss + min_dists[outside_t].mean()
+                count_out += 1
+            if inside_t.any():
+                chamfer_in_loss = chamfer_in_loss + min_dists[inside_t].mean()
+                count_in += 1
+        if count_out > 0:
+            chamfer_loss = chamfer_loss / count_out
+        if count_in > 0:
+            chamfer_in_loss = chamfer_in_loss / count_in
 
         loss_dict = {
             'chamfer': chamfer_loss,
+            'chamfer_in': chamfer_in_loss,
             'reg_shapes': torch.sum(body_params['shapes']**2)
         }
         if 'init_shape' in weight_loss.keys():
@@ -377,7 +385,9 @@ def optimizeShapeWithPose(body_model, body_params, keypoints3d,
                   if Pall is not None else None)
 
     chamfer_weight = weight_loss.get('chamfer', 0.)
-    has_sil = (silhouette_points is not None and chamfer_weight > 0.)
+    chamfer_in_weight = weight_loss.get('chamfer_in', 0.)
+    has_sil = (silhouette_points is not None and
+               (chamfer_weight > 0. or chamfer_in_weight > 0.))
     valid_pairs = []
     sil_pts_t = []
     if has_sil:
@@ -456,7 +466,8 @@ def optimizeShapeWithPose(body_model, body_params, keypoints3d,
             proj_v_2d = proj_v[..., :2] / torch.clamp(
                 proj_v[..., 2:3], min=1e-6)
             chamfer_loss = torch.tensor(0., device=device)
-            count = 0
+            chamfer_in_loss = torch.tensor(0., device=device)
+            count_out, count_in = 0, 0
             for nf, nv in valid_pairs:
                 gt_contour = sil_pts_t[nf][nv]
                 pv = proj_v_2d[nv, nf]           # (V, 2)
@@ -471,14 +482,21 @@ def optimizeShapeWithPose(body_model, body_params, keypoints3d,
                     mesh_contour.detach().cpu().numpy())
                 outside_t = torch.tensor(outside, dtype=torch.bool,
                                          device=device)
-                if not outside_t.any():
-                    continue
-                dists = torch.cdist(mesh_contour[outside_t], gt_contour, p=2)
-                chamfer_loss = chamfer_loss + dists.min(dim=1)[0].mean()
-                count += 1
-            if count > 0:
-                chamfer_loss = chamfer_loss / count
+                inside_t = ~outside_t
+                dists = torch.cdist(mesh_contour, gt_contour, p=2)
+                min_dists = dists.min(dim=1)[0]
+                if outside_t.any():
+                    chamfer_loss = chamfer_loss + min_dists[outside_t].mean()
+                    count_out += 1
+                if inside_t.any():
+                    chamfer_in_loss = chamfer_in_loss + min_dists[inside_t].mean()
+                    count_in += 1
+            if count_out > 0:
+                chamfer_loss = chamfer_loss / count_out
+            if count_in > 0:
+                chamfer_in_loss = chamfer_in_loss / count_in
             loss_dict['chamfer'] = chamfer_loss
+            loss_dict['chamfer_in'] = chamfer_in_loss
 
         loss_dict['reg_shapes'] = torch.sum(body_params['shapes'] ** 2)
         if weight_loss.get('init_shape', 0.) > 0.:

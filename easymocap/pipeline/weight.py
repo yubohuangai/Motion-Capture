@@ -7,7 +7,7 @@
 '''
 def load_weight_shape(model, opts):
     if model in ['smpl', 'smplh', 'smplx']:
-        weight = {'s3d': 1., 'reg_shapes': 5e-3, 'chamfer': 5e-7}
+        weight = {'s3d': 1., 'reg_shapes': 5e-3, 'chamfer': 5e-7, 'chamfer_in': 5e-7}
     elif model == 'mano':
         weight = {'s3d': 1e2, 'reg_shapes': 5e-5}
     else:
@@ -20,17 +20,19 @@ def load_weight_shape(model, opts):
 def load_weight_shape_refine(model, opts):
     """Weights for shape refinement with pose (optimizeShapeWithPose).
 
-    k3d_shape  – direct 3D joint position matching (much richer than bone lengths).
-    k2d_shape  – multi-view 2D reprojection (uses image evidence from all cameras).
-    chamfer    – silhouette Chamfer loss (captures body width/depth if masks available).
-    reg_shapes – L2 prior on betas.
-    init_shape – stay close to the initial bone-length-based shape estimate.
+    k3d_shape   – direct 3D joint position matching (much richer than bone lengths).
+    k2d_shape   – multi-view 2D reprojection (uses image evidence from all cameras).
+    chamfer     – silhouette Chamfer loss for vertices OUTSIDE GT (shrink where too large).
+    chamfer_in  – silhouette Chamfer loss for vertices INSIDE GT (expand where too small).
+    reg_shapes  – L2 prior on betas.
+    init_shape  – stay close to the initial bone-length-based shape estimate.
     """
     if model in ['smpl', 'smplh', 'smplx']:
         weight = {
             'k3d_shape': 0.,
             'k2d_shape': 1e-4,
             'chamfer': 1e-1,
+            'chamfer_in': 1e-1,
             'reg_shapes': 5e-3,
             'init_shape': 5e-3,
         }
@@ -39,6 +41,7 @@ def load_weight_shape_refine(model, opts):
             'k3d_shape': 1e2,
             'k2d_shape': 1e-3,
             'chamfer': 0.,
+            'chamfer_in': 0.,
             'reg_shapes': 5e-5,
             'init_shape': 1e-1,
         }
