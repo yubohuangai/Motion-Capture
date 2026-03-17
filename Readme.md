@@ -1,272 +1,230 @@
-<!--
- * @Date: 2021-01-13 20:32:12
- * @Author: Qing Shuai
- * @LastEditors: Qing Shuai
- * @LastEditTime: 2022-11-03 13:09:58
- * @FilePath: /EasyMocapRelease/Readme.md
--->
+# Motion Capture Pipeline — Technical Report & Workflow Summary
 
-<div align="center">
-    <img src="logo.png" width="40%">
-</div>
-
-**EasyMocap** is an open-source toolbox for **markerless human motion capture** and **novel view synthesis** from RGB videos. In this project, we provide a lot of motion capture demos in different settings.
-
-![python](https://img.shields.io/github/languages/top/zju3dv/EasyMocap)
-![star](https://img.shields.io/github/stars/zju3dv/EasyMocap?style=social)
-
-## News
-
-- :tada: Our SIGGRAPH 2022 [**Novel View Synthesis of Human Interactions From Sparse Multi-view Videos**](https://chingswy.github.io/easymocap-public-doc/works/multinb.html) is released! Check the [documentation](https://chingswy.github.io/easymocap-public-doc/works/multinb.html).
-- :tada: EasyMocap v0.2 is released! We support motion capture from Internet videos. Please check the [Quick Start](https://chingswy.github.io/easymocap-public-doc/quickstart/quickstart.html) for more details.
-
+This document serves as a **technical report**, **code review overview**, and **onboarding guide** for the multi-view markerless human motion capture pipeline. It describes the end-to-end workflow from camera calibration through 3D body reconstruction.
 
 ---
 
-## Core features
+## Audience
 
-### Multiple views of a single person
+- **Mentors**: High-level code review and pipeline architecture overview
+- **Collaborators**: Project introduction and integration points
+- **New interns**: Step-by-step guidance to run and understand the pipeline
 
-[![report](https://img.shields.io/badge/quickstart-green)](./doc/quickstart.md) [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/1Cyvu_lPFUajr2RKt6yJIfS3HQIIYl6QU?usp=sharing)
+---
 
-This is the basic code for fitting SMPL[^loper2015]/SMPL+H[^romero2017]/SMPL-X[^pavlakos2019]/MANO[^romero2017] model to capture body+hand+face poses from multiple views.
+## Pipeline Overview
 
-<div align="center">
-    <img src="doc/feng/mv1pmf-smplx.gif" width="80%">
-    <br>
-    <img src="https://raw.githubusercontent.com/chingswy/Dataset-Demo/main/EasyMocap/mv1p-dance-smpl.gif" width="80%">
-    <br>
-    <sup>Videos are from ZJU-MoCap, with 23 calibrated and synchronized cameras.</sup>
-</div>
+The pipeline consists of three main stages: (1) Camera calibration → (2) 2D pose estimation → (3) 3D reconstruction. Outputs flow as intri.yml/extri.yml → annots/*.json → keypoints3d, smpl/.
 
-<div align="center">
-    <img src="doc/feng/mano.gif" width="80%">
-    <br>
-    <sup>Captured with 8 cameras.</sup>
-</div>
+**Input**: Multi-view synchronized images  
+**Output**: SMPL-X body model parameters (pose, shape) per frame
 
-### Internet video
+---
 
-This part is the basic code for fitting SMPL[^loper2015] with 2D keypoints estimation[^cao2018][^hrnet] and CNN initialization[^kolotouros2019].
+## Stage 1: Camera Calibration
 
-<div align="center">
-    <img src="https://raw.githubusercontent.com/chingswy/Dataset-Demo/main/EasyMocap/23EfsN7vEOA%2B003170%2B003670.gif" width="80%">
-    <br>
-    <sup>The raw video is from <a href="https://www.youtube.com/watch?v=23EfsN7vEOA">Youtube</a>.</sup>
-</div>
+Camera calibration produces intrinsic (`intri.yml`) and extrinsic (`extri.yml`) parameters. These define each camera’s lens model and pose in a shared world coordinate system.
 
-### Internet video with a mirror
+### 1.1 Data Preparation
 
-[![report](https://img.shields.io/badge/CVPR21-mirror-red)](https://arxiv.org/pdf/2104.00340.pdf) [![quickstart](https://img.shields.io/badge/quickstart-green)](https://github.com/zju3dv/Mirrored-Human)
+- **Intrinsic data**: Per-camera images with a chessboard visible from various angles.
+- **Extrinsic data**: Synchronized frames from all cameras with the chessboard visible in a shared pose (e.g., on the floor).
 
-<div align="center">
-    <img src="https://raw.githubusercontent.com/zju3dv/Mirrored-Human/main/doc/assets/smpl-avatar.gif" width="80%">
-    <br>
-    <sup>The raw video is from <a href="https://www.youtube.com/watch?v=KOCJJ27hhIE">Youtube</a>.</sup>
-</div>
+Expected layout:
 
+```
+<intri_data>/
+├── images/
+│   ├── 01/           # camera 01
+│   │   ├── 000000.jpg
+│   │   └── ...
+│   ├── 02/
+│   └── ...
+└── ...
 
-### Multiple Internet videos with a specific action (Coming soon)
+<extri_data>/
+├── images/
+│   ├── 01/
+│   ├── 02/
+│   └── ...
+└── ...
+```
 
-[![report](https://img.shields.io/badge/ECCV20-imocap-red)](https://arxiv.org/pdf/2008.07931.pdf) [![quickstart](https://img.shields.io/badge/quickstart-green)](./doc/todo.md)
+### 1.2 Chessboard Detection
 
-<div align="center">
-    <img src="doc/imocap/imocap.gif" width="80%"><br/>
-    <sup>Internet videos of Roger Federer's serving</sup>
-</div>
+Detect and store chessboard corners for all calibration images:
 
-### Multiple views of multiple people
+```bash
+python apps/calibration/detect_chessboard.py <path> --pattern 9,6 --grid 0.111
+```
 
-[![report](https://img.shields.io/badge/CVPR19-mvpose-red)](https://arxiv.org/pdf/1901.04111.pdf) [![quickstart](https://img.shields.io/badge/quickstart-green)](./doc/mvmp.md)
+- `--pattern 9,6`: Inner corners (columns × rows)
+- `--grid 0.111`: Grid size in meters
+- Output: `chessboard/<cam>/*.json` and visualization in `output/calibration/`
 
-<div align="center">
-    <img src="doc/assets/mvmp1f.gif" width="80%"><br/>
-    <sup>Captured with 8 consumer cameras</sup>
-</div>
+### 1.3 Intrinsic Calibration
 
-### Novel view synthesis from sparse views
-[![report](https://img.shields.io/badge/CVPR21-neuralbody-red)](https://arxiv.org/pdf/2012.15838.pdf) [![quickstart](https://img.shields.io/badge/quickstart-green)](https://github.com/zju3dv/neuralbody)
+Calibrate each camera’s focal length and distortion:
 
-<div align="center">
-    <img src="https://raw.githubusercontent.com/chingswy/Dataset-Demo/main/EasyMocap/female-ballet.gif" width="80%"><br/>
-    <sup>Novel view synthesis for chanllenge motion(coming soon)</sup>
-</div>
+```bash
+python apps/calibration/calib_intri.py <intri_data>
+```
 
-<div align="center">
-    <img src="https://raw.githubusercontent.com/chingswy/Dataset-Demo/main/EasyMocap/nvs_mp_soccer1_6_rgb.gif" width="80%"><br/>
-    <sup>Novel view synthesis for human interaction</sup>
-</div>
+- Uses OpenCV `calibrateCamera` with chessboard 3D–2D correspondences
+- Output: `output/intri.yml`
 
-    
-## ZJU-MoCap
+### 1.4 Extrinsic Calibration (Stereo)
 
-With our proposed method, we release two large dataset of human motion: LightStage and Mirrored-Human. See the [website](https://chingswy.github.io/Dataset-Demo/) for more details.
+Estimate camera poses in a common world frame using stereo calibration:
 
-If you would like to download the ZJU-Mocap dataset, please sign the [agreement](https://pengsida.net/project_page_assets/files/ZJU-MoCap_Agreement.pdf), and email it to Qing Shuai (s_q@zju.edu.cn) and cc Xiaowei Zhou (xwzhou@zju.edu.cn) to request the download link.
+```bash
+python apps/calibration/calib_extri.py <extri_data> --stereo --intri <intri_data>/output/intri.yml
+```
 
-<div align="center">
-<div align="center" width="40%">
-    <img src="doc/assets/ZJU-MoCap-lightstage.jpg" width="40%"><br/>
-    <sup>LightStage: captured with LightStage system</sup>
-</div>
-<div align="center" width="40%">
-    <img src="https://raw.githubusercontent.com/chingswy/Dataset-Demo/main/EasyMocap/mirrored-human.jpg" width="40%"><br/>
-    <sup>Mirrored-Human: collected from the Internet</sup>
-</div>
-</div>
+- `--stereo`: Uses stereo calibration between adjacent cameras for more robust extrinsics
+- Output: `intri.yml`, `extri.yml` in the extrinsic data directory
 
-Many works have achieved wonderful results based on our dataset:
+### 1.5 Bundle Adjustment (COLMAP)
 
-- [Real-time volumetric rendering of dynamic humans](https://real-time-humans.github.io/)
-- [CVPR2022: HumanNeRF: Free-viewpoint Rendering of Moving People from Monocular Video](https://grail.cs.washington.edu/projects/humannerf/)
-- [ECCV2022: KeypointNeRF: Generalizing Image-based Volumetric Avatars using Relative Spatial Encoding of Keypoints](https://markomih.github.io/KeypointNeRF/)
-- [SIGGRAPH 2022 paper Drivable Volumetric Avatars using Texel-Aligned Features](https://github.com/facebookresearch/dva)
+Refine intrinsics and extrinsics with COLMAP’s bundle adjuster:
 
-## Other features
+```bash
+python apps/calibration/chessboard_ba_colmap.py <path> \
+  --intri intri.yml --extri extri.yml \
+  --out_intri intri_colmap_ba.yml --out_extri extri_colmap_ba.yml
+```
 
-### 3D Realtime visualization
-[![quickstart](https://img.shields.io/badge/quickstart-green)](./doc/realtime_visualization.md)
-<div align="center">
-    <img src="https://raw.githubusercontent.com/chingswy/Dataset-Demo/main/assets/vis3d/skel-body25.gif" width="26%">
-    <img src="https://raw.githubusercontent.com/chingswy/Dataset-Demo/main/assets/vis3d/skel-total.gif" width="26%">
-    <img src="https://raw.githubusercontent.com/chingswy/Dataset-Demo/main/assets/vis3d/skel-multi.gif" width="26%">
-</div>
+- Injects chessboard corners into a COLMAP sparse model and runs `colmap bundle_adjuster`
+- Output: `intri_colmap_ba.yml`, `extri_colmap_ba.yml`, and optimized 3D points
 
-<div align="center">
-    <img src="https://raw.githubusercontent.com/chingswy/Dataset-Demo/main/assets/vis3d/mesh-smpl.gif" width="26%">
-    <img src="https://raw.githubusercontent.com/chingswy/Dataset-Demo/main/assets/vis3d/mesh-smplx.gif" width="26%">
-    <img src="https://raw.githubusercontent.com/chingswy/Dataset-Demo/main/assets/vis3d/mesh-manol.gif" width="26%">
-</div>
+**Note**: Use the BA-refined yml files as the final calibration for the motion capture stage. Copy `intri_colmap_ba.yml` → `intri.yml` and `extri_colmap_ba.yml` → `extri.yml` into the mocap data path (or symlink them).
 
-### [Camera calibration](apps/calibration/Readme.md)
+---
 
-<div align="center">
-    <img src="https://raw.githubusercontent.com/chingswy/Dataset-Demo/main/EasyMocap/calib_intri.jpg" width="40%">
-    <img src="https://raw.githubusercontent.com/chingswy/Dataset-Demo/main/EasyMocap/calib_extri.jpg" width="40%">
-    <br>
-    <sup>Calibration for intrinsic and extrinsic parameters</sup>
-</div>
+## Stage 2: 2D Pose Estimation
 
-### [Annotator](apps/annotation/Readme.md)
+Extract 2D keypoints from each view for multi-view triangulation.
 
-<div align="center">
-    <img src="https://raw.githubusercontent.com/chingswy/Dataset-Demo/main/EasyMocap/annot_keypoints.jpg" width="40%">
-    <img src="https://raw.githubusercontent.com/chingswy/Dataset-Demo/main/EasyMocap/annot_mask.jpg" width="40%">
-    <br>
-    <sup>Annotator for bounding box, keypoints and mask</sup>
-</div>
+### 2.1 Extract Keypoints
 
+```bash
+python apps/preprocess/extract_keypoints.py <path> --mode mmpose
+```
 
-## Updates
-- 11/03/2022: Support MultiNeuralBody.
-- 12/25/2021: Support mediapipe keypoints detector.
-- 08/09/2021: Add a colab demo [here](https://colab.research.google.com/drive/1Cyvu_lPFUajr2RKt6yJIfS3HQIIYl6QU?usp=sharing).
-- 06/28/2021: The **Multi-view Multi-person** part is released!
-- 06/10/2021: The **real-time 3D visualization** part is released!
-- 04/11/2021: The calibration tool and the annotator are released.
-- 04/11/2021: **Mirrored-Human** part is released.
+- `--mode mmpose`: Uses MMPose (RTMPose whole-body) for body + hand + face keypoints
+- Output: `annots/<cam>/*.json` with 2D keypoints and confidence scores
+
+Other modes: `openpose`, `hrnet`, `mp-holistic`, etc. See `extract_keypoints.py` config.
+
+---
+
+## Stage 3: 3D Reconstruction
+
+Triangulate 2D keypoints and fit an SMPL-X body model.
+
+### 3.1 Run the Pipeline
+
+```bash
+python apps/demo/mv1p.py <path> \
+  --body bodyhandface \
+  --model smplx \
+  --gender male \
+  --vis_det \
+  --vis_repro \
+  --vis_smpl
+```
+
+**Key arguments**:
+
+| Argument      | Description                                      |
+|---------------|--------------------------------------------------|
+| `--body`      | Keypoint set: `bodyhandface`, `body25`, `total`  |
+| `--model`     | Body model: `smplx`, `smpl`, `smplh`             |
+| `--gender`    | `male`, `female`, or `neutral`                    |
+| `--vis_det`   | Visualize 2D detections                          |
+| `--vis_repro` | Visualize 3D reprojection                        |
+| `--vis_smpl`  | Visualize fitted mesh overlay                    |
+
+**Inputs expected**:
+
+- `images/<cam>/*.jpg` — synchronized frames
+- `annots/<cam>/*.json` — 2D keypoints
+- `intri.yml`, `extri.yml` — camera parameters (or BA-refined versions)
+
+**Outputs**:
+
+- `keypoints3d/` — triangulated 3D skeleton
+- `output/smpl/` — SMPL-X parameters (pose, shape) per frame
+- Optional: `output/vertices/` if `--write_vertices` is set
+
+### 3.2 Pipeline Internals
+
+1. **Triangulation**: Multi-view DLT from 2D keypoints to 3D
+2. **Reprojection check**: Outlier rejection based on reprojection error
+3. **SMPL fitting**: Optimization of pose and shape to match 3D keypoints and 2D reprojection
+
+---
+
+## Complete Workflow Summary
+
+```bash
+# 1. Camera calibration
+python apps/calibration/detect_chessboard.py <intri_path> --pattern 9,6 --grid 0.111
+python apps/calibration/calib_intri.py <intri_path>
+python apps/calibration/detect_chessboard.py <extri_path> --pattern 9,6 --grid 0.111
+python apps/calibration/calib_extri.py <extri_path> --stereo --intri <intri_path>/output/intri.yml
+python apps/calibration/chessboard_ba_colmap.py <extri_path>
+
+# 2. 2D pose estimation
+python apps/preprocess/extract_keypoints.py <mocap_path> --mode mmpose
+
+# 3. 3D reconstruction
+python apps/demo/mv1p.py <mocap_path> --body bodyhandface --model smplx --gender male --vis_det --vis_repro --vis_smpl
+```
+
+---
+
+## Project Structure (Key Paths)
+
+```
+Motion-Capture/
+├── apps/
+│   ├── calibration/           # Stage 1
+│   │   ├── detect_chessboard.py
+│   │   ├── calib_intri.py
+│   │   ├── calib_extri.py
+│   │   ├── chessboard_ba_colmap.py
+│   │   └── vis_chess_sfm_ba.py
+│   ├── preprocess/            # Stage 2
+│   │   └── extract_keypoints.py
+│   └── demo/                  # Stage 3
+│       └── mv1p.py
+├── easymocap/
+│   ├── dataset/               # Data loaders
+│   ├── pyfitting/             # SMPL optimization
+│   ├── smplmodel/              # Body model loading
+│   └── mytools/                # Camera utils, COLMAP I/O
+└── data/models/               # Pretrained weights (mmpose, SMPL-X, etc.)
+```
+
+---
 
 ## Installation
 
-See [documentation](https://chingswy.github.io/easymocap-public-doc/install/install.html) for more instructions.
+See the [EasyMocap documentation](https://chingswy.github.io/easymocap-public-doc/install/install.html) for setup. Key dependencies:
+
+- Python 3.8+
+- PyTorch, OpenCV
+- MMPose (for `--mode mmpose`)
+- COLMAP (for `chessboard_ba_colmap.py`)
+- SMPL-X model files (from [SMPL-X](https://github.com/vchoutas/smplx))
+
+---
 
 ## Acknowledgements
 
-Here are the great works this project is built upon:
+This project builds on [EasyMocap](https://github.com/zju3dv/EasyMocap) by the 3D Vision Group at Zhejiang University. It integrates:
 
-- SMPL models and layer are from MPII [SMPL-X model](https://github.com/vchoutas/smplx).
-- Some functions are borrowed from [SPIN](https://github.com/nkolot/SPIN), [VIBE](https://github.com/mkocabas/VIBE), [SMPLify-X](https://github.com/vchoutas/smplify-x)
-- The method for fitting 3D skeleton and SMPL model is similar to [SMPLify-X](https://github.com/vchoutas/smplify-x)(with 3D keypoints loss), [TotalCapture](http://www.cs.cmu.edu/~hanbyulj/totalcapture/)(without using point clouds).
-- We integrate some easy-to-use functions for previous great work:
-  - `easymocap/estimator/mediapipe_wrapper.py`: [MediaPipe](https://github.com/google/mediapipe)
-  - `easymocap/estimator/SPIN`  : an SMPL estimator[^cao2018]
-  - `easymocap/estimator/YOLOv4`: an object detector[^kolotouros2019]
-  - `easymocap/estimator/HRNet` : a 2D human pose estimator[^bochkovskiy2020]
-
-## Contact
-
-Please open an issue if you have any questions. We appreciate all contributions to improve our project.
-    
-
-## Contributor
-
-EasyMocap is **built by** researchers from the 3D vision group of Zhejiang University: [**Qing Shuai**](https://chingswy.github.io/), [**Qi Fang**](https://raypine.github.io/), [**Junting Dong**](https://jtdong.com/), [**Sida Peng**](https://pengsida.net/), **Di Huang**, [**Hujun Bao**](http://www.cad.zju.edu.cn/home/bao/), **and** [**Xiaowei Zhou**](https://xzhou.me/). 
-
-We would like to thank Wenduo Feng, Di Huang, Yuji Chen, Hao Xu, Qing Shuai, Qi Fang, Ting Xie, Junting Dong, Sida Peng and Xiaopeng Ji who are the performers in the sample data. We would also like to thank all the people who has helped EasyMocap [in any way](https://github.com/zju3dv/EasyMocap/graphs/contributors).
-
-## Citation
-
-This project is a part of our work [iMocap](https://zju3dv.github.io/iMoCap/), [Mirrored-Human](https://zju3dv.github.io/Mirrored-Human/), [mvpose](https://zju3dv.github.io/mvpose/), [Neural Body](https://zju3dv.github.io/neuralbody/), [MultiNeuralBody](https://chingswy.github.io/easymocap-public-doc/works/multinb.html), [enerf]().
-
-Please consider citing these works if you find this repo is useful for your projects.
-
-```bibtex
-@Misc{easymocap,  
-    title = {EasyMoCap - Make human motion capture easier.},
-    howpublished = {Github},  
-    year = {2021},
-    url = {https://github.com/zju3dv/EasyMocap}
-}
-
-@inproceedings{shuai2022multinb,
-  title={Novel View Synthesis of Human Interactions from Sparse
-Multi-view Videos},
-  author={Shuai, Qing and Geng, Chen and Fang, Qi and Peng, Sida and Shen, Wenhao and Zhou, Xiaowei and Bao, Hujun},
-  booktitle={SIGGRAPH Conference Proceedings},
-  year={2022}
-}
-
-@inproceedings{lin2022efficient,
-  title={Efficient Neural Radiance Fields for Interactive Free-viewpoint Video},
-  author={Lin, Haotong and Peng, Sida and Xu, Zhen and Yan, Yunzhi and Shuai, Qing and Bao, Hujun and Zhou, Xiaowei},
-  booktitle={SIGGRAPH Asia Conference Proceedings},
-  year={2022}
-}
-
-@inproceedings{dong2021fast,
-  title={Fast and Robust Multi-Person 3D Pose Estimation and Tracking from Multiple Views},
-  author={Dong, Junting and Fang, Qi and Jiang, Wen and Yang, Yurou and Bao, Hujun and Zhou, Xiaowei},
-  booktitle={T-PAMI},
-  year={2021}
-}
-    
-@inproceedings{dong2020motion,
-  title={Motion capture from internet videos},
-  author={Dong, Junting and Shuai, Qing and Zhang, Yuanqing and Liu, Xian and Zhou, Xiaowei and Bao, Hujun},
-  booktitle={European Conference on Computer Vision},
-  pages={210--227},
-  year={2020},
-  organization={Springer}
-}
-
-@inproceedings{peng2021neural,
-  title={Neural Body: Implicit Neural Representations with Structured Latent Codes for Novel View Synthesis of Dynamic Humans},
-  author={Peng, Sida and Zhang, Yuanqing and Xu, Yinghao and Wang, Qianqian and Shuai, Qing and Bao, Hujun and Zhou, Xiaowei},
-  booktitle={CVPR},
-  year={2021}
-}
-
-@inproceedings{fang2021mirrored,
-  title={Reconstructing 3D Human Pose by Watching Humans in the Mirror},
-  author={Fang, Qi and Shuai, Qing and Dong, Junting and Bao, Hujun and Zhou, Xiaowei},
-  booktitle={CVPR},
-  year={2021}
-}
-
-```
-
-[^loper2015]: Loper, Matthew, et al. "SMPL: A skinned multi-person linear model." ACM transactions on graphics (TOG) 34.6 (2015): 1-16.
-
-[^romero2017]: Romero, Javier, Dimitrios Tzionas, and Michael J. Black. "Embodied hands: Modeling and capturing hands and bodies together." ACM Transactions on Graphics (ToG) 36.6 (2017): 1-17.
-
-[^pavlakos2019]: Pavlakos, Georgios, et al. "Expressive body capture: 3d hands, face, and body from a single image." Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition. 2019.
-
-<!-- [4] Bogo, Federica, et al. "Keep it SMPL: Automatic estimation of 3D human pose and shape from a single image." European conference on computer vision. Springer, Cham, 2016. -->
-
-[^cao2018]: Cao, Z., Hidalgo, G., Simon, T., Wei, S.E., Sheikh, Y.: Openpose: real-time multi-person 2d pose estimation using part affinity fields. arXiv preprint arXiv:1812.08008 (2018)
-
-[^kolotouros2019]: Kolotouros, Nikos, et al. "Learning to reconstruct 3D human pose and shape via model-fitting in the loop." Proceedings of the IEEE/CVF International Conference on Computer Vision. 2019
-
-[^bochkovskiy2020]: Bochkovskiy, Alexey, Chien-Yao Wang, and Hong-Yuan Mark Liao. "Yolov4: Optimal speed and accuracy of object detection." arXiv preprint arXiv:2004.10934 (2020).
-
-[^hrnet]: Sun, Ke, et al. "Deep high-resolution representation learning for human pose estimation." Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition. 2019.
+- SMPL-X body model ([vchoutas/smplx](https://github.com/vchoutas/smplx))
+- MMPose / RTMPose for 2D pose estimation
+- COLMAP for bundle adjustment
