@@ -27,24 +27,16 @@ Camera calibration produces intrinsic (`intri.yml`) and extrinsic (`extri.yml`) 
 
 ### 1.1 Data Preparation
 
-- **Intrinsic data**: Per-camera images with a chessboard visible from various angles.
-- **Extrinsic data**: Synchronized frames from all cameras with the chessboard visible in a shared pose (e.g., on the floor).
+Per-camera images with a chessboard visible from various angles.
 
 Expected layout:
 
 ```
-<intri_data>/
+<board_data>/
 ├── images/
 │   ├── 01/           # camera 01
 │   │   ├── 000000.jpg
 │   │   └── ...
-│   ├── 02/
-│   └── ...
-└── ...
-
-<extri_data>/
-├── images/
-│   ├── 01/
 │   ├── 02/
 │   └── ...
 └── ...
