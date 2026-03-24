@@ -288,7 +288,13 @@ if __name__ == "__main__":
         "base_root",
         nargs="?",
         default=CONFIG["base_root"],
-        help="Root directory containing 01, 02, 03, ... camera folders",
+        help="Root directory containing 01, 02, 03, ... camera folders (ignored if --video is set)",
+    )
+    parser.add_argument(
+        "--video",
+        default=None,
+        metavar="PATH",
+        help="Analyze this single .mp4 file (skips camera-folder scan). CSV is resolved next to VID folder if present.",
     )
     parser.add_argument("--log_file", default=CONFIG["log_file"])
     parser.add_argument("--start_cam", type=int, default=CONFIG["start_cam"])
@@ -306,6 +312,23 @@ if __name__ == "__main__":
 
     if args.clear_log:
         open(log_file, "w", encoding="utf-8").close()
+
+    if args.video:
+        video_path = os.path.abspath(os.path.expanduser(args.video))
+        print(f"--- Single video: {video_path} ---")
+        try:
+            analyze_video(
+                video_path,
+                log_file,
+                truncate=args.truncate,
+                truncate_from=args.truncate_from,
+                print_log=args.print_log,
+            )
+            print(f"✓ Finished: {video_path}")
+        except Exception as e:
+            print(f"✗ Error: {e}")
+            raise SystemExit(1) from e
+        raise SystemExit(0)
 
     cam_ids = get_camera_ids(base_root, args.start_cam, args.end_cam)
     if not cam_ids:
