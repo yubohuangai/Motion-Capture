@@ -16,7 +16,6 @@ import cv2
 import os
 from os.path import join
 from glob import glob
-from easymocap.annotator.chessboard import get_lines_chessboard
 from tqdm import tqdm
 
 def read_chess(chessname):

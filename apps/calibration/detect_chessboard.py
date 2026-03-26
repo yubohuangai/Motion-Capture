@@ -5,12 +5,16 @@
   @ LastEditTime: 2022-05-11 20:41:10
   @ FilePath: /EasyMocapPublic/apps/calibration/detect_chessboard.py
 '''
-# detect the corner of chessboard
+# detect the corner of chessboard or ChArUco board (see --charuco).
+#
+# ChArUco example: 5x7 squares => (7-1)x(5-1) = 6x4 inner corners; 0.33 m cells; DICT_6X6_250:
+#   python apps/calibration/detect_chessboard.py DATA --charuco --charuco_long 7 --charuco_short 5 \\
+#     --grid 0.33 --aruco_len 0.231 --aruco_type 6X6_250
 from easymocap.annotator.file_utils import getFileList, read_json, save_json
 from easymocap.mytools.debug_utils import mywarn
 from tqdm import tqdm
 from easymocap.annotator import ImageFolder
-from easymocap.annotator.chessboard import findChessboardCorners
+from easymocap.annotator.chessboard import findChessboardCorners, findCharucoCorners, CharucoBoard
 import numpy as np
 from os.path import join
 import cv2
@@ -35,9 +39,9 @@ def getChessboard3d(pattern, gridSize, axis='yx'):
     object_points = object_points * gridSize
     return object_points
 
-def create_chessboard(path, image, pattern, gridSize, ext, overwrite=True):
+def create_chessboard(path, image, pattern, gridSize, ext, overwrite=True, axis='yx'):
     print('Create chessboard {}'.format(pattern))
-    keypoints3d = getChessboard3d(pattern, gridSize=gridSize, axis=args.axis)
+    keypoints3d = getChessboard3d(pattern, gridSize=gridSize, axis=axis)
     keypoints2d = np.zeros((keypoints3d.shape[0], 3))
     imgnames = getFileList(join(path, image), ext=ext)
     template = {
@@ -60,14 +64,60 @@ def create_chessboard(path, image, pattern, gridSize, ext, overwrite=True):
         else:
             save_json(annname, template)
 
+
+def create_charuco(path, image, charuco_board, ext, overwrite=True):
+    """Write chessboard/*.json templates with ChArUco 3D points (same schema as chessboard mode)."""
+    print('Create ChArUco long={} short={} grid={} m'.format(
+        charuco_board.long, charuco_board.short, charuco_board.squareLength))
+    keypoints3d = np.asarray(charuco_board.template['keypoints3d'], dtype=np.float64)
+    keypoints2d = np.zeros((keypoints3d.shape[0], 3))
+    pat = charuco_board.template['pattern']
+    grid_size = float(charuco_board.template['grid_size'])
+    imgnames = getFileList(join(path, image), ext=ext)
+    template = {
+        'keypoints3d': keypoints3d.tolist(),
+        'keypoints2d': keypoints2d.tolist(),
+        'pattern': list(pat),
+        'grid_size': grid_size,
+        'visited': False
+    }
+    for imgname in tqdm(imgnames, desc='create template ChArUco'):
+        annname = imgname.replace(ext, '.json')
+        annname = join(path, 'chessboard', annname)
+        if os.path.exists(annname) and overwrite:
+            data = read_json(annname)
+            data['keypoints3d'] = template['keypoints3d']
+            data['pattern'] = template['pattern']
+            data['grid_size'] = template['grid_size']
+            save_json(annname, data)
+        elif os.path.exists(annname) and not overwrite:
+            continue
+        else:
+            save_json(annname, template)
+
+
+def _make_charuco_board(args):
+    return CharucoBoard(
+        long=args.charuco_long,
+        short=args.charuco_short,
+        squareLength=args.grid,
+        aruco_len=args.aruco_len,
+        aruco_type=args.aruco_type,
+    )
+
+
 def _detect_chessboard(datas, path, image, out, pattern, args):
+    charuco_board = _make_charuco_board(args) if args.charuco else None
     for imgname, annotname in datas:
         # imgname, annotname = dataset[i]
         # detect the 2d chessboard
         img = cv2.imread(imgname)
         annots = read_json(annotname)
         try:
-            show = findChessboardCorners(img, annots, pattern, fix_orientation=args.fix_orientation)
+            if args.charuco:
+                show = findCharucoCorners(img, annots, charuco_board, debug=args.debug)
+            else:
+                show = findChessboardCorners(img, annots, pattern, fix_orientation=args.fix_orientation)
         except func_timeout.exceptions.FunctionTimedOut:
             show = None
         save_json(annotname, annots)
@@ -81,7 +131,10 @@ def _detect_chessboard(datas, path, image, out, pattern, args):
             cv2.imwrite(outname, show)
 
 def detect_chessboard(path, image, out, pattern, gridSize, args):
-    create_chessboard(path, image, pattern, gridSize, ext=args.ext, overwrite=args.overwrite3d)
+    if args.charuco:
+        create_charuco(path, image, _make_charuco_board(args), ext=args.ext, overwrite=args.overwrite3d)
+    else:
+        create_chessboard(path, image, pattern, gridSize, ext=args.ext, overwrite=args.overwrite3d, axis=args.axis)
     dataset = ImageFolder(path, image=image, annot='chessboard', ext=args.ext)
     dataset.isTmp = False
     trange = list(range(len(dataset)))
@@ -97,6 +150,7 @@ def detect_chessboard(path, image, out, pattern, gridSize, args):
    
 
 def _detect_by_search(path, image, out, pattern, sub):
+    charuco_board = _make_charuco_board(args) if args.charuco else None
     dataset = ImageFolder(path, sub=sub, annot='chessboard', ext=args.ext)
     dataset.isTmp = False
     nFrames = len(dataset)
@@ -120,7 +174,10 @@ def _detect_by_search(path, image, out, pattern, sub):
                 img = cv2.imread(imgname)
                 annots = read_json(annotname)
                 try:
-                    show = findChessboardCorners(img, annots, pattern, fix_orientation=args.fix_orientation)
+                    if args.charuco:
+                        show = findCharucoCorners(img, annots, charuco_board, debug=args.debug)
+                    else:
+                        show = findChessboardCorners(img, annots, pattern, fix_orientation=args.fix_orientation)
                 except func_timeout.exceptions.FunctionTimedOut:
                     show = None
                 save_json(annotname, annots)
@@ -147,7 +204,10 @@ def _detect_by_search(path, image, out, pattern, sub):
             proposals.append((mid, right))
 
 def detect_chessboard_sequence(path, image, out, pattern, gridSize, args):
-    create_chessboard(path, image, pattern, gridSize, ext=args.ext, overwrite=args.overwrite3d)
+    if args.charuco:
+        create_charuco(path, image, _make_charuco_board(args), ext=args.ext, overwrite=args.overwrite3d)
+    else:
+        create_chessboard(path, image, pattern, gridSize, ext=args.ext, overwrite=args.overwrite3d, axis=args.axis)
     subs = sorted(os.listdir(join(path, image)))
     subs = [s for s in subs if os.path.isdir(join(path, image, s))]
     if len(subs) == 0:
@@ -170,7 +230,7 @@ def detect_chessboard_sequence(path, image, out, pattern, gridSize, args):
             annots = read_json(annotname)
             if annots['visited']:
                 visited += 1
-            if annots['keypoints2d'][0][-1] > 0.01:
+            if any(p[-1] > 0.01 for p in annots['keypoints2d']):
                 count += 1
         log('{}: found {:4d}/{:4d} frames'.format(sub, count, visited))
 
@@ -195,9 +255,19 @@ if __name__ == "__main__":
     parser.add_argument('--out', type=str, default=None)
     parser.add_argument('--ext', type=str, default='.jpg', choices=['.jpg', '.png'])
     parser.add_argument('--pattern', type=lambda x: (int(x.split(',')[0]), int(x.split(',')[1])),
-        help='The pattern of the chessboard', default=(9, 6))
-    parser.add_argument('--grid', type=float, default=0.111,
-        help='The length of the grid size (unit: meter)')
+        help='The pattern of the chessboard (inner corners); unused with --charuco', default=(9, 6))
+    parser.add_argument('--grid', type=float, default=None,
+        help='Chessboard: square size (m). ChArUco: squareLength (m); default 0.111 or 0.33 with --charuco')
+    parser.add_argument('--charuco', action='store_true',
+        help='Use ChArUco detection; set --charuco_long/--charuco_short/--aruco_len/--aruco_type to match the printed board')
+    parser.add_argument('--charuco_long', type=int, default=7,
+        help='ChArUco: square count along Y (squaresY). Inner corners along that axis = long-1')
+    parser.add_argument('--charuco_short', type=int, default=5,
+        help='ChArUco: square count along X (squaresX). Inner corners along that axis = short-1')
+    parser.add_argument('--aruco_len', type=float, default=None,
+        help='ChArUco: marker side length in meters (must match printed board)')
+    parser.add_argument('--aruco_type', type=str, default='6X6_250',
+        help='ArUco dictionary key, e.g. 6X6_250, 4X4_50 (must match printed board)')
     parser.add_argument('--max_step', type=int, default=50)
     parser.add_argument('--min_step', type=int, default=0)
     parser.add_argument('--mp', type=int, default=4)
@@ -211,6 +281,10 @@ if __name__ == "__main__":
     parser.add_argument('--check', action='store_true')
 
     args = parser.parse_args()
+    if args.grid is None:
+        args.grid = 0.33 if args.charuco else 0.111
+    if args.charuco and args.aruco_len is None:
+        args.aruco_len = round(args.grid * 0.7, 5)
     if args.out is None:
         args.out = os.path.join(args.path, "output", "calibration")
     if args.seq:
