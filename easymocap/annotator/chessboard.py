@@ -41,6 +41,36 @@ def _charuco_board_corners_xyz(board):
         corners = board.chessboardCorners
     return np.asarray(corners, dtype=np.float64)
 
+
+def _aruco_detect_markers(image, dictionary, parameters=None, detector=None):
+    """
+    OpenCV 4.7+ removed cv2.aruco.detectMarkers; use ArucoDetector.detectMarkers instead.
+    Pass ``detector`` if already built (e.g. CharucoBoard fallback path).
+    """
+    ar = cv2.aruco
+    if detector is not None:
+        return detector.detectMarkers(image)
+    if parameters is None:
+        parameters = ar.DetectorParameters()
+    if hasattr(ar, "detectMarkers"):
+        return ar.detectMarkers(image=image, dictionary=dictionary, parameters=parameters)
+    if not hasattr(ar, "ArucoDetector"):
+        raise AttributeError("cv2.aruco has neither detectMarkers nor ArucoDetector")
+    return ar.ArucoDetector(dictionary, parameters).detectMarkers(image)
+
+
+def _aruco_interpolate_corners_charuco(marker_corners, marker_ids, image, board):
+    ar = cv2.aruco
+    if not hasattr(ar, "interpolateCornersCharuco"):
+        return False, None, None
+    return ar.interpolateCornersCharuco(
+        markerCorners=marker_corners,
+        markerIds=marker_ids,
+        image=image,
+        board=board,
+    )
+
+
 def getChessboard3d(pattern, gridSize, axis='xy'):
     object_points = np.zeros((pattern[1]*pattern[0], 3), np.float32)
     # 注意：这里为了让标定板z轴朝上，设定了短边是x，长边是y
@@ -157,13 +187,11 @@ def detect_charuco(image, aruco_type, long, short, squareLength, aruco_len):
     corners3d = corners[:, [1, 0, 2]]
     keypoints2d = np.zeros_like(corners3d)
     # 查找标志块的左上角点
-    corners, ids, _ = cv2.aruco.detectMarkers(
-        image=image, dictionary=dictionary, parameters=None
-    )
+    corners, ids, _ = _aruco_detect_markers(image, dictionary)
     # 棋盘格黑白块内角点
     if ids is not None:
-        retval, charucoCorners, charucoIds = cv2.aruco.interpolateCornersCharuco(
-            markerCorners=corners, markerIds=ids, image=image, board=board
+        retval, charucoCorners, charucoIds = _aruco_interpolate_corners_charuco(
+            corners, ids, image, board
         )
         if retval:
             ids = charucoIds[:, 0]
@@ -203,6 +231,14 @@ class CharucoBoard:
         self.aruco_type = aruco_type
         self.dictionary = dictionary
         self.board = board
+        self._aruco_marker_detector = None
+        if not hasattr(cv2.aruco, "detectMarkers") and hasattr(cv2.aruco, "ArucoDetector"):
+            try:
+                self._aruco_marker_detector = cv2.aruco.ArucoDetector(
+                    self.dictionary, cv2.aruco.DetectorParameters()
+                )
+            except Exception:
+                self._aruco_marker_detector = None
         self._charuco_detector = None
         # CharucoDetector needs cv2.aruco.CharucoBoard (new API); duplicate only if legacy create exists
         if hasattr(cv2.aruco, "CharucoDetector"):
@@ -249,12 +285,12 @@ class CharucoBoard:
                                 img_color, charuco_corners, charuco_ids, cornerColor=(0, 0, 255)
                             )
         if not ok:
-            corners, ids, _ = cv2.aruco.detectMarkers(
-                image=img_color, dictionary=self.dictionary, parameters=None
+            corners, ids, _ = _aruco_detect_markers(
+                img_color, self.dictionary, detector=self._aruco_marker_detector
             )
             if ids is not None:
-                retval, charucoCorners, charucoIds = cv2.aruco.interpolateCornersCharuco(
-                    markerCorners=corners, markerIds=ids, image=img_color, board=self.board
+                retval, charucoCorners, charucoIds = _aruco_interpolate_corners_charuco(
+                    corners, ids, img_color, self.board
                 )
             else:
                 retval = False
