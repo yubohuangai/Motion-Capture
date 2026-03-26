@@ -7,6 +7,7 @@
 '''
 import os
 import json
+import tempfile
 import numpy as np
 from os.path import join
 import shutil
@@ -20,10 +21,21 @@ def read_json(path):
 def save_json(file, data):
     if file is None:
         return 0
-    if not os.path.exists(os.path.dirname(file)):
-        os.makedirs(os.path.dirname(file))
-    with open(file, 'w') as f:
-        json.dump(data, f, indent=4)
+    dir_name = os.path.dirname(file)
+    if dir_name and not os.path.exists(dir_name):
+        os.makedirs(dir_name)
+    # Write to a temp file then replace, so readers never see a half-written JSON.
+    fd, tmp_path = tempfile.mkstemp(suffix=".json.tmp", dir=dir_name or ".")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(data, f, indent=4)
+        os.replace(tmp_path, file)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 
 tobool = lambda x: 'true' if x else 'false'
 

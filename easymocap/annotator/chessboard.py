@@ -72,11 +72,13 @@ def _aruco_interpolate_corners_charuco(marker_corners, marker_ids, image, board)
 
 
 def _annots_keypoints_to_json_lists(annots):
-    """json.dump cannot handle ndarray / numpy scalars; normalize keypoints to nested Python floats."""
+    """json.dump cannot handle ndarray; NaN/Inf must not appear (invalid JSON for json.loads)."""
     for k in ("keypoints2d", "keypoints3d"):
         if k not in annots or annots[k] is None:
             continue
-        annots[k] = np.asarray(annots[k], dtype=np.float64).tolist()
+        arr = np.asarray(annots[k], dtype=np.float64)
+        arr = np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
+        annots[k] = arr.tolist()
 
 
 def getChessboard3d(pattern, gridSize, axis='xy'):
