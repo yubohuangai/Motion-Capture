@@ -18,6 +18,29 @@ ARUCO_PREDEFINED = {
     "6X6_250": cv2.aruco.DICT_6X6_250,
 }
 
+
+def _build_charuco_board(long, short, squareLength, aruco_len, dictionary):
+    """OpenCV 4.7+ removed CharucoBoard_create; use CharucoBoard((squaresX, squaresY), ...)."""
+    ar = cv2.aruco
+    if hasattr(ar, "CharucoBoard_create"):
+        return ar.CharucoBoard_create(
+            squaresY=long,
+            squaresX=short,
+            squareLength=squareLength,
+            markerLength=aruco_len,
+            dictionary=dictionary,
+        )
+    return ar.CharucoBoard((short, long), squareLength, aruco_len, dictionary)
+
+
+def _charuco_board_corners_xyz(board):
+    """3D chessboard corner coordinates in board frame (legacy property or OpenCV 4.x getter)."""
+    if hasattr(board, "getChessboardCorners"):
+        corners = board.getChessboardCorners()
+    else:
+        corners = board.chessboardCorners
+    return np.asarray(corners, dtype=np.float64)
+
 def getChessboard3d(pattern, gridSize, axis='xy'):
     object_points = np.zeros((pattern[1]*pattern[0], 3), np.float32)
     # 注意：这里为了让标定板z轴朝上，设定了短边是x，长边是y
@@ -128,15 +151,8 @@ def create_chessboard(path, keypoints3d, out='annots'):
 
 def detect_charuco(image, aruco_type, long, short, squareLength, aruco_len):
     dictionary = cv2.aruco.getPredefinedDictionary(dict=ARUCO_PREDEFINED[aruco_type])
-    # 创建ChArUco标定板
-    board = cv2.aruco.CharucoBoard_create(
-        squaresY=long,
-        squaresX=short,
-        squareLength=squareLength,
-        markerLength=aruco_len,
-        dictionary=dictionary,
-    )
-    corners = board.chessboardCorners
+    board = _build_charuco_board(long, short, squareLength, aruco_len, dictionary)
+    corners = _charuco_board_corners_xyz(board)
     # ATTN: exchange the XY
     corners3d = corners[:, [1, 0, 2]]
     keypoints2d = np.zeros_like(corners3d)
@@ -169,14 +185,8 @@ class CharucoBoard:
         if aruco_type not in ARUCO_PREDEFINED:
             raise KeyError(f'Unknown aruco_type {aruco_type!r}; use one of {list(ARUCO_PREDEFINED)}')
         dictionary = cv2.aruco.getPredefinedDictionary(dict=ARUCO_PREDEFINED[aruco_type])
-        board = cv2.aruco.CharucoBoard_create(
-            squaresY=long,
-            squaresX=short,
-            squareLength=squareLength,
-            markerLength=aruco_len,
-            dictionary=dictionary,
-        )
-        corners = board.chessboardCorners
+        board = _build_charuco_board(long, short, squareLength, aruco_len, dictionary)
+        corners = _charuco_board_corners_xyz(board)
         # ATTN: exchange the XY
         corners = corners[:, [1, 0, 2]]
         self.template = {
@@ -194,17 +204,20 @@ class CharucoBoard:
         self.dictionary = dictionary
         self.board = board
         self._charuco_detector = None
-        # OpenCV 4.7+ CharucoDetector (CalibCam-style); geometry matches squaresX=short, squaresY=long
-        if hasattr(cv2.aruco, 'CharucoDetector'):
+        # CharucoDetector needs cv2.aruco.CharucoBoard (new API); duplicate only if legacy create exists
+        if hasattr(cv2.aruco, "CharucoDetector"):
             try:
-                board_cv4 = cv2.aruco.CharucoBoard(
-                    (short, long), squareLength, aruco_len, dictionary
-                )
+                if hasattr(cv2.aruco, "CharucoBoard_create"):
+                    det_board = cv2.aruco.CharucoBoard(
+                        (short, long), squareLength, aruco_len, dictionary
+                    )
+                else:
+                    det_board = self.board
                 charuco_params = cv2.aruco.CharucoParameters()
                 detector_params = cv2.aruco.DetectorParameters()
                 refine_params = cv2.aruco.RefineParameters()
                 self._charuco_detector = cv2.aruco.CharucoDetector(
-                    board_cv4, charuco_params, detector_params, refine_params
+                    det_board, charuco_params, detector_params, refine_params
                 )
             except Exception:
                 self._charuco_detector = None
