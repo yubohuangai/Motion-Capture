@@ -71,6 +71,14 @@ def _aruco_interpolate_corners_charuco(marker_corners, marker_ids, image, board)
     )
 
 
+def _annots_keypoints_to_json_lists(annots):
+    """json.dump cannot handle ndarray / numpy scalars; normalize keypoints to nested Python floats."""
+    for k in ("keypoints2d", "keypoints3d"):
+        if k not in annots or annots[k] is None:
+            continue
+        annots[k] = np.asarray(annots[k], dtype=np.float64).tolist()
+
+
 def getChessboard3d(pattern, gridSize, axis='xy'):
     object_points = np.zeros((pattern[1]*pattern[0], 3), np.float32)
     # 注意：这里为了让标定板z轴朝上，设定了短边是x，长边是y
@@ -320,8 +328,7 @@ class CharucoBoard:
             annots = copy.deepcopy(self.template)
         annots['visited'] = True
         self.detect(img_color, annots)
-        annots['keypoints2d'] = annots['keypoints2d'].tolist()
-        annots['keypoints3d'] = annots['keypoints3d'].tolist()
+        _annots_keypoints_to_json_lists(annots)
         save_json(annotname, annots)
 
 
@@ -336,8 +343,7 @@ def findCharucoCorners(img, annots, charuco_board, debug=False):
     annots['visited'] = True
     show = img.copy()
     ok = charuco_board.detect(show, annots)
+    _annots_keypoints_to_json_lists(annots)
     if not ok:
         return None
-    k2d = annots['keypoints2d']
-    annots['keypoints2d'] = k2d.tolist() if isinstance(k2d, np.ndarray) else k2d
     return show
