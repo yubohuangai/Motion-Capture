@@ -64,20 +64,25 @@ def resolve_csv_path(video_path):
             return candidate
     return csv_path
 
+
+def list_vid_mp4_files(vid_dir: Path):
+    """All *.mp4 in VID dir, excluding backup copies named * _ori.mp4."""
+    return [p for p in vid_dir.glob("*.mp4") if not p.stem.endswith("_ori")]
+
+
 def find_video_and_csv(root_path):
     """
     Input:
         root_path = C:\...\raw\09
 
     Automatically finds:
-        video_path = root_path / VID / *.mp4   (must contain exactly one)
+        video_path = root_path / VID / *.mp4   (must contain exactly one; *_ori.mp4 ignored)
         csv_path   = root_path / <timestamp>.csv
     """
     root = Path(root_path)
     vid_dir = root / "VID"
 
-    # Find all .mp4 files
-    videos = list(vid_dir.glob("*.mp4"))
+    videos = list_vid_mp4_files(vid_dir)
     if len(videos) == 0:
         return None, None  # instead of raising error
     if len(videos) > 1:

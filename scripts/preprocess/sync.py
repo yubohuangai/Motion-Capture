@@ -20,6 +20,9 @@ from concurrent.futures import ProcessPoolExecutor
 
 ALLOWED_EXTENSIONS = ['.jpg', '.jpeg', '.npy', '.png', '.pcd']
 
+# Repo root: scripts/preprocess/sync.py -> parent x3
+_REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+
 
 import argparse
 
@@ -83,7 +86,8 @@ def collect_video_paths(root, num_cams):
 
     for i in cam_ids:
         cam_dir = Path(root) / f"{i:02d}" / "VID"
-        mp4s = list(cam_dir.glob("*.mp4"))
+        # Ignore backup copies * _ori.mp4 (same convention as analyze_vid.py)
+        mp4s = [p for p in cam_dir.glob("*.mp4") if not p.stem.endswith("_ori")]
 
         if len(mp4s) == 0:
             logging.warning(f"[WARN] No video found in {cam_dir}, skipping this camera.")
@@ -478,7 +482,7 @@ def main():
     num_videos = args.cams
     threshold_str = args.threshold
     threshold_ns = parse_duration_ns(threshold_str)
-    extract_flag = args.extract.lower() == "true"
+    extract_flag = args.extract
 
     # --- Collect video paths ---
     video_paths = collect_video_paths(root, num_videos)
@@ -486,12 +490,12 @@ def main():
     video_path_0 = video_paths[0]
     video_name_0 = Path(video_path_0).stem
 
-    # --- Prepare output directory ---
-    base_output = os.path.join("../../output", "exp", video_name_0)
-    os.makedirs(base_output, exist_ok=True)
+    # --- Prepare output directory (under repo: output/exp/<first video stem>/) ---
+    base_output = _REPO_ROOT / "output" / "exp" / video_name_0
+    base_output.mkdir(parents=True, exist_ok=True)
 
     # --- Setup logger ---
-    log_file_path = os.path.join(base_output, "match.log")
+    log_file_path = str(base_output / "match.log")
     setup_logger(log_file_path)
     logging.info("==== New matching session started ====")
     logging.info(f"Loaded {num_videos} video paths from command line")
@@ -531,8 +535,8 @@ def main():
     right_csvs = csv_paths[1:]
 
     threshold_str_for_filename = format_threshold_filename(threshold_ns)
-    matched_csv_path = os.path.join(base_output, f"matched_multi_{threshold_str_for_filename}.csv")
-    matched_csv_full_path = os.path.join(base_output, f"matched_multi_{threshold_str_for_filename}_full.csv")
+    matched_csv_path = str(base_output / f"matched_multi_{threshold_str_for_filename}.csv")
+    matched_csv_full_path = str(base_output / f"matched_multi_{threshold_str_for_filename}_full.csv")
 
     # --- Multi-match ---
     match_frames_from_csv_multi(csv_0, right_csvs, matched_csv_path, threshold_ns)
