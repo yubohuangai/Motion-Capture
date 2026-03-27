@@ -9,78 +9,6 @@ import numpy as np
 import cv2
 from func_timeout import func_set_timeout
 
-# Keys must match printed board / CharucoBoard / CLI --aruco_type
-ARUCO_PREDEFINED = {
-    "4X4_50": cv2.aruco.DICT_4X4_50,
-    "4X4_100": cv2.aruco.DICT_4X4_100,
-    "5X5_100": cv2.aruco.DICT_5X5_100,
-    "5X5_250": cv2.aruco.DICT_5X5_250,
-    "6X6_250": cv2.aruco.DICT_6X6_250,
-}
-
-
-def _build_charuco_board(long, short, squareLength, aruco_len, dictionary):
-    """OpenCV 4.7+ removed CharucoBoard_create; use CharucoBoard((squaresX, squaresY), ...)."""
-    ar = cv2.aruco
-    if hasattr(ar, "CharucoBoard_create"):
-        return ar.CharucoBoard_create(
-            squaresY=long,
-            squaresX=short,
-            squareLength=squareLength,
-            markerLength=aruco_len,
-            dictionary=dictionary,
-        )
-    return ar.CharucoBoard((short, long), squareLength, aruco_len, dictionary)
-
-
-def _charuco_board_corners_xyz(board):
-    """3D chessboard corner coordinates in board frame (legacy property or OpenCV 4.x getter)."""
-    if hasattr(board, "getChessboardCorners"):
-        corners = board.getChessboardCorners()
-    else:
-        corners = board.chessboardCorners
-    return np.asarray(corners, dtype=np.float64)
-
-
-def _aruco_detect_markers(image, dictionary, parameters=None, detector=None):
-    """
-    OpenCV 4.7+ removed cv2.aruco.detectMarkers; use ArucoDetector.detectMarkers instead.
-    Pass ``detector`` if already built (e.g. CharucoBoard fallback path).
-    """
-    ar = cv2.aruco
-    if detector is not None:
-        return detector.detectMarkers(image)
-    if parameters is None:
-        parameters = ar.DetectorParameters()
-    if hasattr(ar, "detectMarkers"):
-        return ar.detectMarkers(image=image, dictionary=dictionary, parameters=parameters)
-    if not hasattr(ar, "ArucoDetector"):
-        raise AttributeError("cv2.aruco has neither detectMarkers nor ArucoDetector")
-    return ar.ArucoDetector(dictionary, parameters).detectMarkers(image)
-
-
-def _aruco_interpolate_corners_charuco(marker_corners, marker_ids, image, board):
-    ar = cv2.aruco
-    if not hasattr(ar, "interpolateCornersCharuco"):
-        return False, None, None
-    return ar.interpolateCornersCharuco(
-        markerCorners=marker_corners,
-        markerIds=marker_ids,
-        image=image,
-        board=board,
-    )
-
-
-def _annots_keypoints_to_json_lists(annots):
-    """json.dump cannot handle ndarray; NaN/Inf must not appear (invalid JSON for json.loads)."""
-    for k in ("keypoints2d", "keypoints3d"):
-        if k not in annots or annots[k] is None:
-            continue
-        arr = np.asarray(annots[k], dtype=np.float64)
-        arr = np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
-        annots[k] = arr.tolist()
-
-
 def getChessboard3d(pattern, gridSize, axis='xy'):
     object_points = np.zeros((pattern[1]*pattern[0], 3), np.float32)
     # 注意：这里为了让标定板z轴朝上，设定了短边是x，长边是y
@@ -190,18 +118,33 @@ def create_chessboard(path, keypoints3d, out='annots'):
 
 
 def detect_charuco(image, aruco_type, long, short, squareLength, aruco_len):
-    dictionary = cv2.aruco.getPredefinedDictionary(dict=ARUCO_PREDEFINED[aruco_type])
-    board = _build_charuco_board(long, short, squareLength, aruco_len, dictionary)
-    corners = _charuco_board_corners_xyz(board)
+    ARUCO_DICT = {
+        "4X4_50": cv2.aruco.DICT_4X4_50,
+        "4X4_100": cv2.aruco.DICT_4X4_100,
+        "5X5_100": cv2.aruco.DICT_5X5_100,
+        "5X5_250": cv2.aruco.DICT_5X5_250,
+    }
+    # 创建ChArUco标定板
+    dictionary = cv2.aruco.getPredefinedDictionary(dict=ARUCO_DICT[aruco_type])
+    board = cv2.aruco.CharucoBoard_create(
+        squaresY=long,
+        squaresX=short,
+        squareLength=squareLength,
+        markerLength=aruco_len,
+        dictionary=dictionary,
+    )
+    corners = board.chessboardCorners
     # ATTN: exchange the XY
     corners3d = corners[:, [1, 0, 2]]
     keypoints2d = np.zeros_like(corners3d)
     # 查找标志块的左上角点
-    corners, ids, _ = _aruco_detect_markers(image, dictionary)
+    corners, ids, _ = cv2.aruco.detectMarkers(
+        image=image, dictionary=dictionary, parameters=None
+    )
     # 棋盘格黑白块内角点
     if ids is not None:
-        retval, charucoCorners, charucoIds = _aruco_interpolate_corners_charuco(
-            corners, ids, image, board
+        retval, charucoCorners, charucoIds = cv2.aruco.interpolateCornersCharuco(
+            markerCorners=corners, markerIds=ids, image=image, board=board
         )
         if retval:
             ids = charucoIds[:, 0]
@@ -213,109 +156,79 @@ def detect_charuco(image, aruco_type, long, short, squareLength, aruco_len):
     return retval, keypoints2d, corners3d
 
 class CharucoBoard:
-    def __init__(self, long, short, squareLength, aruco_len, aruco_type) -> None:
+    def __init__(self, long, short, squareLength, aruco_len, aruco_type) -> None:    
         '''
-            long, short: 沿 Y / X 方向的方格个数（OpenCV: squaresY, squaresX），不是内角点个数。
-            内角点网格尺寸为 (long-1) x (short-1)，与 template['pattern'] 一致。
-            squareLength, aruco_len: 方格边长与 ArUco 码边长（米，须与印刷板一致）。
-            aruco_type: 见 ARUCO_PREDEFINED。
+            short,long 分别表示短边、长边的格子数.
+            squareLength,aruco_len 分别表示棋盘格的边长与aruco的边长.
+            aruco_type 表示Aruco的类型 4X4表示aruco中的白色格子是4x4的 _50表示aruco字典中有多少种aruco.
         '''
-        if aruco_type not in ARUCO_PREDEFINED:
-            raise KeyError(f'Unknown aruco_type {aruco_type!r}; use one of {list(ARUCO_PREDEFINED)}')
-        dictionary = cv2.aruco.getPredefinedDictionary(dict=ARUCO_PREDEFINED[aruco_type])
-        board = _build_charuco_board(long, short, squareLength, aruco_len, dictionary)
-        corners = _charuco_board_corners_xyz(board)
+        # 定义现有的Aruco类型
+        self.ARUCO_DICT = {
+            "4X4_50": cv2.aruco.DICT_4X4_50,
+            "4X4_100": cv2.aruco.DICT_4X4_100,
+            "5X5_100": cv2.aruco.DICT_5X5_100,
+            "5X5_250": cv2.aruco.DICT_5X5_250,
+        }
+        # 创建ChArUco标定板
+        dictionary = cv2.aruco.getPredefinedDictionary(dict=self.ARUCO_DICT[aruco_type])
+        board = cv2.aruco.CharucoBoard_create(
+            squaresY=long,
+            squaresX=short,
+            squareLength=squareLength,
+            markerLength=aruco_len,
+            dictionary=dictionary,
+        )
+        corners = board.chessboardCorners
         # ATTN: exchange the XY
         corners = corners[:, [1, 0, 2]]
         self.template = {
             'keypoints3d': corners,
             'keypoints2d': np.zeros_like(corners),
-            'pattern': (long - 1, short - 1),
+            'pattern': (long-1, short-1),
             'grid_size': squareLength,
-            'visited': False
+            'visted': False
         }
-        self.long = long
-        self.short = short
-        self.squareLength = squareLength
-        self.aruco_len = aruco_len
-        self.aruco_type = aruco_type
+        print(corners.shape)
         self.dictionary = dictionary
         self.board = board
-        self._aruco_marker_detector = None
-        if not hasattr(cv2.aruco, "detectMarkers") and hasattr(cv2.aruco, "ArucoDetector"):
-            try:
-                self._aruco_marker_detector = cv2.aruco.ArucoDetector(
-                    self.dictionary, cv2.aruco.DetectorParameters()
-                )
-            except Exception:
-                self._aruco_marker_detector = None
-        self._charuco_detector = None
-        # CharucoDetector needs cv2.aruco.CharucoBoard (new API); duplicate only if legacy create exists
-        if hasattr(cv2.aruco, "CharucoDetector"):
-            try:
-                if hasattr(cv2.aruco, "CharucoBoard_create"):
-                    det_board = cv2.aruco.CharucoBoard(
-                        (short, long), squareLength, aruco_len, dictionary
-                    )
-                else:
-                    det_board = self.board
-                charuco_params = cv2.aruco.CharucoParameters()
-                detector_params = cv2.aruco.DetectorParameters()
-                refine_params = cv2.aruco.RefineParameters()
-                self._charuco_detector = cv2.aruco.CharucoDetector(
-                    det_board, charuco_params, detector_params, refine_params
-                )
-            except Exception:
-                self._charuco_detector = None
-
+    
     def detect(self, img_color, annots):
-        """Fill annots['keypoints2d'] (numpy rows) for detected charuco corners; draw on img_color."""
-        k2d = np.asarray(annots['keypoints2d'], dtype=np.float32)
-        n = k2d.shape[0]
-        k2d[:, :] = 0.0
-
-        ok = False
-        if self._charuco_detector is not None:
-            charuco_corners, charuco_ids, _, _ = self._charuco_detector.detectBoard(img_color)
-            if charuco_corners is not None and charuco_ids is not None:
-                if len(charuco_corners) > 0:
-                    ids = np.asarray(charuco_ids, dtype=np.int32).reshape(-1)
-                    pts = np.array(
-                        [np.asarray(c, dtype=np.float32).reshape(-1)[:2] for c in charuco_corners],
-                        dtype=np.float32,
-                    )
-                    if len(ids) == len(pts):
-                        for i, cid in enumerate(ids):
-                            if 0 <= cid < n:
-                                k2d[cid, :2] = pts[i]
-                                k2d[cid, 2] = 1.0
-                        ok = k2d[:, 2].sum() > 0.1
-                        if ok:
-                            cv2.aruco.drawDetectedCornersCharuco(
-                                img_color, charuco_corners, charuco_ids, cornerColor=(0, 0, 255)
-                            )
-        if not ok:
-            corners, ids, _ = _aruco_detect_markers(
-                img_color, self.dictionary, detector=self._aruco_marker_detector
+        # 查找标志块的左上角点
+        corners, ids, _ = cv2.aruco.detectMarkers(
+            image=img_color, dictionary=self.dictionary, parameters=None
+        )
+        # 棋盘格黑白块内角点
+        if ids is not None:
+            retval, charucoCorners, charucoIds = cv2.aruco.interpolateCornersCharuco(
+                markerCorners=corners, markerIds=ids, image=img_color, board=self.board
             )
-            if ids is not None:
-                retval, charucoCorners, charucoIds = _aruco_interpolate_corners_charuco(
-                    corners, ids, img_color, self.board
+        else:
+            retval = False
+        if retval:
+            # 绘制棋盘格黑白块内角点
+            cv2.aruco.drawDetectedCornersCharuco(
+                img_color, charucoCorners, charucoIds, [0, 0, 255]
+            )
+            if False:
+                cv2.aruco.drawDetectedMarkers(
+                    image=img_color, corners=corners, ids=ids, borderColor=None
                 )
-            else:
-                retval = False
-            if retval:
-                cv2.aruco.drawDetectedCornersCharuco(
-                    img_color, charucoCorners, charucoIds, [0, 0, 255]
-                )
-                ids = charucoIds[:, 0]
-                pts = charucoCorners[:, 0]
-                k2d[ids, :2] = pts
-                k2d[ids, 2] = 1.0
-                ok = True
-        annots['keypoints2d'] = k2d
-        return ok
 
+            ids = charucoIds[:, 0]
+            pts = charucoCorners[:, 0]
+            annots['keypoints2d'][ids, :2] = pts
+            annots['keypoints2d'][ids, 2] = 1.
+            # if args.show:
+            #     img_color = cv2.resize(img_color, None, fx=0.5, fy=0.5)
+            #     cv2.imshow('vis', img_color)
+            #     cv2.waitKey(0)
+            # visname = imgname.replace(images, output)
+            # os.makedirs(os.path.dirname(visname), exist_ok=True)
+            # cv2.imwrite(visname, img_color)
+        else:
+            # mywarn('Cannot find in {}'.format(imgname))
+            pass
+        
     def __call__(self, imgname, images='images', output='output'):
         import os
         from .file_utils import read_json, save_json
@@ -330,22 +243,6 @@ class CharucoBoard:
             annots = copy.deepcopy(self.template)
         annots['visited'] = True
         self.detect(img_color, annots)
-        _annots_keypoints_to_json_lists(annots)
+        annots['keypoints2d'] = annots['keypoints2d'].tolist()
+        annots['keypoints3d'] = annots['keypoints3d'].tolist()
         save_json(annotname, annots)
-
-
-@func_set_timeout(5)
-def findCharucoCorners(img, annots, charuco_board, debug=False):
-    """Like findChessboardCorners: updates annots, returns debug image or None."""
-    conf = sum([v[2] for v in annots['keypoints2d']])
-    if annots['visited'] and conf > 0:
-        return True
-    elif annots['visited']:
-        return None
-    annots['visited'] = True
-    show = img.copy()
-    ok = charuco_board.detect(show, annots)
-    _annots_keypoints_to_json_lists(annots)
-    if not ok:
-        return None
-    return show
