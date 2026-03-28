@@ -171,7 +171,9 @@ def calib_extri_stereo(path, image, intriname, step=6):
                 valid_curr = k2d_curr[:, 2] > 0
                 valid = valid_prev & valid_curr
 
-                if valid.sum() < 4:
+                # stereoCalibrate (OpenCV 4.x) uses a DLT path that needs >= 6
+                # 3D–2D correspondences per view, not 4.
+                if valid.sum() < 6:
                     skipped_pairs += 1
                     continue
 
