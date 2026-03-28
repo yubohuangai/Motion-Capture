@@ -3,8 +3,9 @@ Use COLMAP's bundle_adjuster on chessboard corner observations.
 
 Instead of running COLMAP's SIFT feature extraction and matching, this script
 injects chessboard corners directly into a COLMAP sparse reconstruction, then
-calls `colmap bundle_adjuster` to jointly refine camera intrinsics, extrinsics,
-and 3D point positions.
+calls `colmap bundle_adjuster` to jointly refine camera extrinsics and 3D points;
+by default focal length and principal point are refined but OPENCV distortion
+(k1, k2, p1, p2) is held fixed (use --refine_distortion to optimize it).
 
 Pipeline:
   1) Read camera parameters from intri.yml / extri.yml
@@ -776,7 +777,8 @@ def main(args):
     if args.refine_intri:
         ba_flags.append("--BundleAdjustment.refine_focal_length 1")
         ba_flags.append("--BundleAdjustment.refine_principal_point 1")
-        ba_flags.append("--BundleAdjustment.refine_extra_params 1")
+        refine_extra = 1 if args.refine_distortion else 0
+        ba_flags.append(f"--BundleAdjustment.refine_extra_params {refine_extra}")
     else:
         ba_flags.append("--BundleAdjustment.refine_focal_length 0")
         ba_flags.append("--BundleAdjustment.refine_principal_point 0")
@@ -805,6 +807,10 @@ def main(args):
             for key in ("H", "W"):
                 if key in cams[cam]:
                     cams_opt[cam][key] = cams[cam][key]
+            if args.refine_intri and not args.refine_distortion and cam in cams:
+                cams_opt[cam]["dist"] = np.asarray(
+                    cams[cam]["dist"], dtype=np.float64
+                ).copy()
 
     errs_after = compute_reprojection_error(cams_opt, camnames, points3d_opt, observations)
     print(
@@ -916,8 +922,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--origin_cam",
         type=str,
-        default="01",
-        help="camera to use as world origin (identity R, zero T); '' to disable",
+        default="",
+        help="camera to use as world origin (identity R, zero T); '' (default) to keep extri frame",
     )
     parser.add_argument("--colmap", type=str, default="colmap", help="path to colmap binary")
     parser.add_argument("--work_dir", type=str, default="", help="temp workspace (auto if empty)")
@@ -932,6 +938,11 @@ if __name__ == "__main__":
 
     parser.add_argument("--refine_intri", dest="refine_intri", action="store_true")
     parser.add_argument("--no-refine_intri", dest="refine_intri", action="store_false")
+    parser.add_argument(
+        "--refine_distortion",
+        action="store_true",
+        help="with --refine_intri, also refine k1,k2,p1,p2; default keeps input distortion fixed",
+    )
     parser.add_argument("--max_iter", type=int, default=500, help="BA max iterations")
     parser.add_argument("--func_tol", type=float, default=1e-6, help="BA function tolerance")
 
