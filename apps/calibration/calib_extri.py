@@ -44,10 +44,35 @@ def load_intri(path, image, camnames, intri_arg):
     else:
         assert os.path.isfile(intri_arg), intri_arg
         intri = read_intri(intri_arg)
+
+    # read_intri only loads keys listed in YAML `names`. If that list is shorter
+    # than folders under path/image, we would KeyError later unless we expand.
     if len(intri.keys()) == 1:
         key0 = list(intri.keys())[0]
         for cam in camnames:
             intri[cam] = intri[key0].copy()
+        return intri
+
+    missing = [c for c in camnames if c not in intri]
+    if missing:
+        ref = next((c for c in camnames if c in intri), None)
+        if ref is None:
+            raise RuntimeError(
+                'intri cameras {} do not match dataset folders {} under {}/{}.'.format(
+                    list(intri.keys()), camnames, path, image))
+        mywarn(
+            'intri has no K/dist for {}; copying from camera {}. '
+            'Add those cameras to YAML `names` (and K_*/dist_*) to avoid this.'.format(
+                ', '.join(missing), ref))
+        for cam in missing:
+            intri[cam] = intri[ref].copy()
+
+    extra = [k for k in intri.keys() if k not in camnames]
+    if extra:
+        mywarn(
+            'intri lists cameras not present under {}/{}: {} (unused for this run).'.format(
+                path, image, ', '.join(extra)))
+
     return intri
 
 
