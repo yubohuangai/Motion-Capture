@@ -302,6 +302,33 @@ def compute_reprojection_error(cams, camnames, points3d, observations):
     return errs
 
 
+def select_vis_image_auto(observations, tracks, camnames, used_frames):
+    """
+    Pick (cam, frame) for reprojection vis: last temporal frame in used_frames that
+    still has BA observations, and the camera with the most corners on that frame.
+    Walks used_frames from end if e.g. max_points dropped all tracks on the last frame.
+    """
+    if not used_frames:
+        return None, None, 0
+
+    def norm_frame(fr):
+        return fr[:-5] if fr.endswith(".json") else fr
+
+    for fr_raw in reversed(used_frames):
+        target_fr = norm_frame(fr_raw)
+        obs_counts = defaultdict(int)
+        for cam_idx, pt_idx, _u, _v, _ in observations:
+            if pt_idx >= len(tracks):
+                continue
+            if norm_frame(tracks[pt_idx]["frame"]) != target_fr:
+                continue
+            obs_counts[cam_idx] += 1
+        if obs_counts:
+            best_cam_idx = max(obs_counts, key=obs_counts.get)
+            return camnames[best_cam_idx], target_fr, obs_counts[best_cam_idx]
+    return None, None, 0
+
+
 def visualize_reprojection(
     root,
     cam,
@@ -343,7 +370,7 @@ def visualize_reprojection(
     if not obs_here:
         print(
             f"[vis] No observations for cam={cam} frame={frame_norm}. "
-            f"This image has no chessboard corners in the BA run. Use --vis_image auto to pick one that does."
+            f"This image has no chessboard corners in the BA run. Try another cam,frame or rely on default auto (last BA frame)."
         )
         return
 
@@ -912,25 +939,15 @@ def main(args):
     if args.vis_image:
         vis_cam, vis_frame = None, None
         if args.vis_image == "auto" or (isinstance(args.vis_image, str) and args.vis_image.strip().lower() == "auto"):
-            # Auto-select: (cam, frame) with the most corner observations
-            obs_counts = defaultdict(int)
-            obs_frame = {}
-            for cam_idx, pt_idx, u, v, _ in observations:
-                if pt_idx < len(tracks):
-                    fr = tracks[pt_idx]["frame"]
-                    if fr.endswith(".json"):
-                        fr = fr[:-5]
-                    key = (cam_idx, fr)
-                    obs_counts[key] += 1
-                    obs_frame[key] = fr
-            if obs_counts:
-                best_key = max(obs_counts, key=obs_counts.get)
-                vis_cam = camnames[best_key[0]]
-                vis_frame = obs_frame[best_key]
+            vis_cam, vis_frame, n_vis = select_vis_image_auto(
+                observations, tracks, camnames, used_frames
+            )
             if vis_cam is None or vis_frame is None:
                 print("[vis] No observations to visualize (no images with corners in BA).")
             else:
-                print(f"[vis] Auto-selected image with most corners: cam={vis_cam} frame={vis_frame} ({obs_counts[best_key]} points)")
+                print(
+                    f"[vis] Auto-selected last used frame: cam={vis_cam} frame={vis_frame} ({n_vis} points)"
+                )
         else:
             parts = args.vis_image.replace(",", " ").split()
             if len(parts) != 2:
@@ -1022,7 +1039,7 @@ if __name__ == "__main__":
         const="auto",
         default="auto",
         metavar="cam,frame",
-        help="Reprojection vis: default 'auto' picks an image with corners; pass 'cam,frame' or use --vis_image alone for auto",
+        help="Reprojection vis: default 'auto' uses last BA frame (cam with most corners there); pass 'cam,frame' or --vis_image alone for auto",
     )
     parser.add_argument(
         "--no-vis_image",
