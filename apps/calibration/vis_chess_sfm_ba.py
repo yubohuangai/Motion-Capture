@@ -5,7 +5,7 @@ Visualize chessboard SfM-BA / COLMAP-BA outputs:
 
 Shows:
   - point cloud
-  - camera centers + frustum wireframes
+  - camera centers + frustum wireframes (default depth scales with median pairwise camera distance)
   - camera name labels below each camera
   - distance lines + labels for specified camera pairs (e.g. 01-02, 01-06)
 
@@ -171,6 +171,22 @@ def to_point_cloud(points, color=(0.85, 0.85, 0.85)):
     return pcd
 
 
+def median_pairwise_camera_distance(cam_centers):
+    """
+    Median distance over all unordered camera pairs (robust scene scale).
+    Returns None if fewer than two centers.
+    """
+    names = list(cam_centers.keys())
+    if len(names) < 2:
+        return None
+    P = np.array([cam_centers[n] for n in names], dtype=np.float64)
+    dists = []
+    for i in range(len(names)):
+        for j in range(i + 1, len(names)):
+            dists.append(float(np.linalg.norm(P[i] - P[j])))
+    return float(np.median(dists))
+
+
 def parse_dist_pairs(s):
     """Parse '01-02,01-06' into [('01','02'), ('01','06')]."""
     if not s:
@@ -191,7 +207,13 @@ def get_default_mat(color=(0.15, 0.65, 1.0), shader="defaultUnlit"):
     return mat
 
 
-def run_gui_visualization(geometries, labels, distance_labels=None, bbox_expand=0.8):
+def run_gui_visualization(
+    geometries,
+    labels,
+    distance_labels=None,
+    bbox_expand=0.8,
+    label_scale=1.2,
+):
     """Run Open3D GUI with 3D labels. labels: camera (position, text). distance_labels: [(pair, dist_str)] for side panel."""
     gui = o3d.visualization.gui
     rendering = o3d.visualization.rendering
@@ -243,7 +265,7 @@ def run_gui_visualization(geometries, labels, distance_labels=None, bbox_expand=
         pos = np.asarray(pos, dtype=np.float64)
         lbl = widget.add_3d_label(pos, str(text))
         lbl.color = gui.Color(1.0, 1.0, 1.0)
-        lbl.scale = 1.2
+        lbl.scale = float(label_scale)
 
     # Setup camera to fit bbox
     all_pts = []
@@ -290,11 +312,6 @@ def main(args):
         keep = rng.choice(xyz.shape[0], size=args.max_points, replace=False)
         xyz = xyz[keep]
 
-    geometries = []
-    xyz_vis = opencv_to_opengl(xyz)
-    geometries.append(to_point_cloud(xyz_vis, color=(0.8, 0.8, 0.8)))
-    geometries.append(o3d.geometry.TriangleMesh.create_coordinate_frame(size=args.axis_size, origin=[0, 0, 0]))
-
     if len(args.subs) > 0:
         camnames = [c for c in camnames if c in args.subs]
 
@@ -323,13 +340,46 @@ def main(args):
         json.dump(camera_info, f, indent=2)
     print(f"[VIS] saved camera_info: {info_path}")
 
+    med_pair = median_pairwise_camera_distance(cam_centers)
+    if med_pair is not None:
+        print(f"[VIS] median pairwise camera distance: {med_pair:.3f}m (used for default symbol scale)")
+    # Frustum depth / axis / labels: explicit CLI overrides, else scale with rig size
+    if args.frustum_size is not None:
+        frustum_depth = float(args.frustum_size)
+    elif med_pair is not None and med_pair > 1e-6:
+        frustum_depth = float(np.clip(med_pair * args.frustum_rel, 0.02, 2.0))
+    else:
+        frustum_depth = 0.35
+    if args.axis_size is not None:
+        axis_size = float(args.axis_size)
+    elif med_pair is not None and med_pair > 1e-6:
+        axis_size = float(np.clip(med_pair * args.axis_rel, 0.05, 0.6))
+    else:
+        axis_size = 0.4
+    if args.label_offset is not None:
+        label_off = float(args.label_offset)
+    elif med_pair is not None and med_pair > 1e-6:
+        label_off = float(np.clip(med_pair * args.label_rel, 0.025, 0.25))
+    else:
+        label_off = 0.08
+    gui_label_scale = 1.2
+    if med_pair is not None and med_pair > 1e-6:
+        gui_label_scale = float(np.clip(0.35 + 0.55 * med_pair, 0.45, 2.0))
+
+    geometries = []
+    xyz_vis = opencv_to_opengl(xyz)
+    geometries.append(to_point_cloud(xyz_vis, color=(0.8, 0.8, 0.8)))
+    geometries.append(
+        o3d.geometry.TriangleMesh.create_coordinate_frame(size=axis_size, origin=[0, 0, 0])
+    )
+
     # Build geometries and labels
-    label_offset = np.array([0, -args.label_offset, 0], dtype=np.float64)  # below camera
+    label_offset = np.array([0, -label_off, 0], dtype=np.float64)  # below camera
 
     print(f"[VIS] points={xyz.shape[0]} cameras={len(camnames)}")
     labels = []
     for cam in camnames:
-        pts, lines = make_frustum_lines(cameras[cam], scale=args.frustum_size)
+        pts, lines = make_frustum_lines(cameras[cam], scale=frustum_depth)
         pts_vis = opencv_to_opengl(pts)
         geometries.append(make_line_set(pts_vis, lines, color=(0.15, 0.65, 1.0)))
         center = np.array(cam_centers[cam], dtype=np.float64)
@@ -355,7 +405,12 @@ def main(args):
         o3d.visualization.draw_geometries(geometries)
         print("[VIS] (legacy mode: no labels; use default viz for labels)")
     else:
-        run_gui_visualization(geometries, labels, distance_labels=distance_labels)
+        run_gui_visualization(
+            geometries,
+            labels,
+            distance_labels=distance_labels,
+            label_scale=gui_label_scale,
+        )
 
 
 if __name__ == "__main__":
@@ -373,12 +428,45 @@ if __name__ == "__main__":
         default="01-02,01-06",
         help="camera pairs to show distance (e.g. 01-02,01-06)",
     )
-    parser.add_argument("--label_offset", type=float, default=0.08, help="label offset below camera")
+    parser.add_argument(
+        "--label_offset",
+        type=float,
+        default=None,
+        help="label offset below camera (m); default scales with median camera spacing",
+    )
     parser.add_argument("--subs", type=str, nargs="+", default=[], help="camera subset to visualize")
     parser.add_argument("--max_points", type=int, default=-1, help="random subsample for visualization")
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--frustum_size", type=float, default=0.35)
-    parser.add_argument("--axis_size", type=float, default=0.4)
+    parser.add_argument(
+        "--frustum_size",
+        type=float,
+        default=None,
+        help="frustum depth along optical axis (m); default = median_pairwise * --frustum_rel",
+    )
+    parser.add_argument(
+        "--frustum_rel",
+        type=float,
+        default=0.12,
+        help="when --frustum_size omitted: depth = median pairwise cam distance * this",
+    )
+    parser.add_argument(
+        "--axis_size",
+        type=float,
+        default=None,
+        help="world axis frame size (m); default scales with median camera spacing",
+    )
+    parser.add_argument(
+        "--axis_rel",
+        type=float,
+        default=0.065,
+        help="when --axis_size omitted: axis length = median pairwise * this",
+    )
+    parser.add_argument(
+        "--label_rel",
+        type=float,
+        default=0.035,
+        help="when --label_offset omitted: offset = median pairwise * this",
+    )
     parser.add_argument("--legacy", action="store_true", help="use draw_geometries (no labels)")
     args = parser.parse_args()
     main(args)
