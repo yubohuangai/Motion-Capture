@@ -26,6 +26,7 @@ Outputs:
     compatible with: python apps/calibration/vis_chess_sfm_ba.py <path>
 """
 
+import bisect
 import os
 import shutil
 import tempfile
@@ -39,7 +40,6 @@ import numpy as np
 from easymocap.mytools import read_json
 from easymocap.mytools.camera_utils import read_camera, write_extri, write_intri
 from easymocap.mytools.colmap_structure import (
-    CAMERA_MODEL_NAMES,
     Camera,
     Image,
     Point3D,
@@ -145,17 +145,22 @@ def sample_frames_balanced(candidate_frames, frame_valid_cams, camnames, max_fra
             cam_counts[c] += 1
 
     # Fill any remaining slots using balance + temporal diversity.
+    # Keep selected indices sorted for O(log n) nearest-neighbor distance.
+    sorted_sel_idx = sorted(frame_to_idx[f] for f in selected)
     while len(selected) < target:
         chosen = None
         chosen_key = None
-        selected_indices = [frame_to_idx[f] for f in selected] if selected else []
         for idx, fr in enumerate(candidate_frames):
             if fr in selected_set:
                 continue
             valid = frame_valid_cams[fr]
             balance = sum(1.0 / (1.0 + cam_counts[c]) for c in valid)
-            if selected_indices:
-                min_dist = min(abs(idx - j) for j in selected_indices)
+            if sorted_sel_idx:
+                pos = bisect.bisect_left(sorted_sel_idx, idx)
+                min_dist = min(
+                    abs(idx - sorted_sel_idx[pos]) if pos < len(sorted_sel_idx) else n,
+                    abs(idx - sorted_sel_idx[pos - 1]) if pos > 0 else n,
+                )
                 spread = min_dist / max(1, n - 1)
             else:
                 spread = 1.0
@@ -167,6 +172,7 @@ def sample_frames_balanced(candidate_frames, frame_valid_cams, camnames, max_fra
             break
         selected.append(chosen)
         selected_set.add(chosen)
+        bisect.insort(sorted_sel_idx, frame_to_idx[chosen])
         for c in frame_valid_cams[chosen]:
             cam_counts[c] += 1
 
@@ -196,10 +202,60 @@ def triangulate_pair(c0, c1, uv0, uv1, cams):
     return X
 
 
-def triangulate_track(track_obs, cams, cam_centers):
+def _track_reproj_error(X, track_obs, cams):
+    """Mean reprojection error of 3D point X across all track observations."""
+    total = 0.0
+    for c, u, v, _w in track_obs:
+        uv_hat, _ = cv2.projectPoints(
+            X.reshape(1, 3), cams[c]["Rvec"], cams[c]["T"], cams[c]["K"], cams[c]["dist"]
+        )
+        total += float(np.linalg.norm(uv_hat.reshape(2) - np.array([u, v])))
+    return total / len(track_obs)
+
+
+def _cheirality_check(X, track_obs, cams):
+    """Return True if X is in front of all observing cameras."""
+    for c, _u, _v, _w in track_obs:
+        z = float((cams[c]["R"] @ X.reshape(3, 1) + cams[c]["T"])[2, 0])
+        if z <= 1e-6:
+            return False
+    return True
+
+
+def _triangulate_dlt(track_obs, cams):
+    """N-view DLT triangulation via SVD on undistorted normalized coordinates."""
+    A = np.empty((2 * len(track_obs), 4), dtype=np.float64)
+    for i, (c, u, v, _w) in enumerate(track_obs):
+        cam = cams[c]
+        xy = undistort_uv(np.array([[u, v]], dtype=np.float64), cam["K"], cam["dist"])[0]
+        P = np.hstack([cam["R"], cam["T"]]).astype(np.float64)
+        A[2 * i]     = xy[0] * P[2] - P[0]
+        A[2 * i + 1] = xy[1] * P[2] - P[1]
+    _, S, Vh = np.linalg.svd(A, full_matrices=False)
+    Xh = Vh[-1]
+    if abs(Xh[3]) < 1e-12:
+        return None
+    return (Xh[:3] / Xh[3]).astype(np.float64)
+
+
+def triangulate_track(track_obs, cams, cam_centers, dlt_reproj_tol=10.0):
+    """Triangulate a multi-view track.
+
+    Strategy: try N-view DLT first (O(N), uses all views). If it passes
+    cheirality and reprojection checks, use it. Otherwise fall back to
+    the pair-based search (robust to single-view outliers).
+    """
     n = len(track_obs)
     if n < 2:
         return None
+
+    # --- Fast path: N-view DLT ---
+    X_dlt = _triangulate_dlt(track_obs, cams)
+    if X_dlt is not None and _cheirality_check(X_dlt, track_obs, cams):
+        if _track_reproj_error(X_dlt, track_obs, cams) < dlt_reproj_tol:
+            return X_dlt
+
+    # --- Fallback: best-pair search (robust to outlier views) ---
     best, best_score = None, 1e18
     for i in range(n):
         ci, ui, vi, _ = track_obs[i]
@@ -211,13 +267,7 @@ def triangulate_track(track_obs, cams, cam_centers):
             X = triangulate_pair(ci, cj, (ui, vi), (uj, vj), cams)
             if X is None:
                 continue
-            errs = []
-            for c, u, v, _w in track_obs:
-                uv_hat, _ = cv2.projectPoints(
-                    X.reshape(1, 3), cams[c]["Rvec"], cams[c]["T"], cams[c]["K"], cams[c]["dist"]
-                )
-                errs.append(np.linalg.norm(uv_hat.reshape(2) - np.array([u, v])))
-            score = float(np.mean(errs)) / baseline
+            score = _track_reproj_error(X, track_obs, cams) / baseline
             if score < best_score:
                 best_score = score
                 best = X
@@ -225,19 +275,31 @@ def triangulate_track(track_obs, cams, cam_centers):
 
 
 def compute_reprojection_error(cams, camnames, points3d, observations):
-    """Compute per-observation reprojection errors."""
-    errs = []
-    for cam_idx, pt_idx, u, v, _w in observations:
+    """Compute per-observation reprojection errors (batched per camera)."""
+    n_obs = len(observations)
+    errs = np.empty(n_obs, dtype=np.float64)
+
+    # Group observation indices by camera for batched projectPoints
+    cam_groups = defaultdict(list)
+    obs_uv = np.empty((n_obs, 2), dtype=np.float64)
+    obs_pt_idx = np.empty(n_obs, dtype=np.intp)
+    for i, (cam_idx, pt_idx, u, v, _w) in enumerate(observations):
+        cam_groups[cam_idx].append(i)
+        obs_uv[i] = (u, v)
+        obs_pt_idx[i] = pt_idx
+
+    for cam_idx, indices in cam_groups.items():
         cam = camnames[cam_idx]
-        uv_hat, _ = cv2.projectPoints(
-            points3d[pt_idx].reshape(1, 3),
-            cams[cam]["Rvec"],
-            cams[cam]["T"],
-            cams[cam]["K"],
-            cams[cam]["dist"],
+        idx = np.array(indices, dtype=np.intp)
+        pts = points3d[obs_pt_idx[idx]]
+        proj, _ = cv2.projectPoints(
+            pts, cams[cam]["Rvec"], cams[cam]["T"],
+            cams[cam]["K"], cams[cam]["dist"],
         )
-        errs.append(np.linalg.norm(uv_hat.reshape(2) - np.array([u, v])))
-    return np.array(errs)
+        proj = proj.reshape(-1, 2)
+        errs[idx] = np.linalg.norm(proj - obs_uv[idx], axis=1)
+
+    return errs
 
 
 def visualize_reprojection(
@@ -850,17 +912,25 @@ def main(args):
     if args.vis_image:
         vis_cam, vis_frame = None, None
         if args.vis_image == "auto" or (isinstance(args.vis_image, str) and args.vis_image.strip().lower() == "auto"):
-            # Auto-select: last (cam, frame) that has observations (guaranteed to have corners)
+            # Auto-select: (cam, frame) with the most corner observations
+            obs_counts = defaultdict(int)
+            obs_frame = {}
             for cam_idx, pt_idx, u, v, _ in observations:
                 if pt_idx < len(tracks):
-                    vis_cam = camnames[cam_idx]
-                    vis_frame = tracks[pt_idx]["frame"]
-                    if vis_frame.endswith(".json"):
-                        vis_frame = vis_frame[:-5]
+                    fr = tracks[pt_idx]["frame"]
+                    if fr.endswith(".json"):
+                        fr = fr[:-5]
+                    key = (cam_idx, fr)
+                    obs_counts[key] += 1
+                    obs_frame[key] = fr
+            if obs_counts:
+                best_key = max(obs_counts, key=obs_counts.get)
+                vis_cam = camnames[best_key[0]]
+                vis_frame = obs_frame[best_key]
             if vis_cam is None or vis_frame is None:
                 print("[vis] No observations to visualize (no images with corners in BA).")
             else:
-                print(f"[vis] Auto-selected image with corners: cam={vis_cam} frame={vis_frame}")
+                print(f"[vis] Auto-selected image with most corners: cam={vis_cam} frame={vis_frame} ({obs_counts[best_key]} points)")
         else:
             parts = args.vis_image.replace(",", " ").split()
             if len(parts) != 2:
