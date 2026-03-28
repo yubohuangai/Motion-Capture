@@ -302,31 +302,43 @@ def compute_reprojection_error(cams, camnames, points3d, observations):
     return errs
 
 
-def select_vis_image_auto(observations, tracks, camnames, used_frames):
+def select_vis_image_auto(observations, tracks, camnames, errs, min_obs=4):
     """
-    Pick (cam, frame) for reprojection vis: last temporal frame in used_frames that
-    still has BA observations, and the camera with the most corners on that frame.
-    Walks used_frames from end if e.g. max_points dropped all tracks on the last frame.
+    Pick (cam, frame) that maximizes mean reprojection error on that view (errs must
+    align with observations row order). Uses pre-BA errors so detected vs pre-BA
+    overlay separation is largest and easier to inspect; tie-break by count then cam.
     """
-    if not used_frames:
-        return None, None, 0
+    if len(observations) == 0 or errs is None or len(errs) != len(observations):
+        return None, None, 0, float("nan")
 
     def norm_frame(fr):
         return fr[:-5] if fr.endswith(".json") else fr
 
-    for fr_raw in reversed(used_frames):
-        target_fr = norm_frame(fr_raw)
-        obs_counts = defaultdict(int)
-        for cam_idx, pt_idx, _u, _v, _ in observations:
-            if pt_idx >= len(tracks):
+    groups = defaultdict(list)  # (cam_idx, frame_norm) -> list of obs row indices
+    for i, (cam_idx, pt_idx, _u, _v, _) in enumerate(observations):
+        if pt_idx >= len(tracks):
+            continue
+        fr = norm_frame(tracks[pt_idx]["frame"])
+        groups[(cam_idx, fr)].append(i)
+
+    def best_among(min_n):
+        best = None  # (-mean_err, -n, cam_idx, frame, n, mean_err)
+        for (cam_idx, fr), idxs in groups.items():
+            if len(idxs) < min_n:
                 continue
-            if norm_frame(tracks[pt_idx]["frame"]) != target_fr:
-                continue
-            obs_counts[cam_idx] += 1
-        if obs_counts:
-            best_cam_idx = max(obs_counts, key=obs_counts.get)
-            return camnames[best_cam_idx], target_fr, obs_counts[best_cam_idx]
-    return None, None, 0
+            m = float(np.mean(errs[idxs]))
+            cand = (-m, -len(idxs), cam_idx, fr, len(idxs), m)
+            if best is None or cand < best:
+                best = cand
+        return best
+
+    picked = best_among(min_obs)
+    if picked is None:
+        picked = best_among(1)
+    if picked is None:
+        return None, None, 0, float("nan")
+    _neg_m, _neg_n, cam_idx, fr, n, mean_e = picked
+    return camnames[cam_idx], fr, n, mean_e
 
 
 def visualize_reprojection(
@@ -370,7 +382,7 @@ def visualize_reprojection(
     if not obs_here:
         print(
             f"[vis] No observations for cam={cam} frame={frame_norm}. "
-            f"This image has no chessboard corners in the BA run. Try another cam,frame or rely on default auto (last BA frame)."
+            f"This image has no chessboard corners in the BA run. Try another cam,frame or default auto (worst pre-BA reproj view)."
         )
         return
 
@@ -939,14 +951,15 @@ def main(args):
     if args.vis_image:
         vis_cam, vis_frame = None, None
         if args.vis_image == "auto" or (isinstance(args.vis_image, str) and args.vis_image.strip().lower() == "auto"):
-            vis_cam, vis_frame, n_vis = select_vis_image_auto(
-                observations, tracks, camnames, used_frames
+            vis_cam, vis_frame, n_vis, mean_e0 = select_vis_image_auto(
+                observations, tracks, camnames, errs_before
             )
             if vis_cam is None or vis_frame is None:
                 print("[vis] No observations to visualize (no images with corners in BA).")
             else:
                 print(
-                    f"[vis] Auto-selected last used frame: cam={vis_cam} frame={vis_frame} ({n_vis} points)"
+                    f"[vis] Auto-selected worst pre-BA reproj view: cam={vis_cam} frame={vis_frame} "
+                    f"(n={n_vis}, mean err before BA={mean_e0:.3f}px)"
                 )
         else:
             parts = args.vis_image.replace(",", " ").split()
@@ -1039,7 +1052,7 @@ if __name__ == "__main__":
         const="auto",
         default="auto",
         metavar="cam,frame",
-        help="Reprojection vis: default 'auto' uses last BA frame (cam with most corners there); pass 'cam,frame' or --vis_image alone for auto",
+        help="Reprojection vis: default 'auto' picks (cam,frame) with highest mean pre-BA reproj error; pass 'cam,frame' or --vis_image alone for auto",
     )
     parser.add_argument(
         "--no-vis_image",
