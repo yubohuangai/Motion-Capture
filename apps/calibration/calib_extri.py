@@ -28,6 +28,38 @@ def init_intri(path, image):
         }
     return cameras
 
+
+def load_intri(path, image, camnames, intri_arg):
+    """
+    intri_arg: None -> try join(path, 'intri.yml'); if missing, init_intri heuristic.
+    intri_arg: str -> must exist (explicit path from --intri).
+    """
+    if intri_arg is None:
+        p = join(path, 'intri.yml')
+        if os.path.isfile(p):
+            intri = read_intri(p)
+        else:
+            mywarn('No intri.yml at {}, using init_intri heuristic'.format(p))
+            return init_intri(path, image)
+    else:
+        assert os.path.isfile(intri_arg), intri_arg
+        intri = read_intri(intri_arg)
+    if len(intri.keys()) == 1:
+        key0 = list(intri.keys())[0]
+        for cam in camnames:
+            intri[cam] = intri[key0].copy()
+    return intri
+
+
+def apply_intri_distortion_mode(intri, use_distortion):
+    """If use_distortion is False, set all cameras' dist to zeros (pinhole model)."""
+    if use_distortion:
+        return
+    for cam in intri:
+        d = np.asarray(intri[cam]['dist'])
+        intri[cam]['dist'] = np.zeros_like(d)
+
+
 def solvePnP(k3d, k2d, K, dist, flag, tryextri=False):
     k2d = np.ascontiguousarray(k2d[:, :2])
     # try different initial values:
@@ -91,45 +123,19 @@ def sample_list(lst, step):
     return lst[::step]
 
 
-def calib_extri_stereo(path, image, intriname, step=6):
+def calib_extri_stereo(path, image, intri_arg, step=6, use_distortion=False):
     camnames = sorted(os.listdir(join(path, image)))
     camnames = [c for c in camnames if os.path.isdir(join(path, image, c))]
-    if intriname is None:
-        # initialize intrinsic parameters
-        intri = init_intri(path, image)
-    else:
-        assert os.path.exists(intriname), intriname
-        intri = read_intri(intriname)
-        if len(intri.keys()) == 1:
-            key0 = list(intri.keys())[0]
-            for cam in camnames:
-                intri[cam] = intri[key0].copy()
+    intri = load_intri(path, image, camnames, intri_arg)
+    apply_intri_distortion_mode(intri, use_distortion)
     extri = {}
 
     for ic, cam in enumerate(camnames):
-        chessnames_curr = sorted(glob(join(path, 'chessboard', cam, '*.json')))
-        chessnames_curr = sample_list(chessnames_curr, step)
         if ic == 0:
-            found_valid = False
-            for chessname in chessnames_curr:
-                data = read_json(chessname)
-                k3d = np.array(data['keypoints3d'], dtype=np.float32)
-                k2d = np.array(data['keypoints2d'], dtype=np.float32)
-                if k3d.shape[0] != k2d.shape[0]:
-                    mywarn('k3d {} doesnot match k2d {}'.format(k3d.shape, k2d.shape))
-                    length = min(k3d.shape[0], k2d.shape[0])
-                    k3d = k3d[:length]
-                    k2d = k2d[:length]
-                valididx = k2d[:, 2] > 0
-                if valididx.sum() >= 4:
-                    k3d = k3d[valididx]
-                    k2d = k2d[valididx, :2]  # slice to 2D, remove confidence.
-                    found_valid = True
-                    break
-            if not found_valid:
-                raise RuntimeError(f"No valid keypoints found for camera {cam}. Stopping the calibration.")
-            K, dist = intri[cam]['K'], intri[cam]['dist']
-            err, rvec, tvec, kpts_repro = solvePnP(k3d, k2d, K, dist, flag=cv2.SOLVEPNP_ITERATIVE)
+            # World frame = first camera frame (not the calibration board frame).
+            rvec = np.zeros((3, 1), dtype=np.float64)
+            tvec = np.zeros((3, 1), dtype=np.float64)
+            err = 0.0
 
         elif ic > 0:
             K, dist = intri[cam]['K'], intri[cam]['dist']
@@ -236,19 +242,11 @@ def calib_extri_stereo(path, image, intriname, step=6):
     write_extri(join(path, 'extri.yml'), extri)
 
 
-def calib_extri(path, image, intriname, image_id):
+def calib_extri(path, image, intri_arg, image_id, use_distortion=False):
     camnames = sorted(os.listdir(join(path, image)))
     camnames = [c for c in camnames if os.path.isdir(join(path, image, c))]
-    if intriname is None:
-        # initialize intrinsic parameters
-        intri = init_intri(path, image)
-    else:
-        assert os.path.exists(intriname), intriname
-        intri = read_intri(intriname)
-        if len(intri.keys()) == 1:
-            key0 = list(intri.keys())[0]
-            for cam in camnames:
-                intri[cam] = intri[key0].copy()
+    intri = load_intri(path, image, camnames, intri_arg)
+    apply_intri_distortion_mode(intri, use_distortion)
     extri = {}
     # methods = [cv2.SOLVEPNP_ITERATIVE, cv2.SOLVEPNP_P3P, cv2.SOLVEPNP_AP3P, cv2.SOLVEPNP_EPNP, cv2.SOLVEPNP_DLS, cv2.SOLVEPNP_IPPE, cv2.SOLVEPNP_SQPNP]
     methods = [cv2.SOLVEPNP_ITERATIVE]
@@ -321,7 +319,12 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('path', type=str)
     parser.add_argument('--image', type=str, default='images')
-    parser.add_argument('--intri', type=str, default=None)
+    parser.add_argument(
+        '--intri',
+        type=str,
+        default=None,
+        help='Path to intri YAML. If omitted, uses <path>/intri.yml when present, else init_intri heuristic.',
+    )
     parser.add_argument('--ext', type=str, default='.jpg')
     parser.add_argument('--step', type=int, default=6)
     parser.add_argument('--debug', action='store_true')
@@ -329,14 +332,26 @@ if __name__ == "__main__":
     parser.add_argument('--tryextri', action='store_true')
     parser.add_argument('--image_id', type=int, default=0, help='Image id used for extrinsic calibration')
     parser.add_argument('--stereo', action='store_true', help='Use stereo calibration for adjacent cameras')
+    parser.add_argument(
+        '--undis',
+        action='store_true',
+        help='Use distortion coefficients from intri.yml. Default: ignore distortion (zeros).',
+    )
 
     args = parser.parse_args()
     if args.stereo:
         calib_extri_stereo(
             args.path,
             args.image,
-            intriname=args.intri,
-            step=args.step
+            intri_arg=args.intri,
+            step=args.step,
+            use_distortion=args.undis,
         )
     else:
-        calib_extri(args.path, args.image, intriname=args.intri, image_id=args.image_id)
+        calib_extri(
+            args.path,
+            args.image,
+            intri_arg=args.intri,
+            image_id=args.image_id,
+            use_distortion=args.undis,
+        )
