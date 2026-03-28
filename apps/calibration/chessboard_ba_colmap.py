@@ -1020,9 +1020,16 @@ if __name__ == "__main__":
         "--vis_image",
         nargs="?",
         const="auto",
-        default="",
+        default="auto",
         metavar="cam,frame",
-        help="Visualize reprojection: use 'auto' (default when flag given) to pick first image with corners, or 'cam,frame' e.g. '01,000000'",
+        help="Reprojection vis: default 'auto' picks an image with corners; pass 'cam,frame' or use --vis_image alone for auto",
+    )
+    parser.add_argument(
+        "--no-vis_image",
+        dest="vis_image",
+        action="store_const",
+        const="",
+        help="skip reprojection visualization",
     )
     parser.add_argument(
         "--vis_out",
