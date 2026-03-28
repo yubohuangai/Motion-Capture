@@ -148,8 +148,34 @@ def sample_list(lst, step):
     return lst[::step]
 
 
+def _points_are_collinear(pts, tol=1e-6):
+    """Check if a set of 2D or 3D points are (nearly) collinear.
+    Uses SVD on the centered point cloud: if the second singular value
+    is negligible relative to the first, the points lie on a line."""
+    pts = np.asarray(pts, dtype=np.float64)
+    if pts.shape[0] < 3:
+        return True
+    centered = pts - pts.mean(axis=0, keepdims=True)
+    _, s, _ = np.linalg.svd(centered, full_matrices=False)
+    return s[1] < tol * s[0] if s[0] > tol else True
+
+
+def _stereo_per_frame_errors(objectPoints, imagePoints_prev, imagePoints_curr,
+                             K_prev, dist_prev, K_curr, dist_curr, R_rel, T_rel):
+    """Return array of mean reprojection error per frame (prev->curr projection)."""
+    rvec_rel = cv2.Rodrigues(R_rel)[0]
+    errors = []
+    for obj, img_p, img_c in zip(objectPoints, imagePoints_prev, imagePoints_curr):
+        _, rv, tv = cv2.solvePnP(obj, img_p, K_prev, dist_prev,
+                                 flags=cv2.SOLVEPNP_ITERATIVE)
+        rv2, tv2 = cv2.composeRT(rv, tv, rvec_rel, T_rel)[:2]
+        proj, _ = cv2.projectPoints(obj, rv2, tv2, K_curr, dist_curr)
+        errors.append(float(np.linalg.norm(proj.squeeze() - img_c, axis=1).mean()))
+    return np.array(errors)
+
+
 def calib_extri_stereo(path, image, intri_arg, step=6, use_distortion=False,
-                       cameras_filter=None, debug=False):
+                       cameras_filter=None, debug=False, err_threshold=50.0):
     camnames = sorted(os.listdir(join(path, image)))
     camnames = [c for c in camnames if os.path.isdir(join(path, image, c))]
     intri = load_intri(path, image, camnames, intri_arg)
@@ -210,7 +236,14 @@ def calib_extri_stereo(path, image, intri_arg, step=6, use_distortion=False,
                     skipped_pairs += 1
                     continue
 
-                objectPoints.append(k3d_prev[valid])
+                pts_valid = k3d_prev[valid]
+                if _points_are_collinear(pts_valid[:, :2]):
+                    if debug:
+                        print(f'  [skip] {name}: {int(valid.sum())} points are collinear')
+                    skipped_pairs += 1
+                    continue
+
+                objectPoints.append(pts_valid)
                 imagePoints_prev.append(k2d_prev[valid, :2])
                 imagePoints_curr.append(k2d_curr[valid, :2])
                 used_frame_names.append(name)
@@ -219,44 +252,56 @@ def calib_extri_stereo(path, image, intri_arg, step=6, use_distortion=False,
             if len(objectPoints) == 0:
                 raise RuntimeError(f"No valid stereo pairs for {prev_cam} -> {cam}")
 
-            _, _, _, _, _, R_rel, T_rel, _, _ = cv2.stereoCalibrate(
-                objectPoints,
-                imagePoints_prev,
-                imagePoints_curr,
-                intri[prev_cam]['K'],
-                intri[prev_cam]['dist'],
-                K,
-                dist,
-                None,
-                flags=cv2.CALIB_FIX_INTRINSIC
-            )
+            # Iterative stereo calibration with outlier rejection
+            K_prev_cam = intri[prev_cam]['K']
+            dist_prev_cam = intri[prev_cam]['dist']
+            keep = list(range(len(objectPoints)))
 
-            # --- Reprojection error in stereo (prev → curr) frame ---
-            total_err = 0.0
-            total_points = 0
+            for iteration in range(10):
+                obj_k = [objectPoints[i] for i in keep]
+                imp_k = [imagePoints_prev[i] for i in keep]
+                imc_k = [imagePoints_curr[i] for i in keep]
 
-            rvec_rel = cv2.Rodrigues(R_rel)[0]
-
-            for fi, (obj_prev, img_pre, img_curr) in enumerate(zip(objectPoints, imagePoints_prev, imagePoints_curr)):
-                _, rvec_pre, tvec_pre = cv2.solvePnP(obj_prev, img_pre, intri[prev_cam]['K'], intri[prev_cam]['dist'], flags=cv2.SOLVEPNP_ITERATIVE)
-                rvec_curr, tvec_curr = cv2.composeRT(rvec_pre, tvec_pre, rvec_rel, T_rel)[:2]
-
-                proj, _ = cv2.projectPoints(
-                    obj_prev,
-                    rvec_curr,
-                    tvec_curr,
-                    K,
-                    dist
+                _, _, _, _, _, R_rel, T_rel, _, _ = cv2.stereoCalibrate(
+                    obj_k, imp_k, imc_k,
+                    K_prev_cam, dist_prev_cam, K, dist, None,
+                    flags=cv2.CALIB_FIX_INTRINSIC
                 )
-                proj = proj.squeeze()
-                frame_err = np.linalg.norm(proj - img_curr, axis=1)
-                total_err += frame_err.sum()
-                total_points += len(frame_err)
-                if debug:
-                    print(f'  [{used_frame_names[fi]}] n_pts={len(frame_err)}, '
-                          f'mean_err={frame_err.mean():.2f}, max_err={frame_err.max():.2f}')
 
-            err = total_err / total_points
+                frame_errors = _stereo_per_frame_errors(
+                    obj_k, imp_k, imc_k,
+                    K_prev_cam, dist_prev_cam, K, dist, R_rel, T_rel)
+
+                outliers = np.where(frame_errors > err_threshold)[0]
+                if len(outliers) == 0:
+                    break
+
+                rejected_names = [used_frame_names[keep[i]] for i in outliers]
+                rejected_errs = frame_errors[outliers]
+                for rn, re in zip(rejected_names, rejected_errs):
+                    print(f'  [outlier iter={iteration}] {rn} mean_err={re:.2f} > {err_threshold} => removed')
+                keep = [keep[i] for i in range(len(keep)) if i not in outliers]
+                if len(keep) == 0:
+                    raise RuntimeError(f"All frames rejected as outliers for {prev_cam} -> {cam}")
+
+            if len(keep) < used_pairs:
+                print(f'[Stereo] {prev_cam} -> {cam}: kept {len(keep)}/{used_pairs} frames after outlier rejection')
+
+            # Final per-frame errors for reporting
+            obj_k = [objectPoints[i] for i in keep]
+            imp_k = [imagePoints_prev[i] for i in keep]
+            imc_k = [imagePoints_curr[i] for i in keep]
+            frame_errors = _stereo_per_frame_errors(
+                obj_k, imp_k, imc_k,
+                K_prev_cam, dist_prev_cam, K, dist, R_rel, T_rel)
+
+            if debug:
+                for fi, ki in enumerate(keep):
+                    n_pts = len(obj_k[fi])
+                    print(f'  [{used_frame_names[ki]}] n_pts={n_pts}, mean_err={frame_errors[fi]:.2f}')
+
+            total_points = sum(len(o) for o in obj_k)
+            err = float(np.sum(frame_errors * np.array([len(o) for o in obj_k])) / total_points)
 
             # Convert to world coordinates
             rvec, tvec = relative2world(
@@ -374,6 +419,12 @@ if __name__ == "__main__":
         default=None,
         help='Only calibrate these cameras (e.g. --cameras 02 03)',
     )
+    parser.add_argument(
+        '--err_threshold',
+        type=float,
+        default=50.0,
+        help='Per-frame mean reprojection error threshold (px) for outlier rejection in stereo mode.',
+    )
 
     args = parser.parse_args()
     if args.stereo:
@@ -385,6 +436,7 @@ if __name__ == "__main__":
             use_distortion=args.undis,
             cameras_filter=args.cameras,
             debug=args.debug,
+            err_threshold=args.err_threshold,
         )
     else:
         calib_extri(
