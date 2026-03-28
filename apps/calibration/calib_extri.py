@@ -148,10 +148,14 @@ def sample_list(lst, step):
     return lst[::step]
 
 
-def calib_extri_stereo(path, image, intri_arg, step=6, use_distortion=False):
+def calib_extri_stereo(path, image, intri_arg, step=6, use_distortion=False,
+                       cameras_filter=None, debug=False):
     camnames = sorted(os.listdir(join(path, image)))
     camnames = [c for c in camnames if os.path.isdir(join(path, image, c))]
     intri = load_intri(path, image, camnames, intri_arg)
+    if cameras_filter:
+        camnames = [c for c in camnames if c in cameras_filter]
+        print(f'[Stereo] Using camera subset: {camnames}')
     apply_intri_distortion_mode(intri, use_distortion)
     extri = {}
 
@@ -186,6 +190,7 @@ def calib_extri_stereo(path, image, intri_arg, step=6, use_distortion=False):
 
             used_pairs = 0
             skipped_pairs = 0
+            used_frame_names = []
 
             for name in common_names:
                 data_prev = read_json(prev_map[name])
@@ -197,13 +202,10 @@ def calib_extri_stereo(path, image, intri_arg, step=6, use_distortion=False):
                 k3d_curr = np.array(data_curr['keypoints3d'], np.float32)
                 k2d_curr = np.array(data_curr['keypoints2d'], np.float32)
 
-                # keep only visible points
                 valid_prev = k2d_prev[:, 2] > 0
                 valid_curr = k2d_curr[:, 2] > 0
                 valid = valid_prev & valid_curr
 
-                # stereoCalibrate (OpenCV 4.x) uses a DLT path that needs >= 6
-                # 3D–2D correspondences per view, not 4.
                 if valid.sum() < 6:
                     skipped_pairs += 1
                     continue
@@ -211,6 +213,7 @@ def calib_extri_stereo(path, image, intri_arg, step=6, use_distortion=False):
                 objectPoints.append(k3d_prev[valid])
                 imagePoints_prev.append(k2d_prev[valid, :2])
                 imagePoints_curr.append(k2d_curr[valid, :2])
+                used_frame_names.append(name)
                 used_pairs += 1
             print(f'[Stereo] {prev_cam} -> {cam}: used_pairs={used_pairs}, skipped_pairs={skipped_pairs}')
             if len(objectPoints) == 0:
@@ -234,7 +237,7 @@ def calib_extri_stereo(path, image, intri_arg, step=6, use_distortion=False):
 
             rvec_rel = cv2.Rodrigues(R_rel)[0]
 
-            for obj_prev, img_pre, img_curr in zip(objectPoints, imagePoints_prev, imagePoints_curr):
+            for fi, (obj_prev, img_pre, img_curr) in enumerate(zip(objectPoints, imagePoints_prev, imagePoints_curr)):
                 _, rvec_pre, tvec_pre = cv2.solvePnP(obj_prev, img_pre, intri[prev_cam]['K'], intri[prev_cam]['dist'], flags=cv2.SOLVEPNP_ITERATIVE)
                 rvec_curr, tvec_curr = cv2.composeRT(rvec_pre, tvec_pre, rvec_rel, T_rel)[:2]
 
@@ -246,9 +249,12 @@ def calib_extri_stereo(path, image, intri_arg, step=6, use_distortion=False):
                     dist
                 )
                 proj = proj.squeeze()
-                err = np.linalg.norm(proj - img_curr, axis=1)
-                total_err += err.sum()
-                total_points += len(err)
+                frame_err = np.linalg.norm(proj - img_curr, axis=1)
+                total_err += frame_err.sum()
+                total_points += len(frame_err)
+                if debug:
+                    print(f'  [{used_frame_names[fi]}] n_pts={len(frame_err)}, '
+                          f'mean_err={frame_err.mean():.2f}, max_err={frame_err.max():.2f}')
 
             err = total_err / total_points
 
@@ -362,6 +368,12 @@ if __name__ == "__main__":
         action='store_true',
         help='Use distortion coefficients from intri.yml. Default: ignore distortion (zeros).',
     )
+    parser.add_argument(
+        '--cameras',
+        nargs='+',
+        default=None,
+        help='Only calibrate these cameras (e.g. --cameras 02 03)',
+    )
 
     args = parser.parse_args()
     if args.stereo:
@@ -371,6 +383,8 @@ if __name__ == "__main__":
             intri_arg=args.intri,
             step=args.step,
             use_distortion=args.undis,
+            cameras_filter=args.cameras,
+            debug=args.debug,
         )
     else:
         calib_extri(
