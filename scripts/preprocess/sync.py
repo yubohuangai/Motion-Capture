@@ -509,23 +509,34 @@ def main():
 
     # --- Extract frames if requested ---
     if extract_flag:
-        logging.info(f"Extracting frames for all {num_videos} videos using parallel CPU extraction...")
+        logging.info(
+            "Extracting frames (parallel CPU) for cameras without an existing .../<cam>/images/ folder."
+        )
 
         video_output_pairs = []
         for video_path in video_paths:
             video_dir = Path(video_path).parent
             output_dir = video_dir.parent / "images"
-            output_dir.mkdir(parents=True, exist_ok=True)
+            if output_dir.is_dir():
+                logging.info(
+                    f"Skipping extraction: {output_dir} already exists"
+                )
+                continue
             video_output_pairs.append((video_path, str(output_dir)))
 
-        max_workers = min(len(video_paths), multiprocessing.cpu_count())
-        logging.info(f"Using {max_workers} CPU workers")
+        if not video_output_pairs:
+            logging.info("No cameras need extraction (images/ already present for all).")
+        else:
+            max_workers = min(len(video_output_pairs), multiprocessing.cpu_count())
+            logging.info(
+                f"Extracting {len(video_output_pairs)} camera(s); using {max_workers} CPU worker(s)"
+            )
 
-        # Parallel extraction
-        with ProcessPoolExecutor(max_workers=max_workers) as executor:
-            for video_path in executor.map(extract_frames_cpu, video_output_pairs):
-                output_dir = Path(video_path).parent.parent / "images"
-                extract_frame_data(str(output_dir), video_path)
+            # Parallel extraction
+            with ProcessPoolExecutor(max_workers=max_workers) as executor:
+                for video_path in executor.map(extract_frames_cpu, video_output_pairs):
+                    output_dir = Path(video_path).parent.parent / "images"
+                    extract_frame_data(str(output_dir), video_path)
     else:
         logging.info("Frame extraction is disabled.")
 
