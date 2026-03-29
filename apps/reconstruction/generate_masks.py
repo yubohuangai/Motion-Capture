@@ -72,9 +72,37 @@ def save_mask_overlay(img_bgr, mask, vis_dir, cam, frame):
     return out_path
 
 
+def filter_center_blob(mask, center_ratio=0.5, min_area_ratio=0.001):
+    """
+    Keep only contours whose bounding box overlaps the center region of the
+    image, and discard small noise blobs.  This removes people/clutter at the
+    image edges while preserving the object sitting in the middle of the rig.
+    """
+    h, w = mask.shape[:2]
+    min_area = h * w * min_area_ratio
+
+    # define center region
+    cx, cy = w // 2, h // 2
+    rw, rh = int(w * center_ratio / 2), int(h * center_ratio / 2)
+    center_rect = (cx - rw, cy - rh, cx + rw, cy + rh)
+
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    filtered = np.zeros_like(mask)
+    for cnt in contours:
+        area = cv2.contourArea(cnt)
+        if area < min_area:
+            continue
+        x, y, bw, bh = cv2.boundingRect(cnt)
+        # check overlap with center region
+        if (x + bw > center_rect[0] and x < center_rect[2] and
+                y + bh > center_rect[1] and y < center_rect[3]):
+            cv2.drawContours(filtered, [cnt], -1, 255, cv2.FILLED)
+    return filtered
+
+
 def background_subtraction(data_root, cam_names, frame, bg_frame, ext,
                            threshold, morph_kernel, output_dir, vis_dir=None,
-                           bg_data=None):
+                           bg_data=None, center_only=False, dilate=0):
     """Simple frame-difference masking."""
     bg_root = bg_data or data_root
     for cam in cam_names:
@@ -93,11 +121,18 @@ def background_subtraction(data_root, cam_names, frame, bg_frame, ext,
         mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2)
         mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
 
-        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        if contours:
-            filled = np.zeros_like(mask)
-            cv2.drawContours(filled, contours, -1, 255, cv2.FILLED)
-            mask = filled
+        if center_only:
+            mask = filter_center_blob(mask)
+        else:
+            contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            if contours:
+                filled = np.zeros_like(mask)
+                cv2.drawContours(filled, contours, -1, 255, cv2.FILLED)
+                mask = filled
+
+        if dilate > 0:
+            dk = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (dilate, dilate))
+            mask = cv2.dilate(mask, dk, iterations=1)
 
         out_dir = join(output_dir, cam)
         os.makedirs(out_dir, exist_ok=True)
@@ -180,6 +215,11 @@ def main():
                           help='Pixel difference threshold (0-255)')
     bg_group.add_argument('--morph_kernel', type=int, default=7,
                           help='Morphology kernel size')
+    bg_group.add_argument('--center_only', action='store_true',
+                          help='Keep only foreground blobs that overlap the '
+                               'center of the image (removes people/clutter at edges)')
+    bg_group.add_argument('--dilate', type=int, default=0,
+                          help='Dilate final mask by N pixels (adds margin around object)')
 
     sam_group = parser.add_argument_group('SAM segmentation')
     sam_group.add_argument('--sam_checkpoint', default=None,
@@ -207,7 +247,8 @@ def main():
         background_subtraction(
             args.data, cam_names, args.frame, args.bg_frame, args.ext,
             args.threshold, args.morph_kernel, output_dir, vis_dir,
-            bg_data=args.bg_data,
+            bg_data=args.bg_data, center_only=args.center_only,
+            dilate=args.dilate,
         )
     elif args.mode == 'sam':
         if args.sam_checkpoint is None:
