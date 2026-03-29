@@ -13,15 +13,25 @@ ALLOWED_EXTENSIONS = (".png", ".jpg", ".jpeg")
 import argparse
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Move unmatched images")
+    parser = argparse.ArgumentParser(
+        description="Move unmatched images out of images/, or move them back (undo)."
+    )
     parser.add_argument(
         "root",
         help="Root folder containing 01/, 02/, ..., 11/ subfolders"
     )
     parser.add_argument(
         "--csv",
-        required=True,
-        help="Path to matched_multi_xx.csv"
+        default=None,
+        help="Path to matched_multi_xx.csv (required unless --move-back)"
+    )
+    parser.add_argument(
+        "--move-back",
+        action="store_true",
+        help=(
+            "Undo: move every image from .../<cam>/images/unmatched/ back to .../<cam>/images/. "
+            "Does not use --csv."
+        ),
     )
 
     parser.add_argument(
@@ -186,6 +196,58 @@ def move_unmatched_images(args):
         print(f"[Summary] Cam {i+1}: moved {moved_count} unmatched frames, {remaining} matched frames remain in {img_dir}")
 
 
+def move_back_unmatched(root):
+    """
+    Undo move_unmatched: restore files from <root>/<cam>/images/unmatched/ to <root>/<cam>/images/.
+    Refuses to overwrite an existing file in images/.
+    """
+    image_dirs = find_image_dirs(root)
+    if not image_dirs:
+        raise FileNotFoundError(f"No .../NN/images/ directories found under {root}")
+
+    for i, img_dir in enumerate(image_dirs):
+        unmatched_dir = os.path.join(img_dir, "unmatched")
+        if not os.path.isdir(unmatched_dir):
+            print(f"[Skip] Cam {i + 1}: no unmatched folder: {unmatched_dir}")
+            continue
+
+        to_move = [
+            f
+            for f in os.listdir(unmatched_dir)
+            if f.lower().endswith(ALLOWED_EXTENSIONS)
+        ]
+        moved_count = 0
+        for f in tqdm(to_move, desc=f"Move back cam {i + 1}"):
+            src = os.path.join(unmatched_dir, f)
+            dst = os.path.join(img_dir, f)
+            if os.path.exists(dst):
+                raise FileExistsError(
+                    f"Refusing to overwrite existing file (remove or rename it first): {dst}"
+                )
+            shutil.move(src, dst)
+            moved_count += 1
+
+        # Remove unmatched dir if empty (ignore if still has non-image debris)
+        try:
+            if os.path.isdir(unmatched_dir) and not os.listdir(unmatched_dir):
+                os.rmdir(unmatched_dir)
+        except OSError:
+            pass
+
+        total_in_images = len(
+            [f for f in os.listdir(img_dir) if f.lower().endswith(ALLOWED_EXTENSIONS)]
+        )
+        print(
+            f"[Summary] Cam {i + 1}: moved back {moved_count} frames into {img_dir} "
+            f"({total_in_images} image files there now)"
+        )
+
+
 if __name__ == "__main__":
     args = parse_args()
-    move_unmatched_images(args)
+    if args.move_back:
+        move_back_unmatched(args.root)
+    else:
+        if not args.csv:
+            raise SystemExit("error: --csv is required unless --move-back is set")
+        move_unmatched_images(args)
