@@ -1,0 +1,187 @@
+"""
+Generate foreground masks for multi-view object reconstruction.
+
+Two modes:
+  1. **background subtraction** (default): requires a background-only frame.
+     Computes per-pixel difference, thresholds, and cleans with morphology.
+  2. **SAM** (Segment Anything Model): uses a bounding-box or point prompt to
+     segment the foreground in each view.  Requires `segment_anything` to be
+     installed.
+
+Output layout mirrors the image directory:
+    <data>/masks/<cam>/NNNNNN.png   (255 = foreground, 0 = background)
+
+Usage:
+    # Background subtraction (fast, works well in controlled studios)
+    python apps/reconstruction/generate_masks.py /path/to/data \\
+        --frame 0 --bg_frame 100 --threshold 30
+
+    # SAM-based segmentation (needs segment_anything + model checkpoint)
+    python apps/reconstruction/generate_masks.py /path/to/data \\
+        --frame 0 --mode sam --sam_checkpoint /path/to/sam_vit_h.pth
+"""
+
+import argparse
+import os
+import sys
+from glob import glob
+from os.path import join
+
+import cv2
+import numpy as np
+
+sys.path.insert(0, join(os.path.dirname(__file__), '..', '..'))
+
+
+def get_cam_names(data_root):
+    img_dir = join(data_root, 'images')
+    cams = sorted([
+        d for d in os.listdir(img_dir)
+        if os.path.isdir(join(img_dir, d))
+    ])
+    return cams
+
+
+def find_image(data_root, cam, frame, ext):
+    path = join(data_root, 'images', cam, f'{frame:06d}{ext}')
+    if os.path.exists(path):
+        return path
+    candidates = sorted(glob(join(data_root, 'images', cam, f'*{ext}')))
+    if len(candidates) == 0:
+        raise FileNotFoundError(f'No images for camera {cam}')
+    if frame < len(candidates):
+        return candidates[frame]
+    return candidates[0]
+
+
+def background_subtraction(data_root, cam_names, frame, bg_frame, ext,
+                           threshold, morph_kernel, output_dir):
+    """Simple frame-difference masking."""
+    for cam in cam_names:
+        fg_path = find_image(data_root, cam, frame, ext)
+        bg_path = find_image(data_root, cam, bg_frame, ext)
+
+        fg = cv2.imread(fg_path).astype(np.float32)
+        bg = cv2.imread(bg_path).astype(np.float32)
+
+        diff = np.abs(fg - bg).max(axis=2)
+        mask = (diff > threshold).astype(np.uint8) * 255
+
+        kernel = cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE, (morph_kernel, morph_kernel),
+        )
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
+
+        # fill holes: find largest contour and fill
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if contours:
+            filled = np.zeros_like(mask)
+            cv2.drawContours(filled, contours, -1, 255, cv2.FILLED)
+            mask = filled
+
+        out_dir = join(output_dir, cam)
+        os.makedirs(out_dir, exist_ok=True)
+        out_path = join(out_dir, f'{frame:06d}.png')
+        cv2.imwrite(out_path, mask)
+        print(f'  {cam}: {out_path}  (fg pixels: {mask.sum() // 255})')
+
+
+def sam_segmentation(data_root, cam_names, frame, ext, output_dir,
+                     sam_checkpoint, sam_model_type):
+    """Use Segment Anything to produce masks from auto-detected boxes."""
+    try:
+        from segment_anything import SamAutomaticMaskGenerator, sam_model_registry
+    except ImportError:
+        print('ERROR: segment_anything is not installed.')
+        print('  pip install segment-anything')
+        print('  Download checkpoint from https://github.com/facebookresearch/segment-anything')
+        sys.exit(1)
+
+    import torch
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+    print(f'[SAM] Loading model {sam_model_type} from {sam_checkpoint} ...')
+    sam = sam_model_registry[sam_model_type](checkpoint=sam_checkpoint)
+    sam.to(device)
+    mask_generator = SamAutomaticMaskGenerator(
+        sam,
+        points_per_side=32,
+        pred_iou_thresh=0.86,
+        stability_score_thresh=0.92,
+        min_mask_region_area=1000,
+    )
+
+    for cam in cam_names:
+        img_path = find_image(data_root, cam, frame, ext)
+        img = cv2.imread(img_path)
+        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+
+        masks = mask_generator.generate(img_rgb)
+
+        # combine all detected masks into one foreground mask
+        combined = np.zeros(img.shape[:2], dtype=np.uint8)
+        for m in masks:
+            combined[m['segmentation']] = 255
+
+        out_dir = join(output_dir, cam)
+        os.makedirs(out_dir, exist_ok=True)
+        out_path = join(out_dir, f'{frame:06d}.png')
+        cv2.imwrite(out_path, combined)
+        print(f'  {cam}: {out_path}  ({len(masks)} segments)')
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description='Generate foreground masks for multi-view reconstruction',
+    )
+    parser.add_argument('data', help='Root data path (with images/<cam>/)')
+    parser.add_argument('--frame', type=int, default=0, help='Target frame index')
+    parser.add_argument('--ext', default='.jpg', help='Image extension')
+    parser.add_argument('--output', default=None,
+                        help='Output mask directory (default: <data>/masks)')
+    parser.add_argument('--mode', choices=['bg_sub', 'sam'], default='bg_sub',
+                        help='Mask generation mode')
+
+    bg_group = parser.add_argument_group('background subtraction')
+    bg_group.add_argument('--bg_frame', type=int, default=None,
+                          help='Background-only frame index (required for bg_sub)')
+    bg_group.add_argument('--threshold', type=float, default=30.0,
+                          help='Pixel difference threshold (0-255)')
+    bg_group.add_argument('--morph_kernel', type=int, default=7,
+                          help='Morphology kernel size')
+
+    sam_group = parser.add_argument_group('SAM segmentation')
+    sam_group.add_argument('--sam_checkpoint', default=None,
+                           help='Path to SAM model checkpoint')
+    sam_group.add_argument('--sam_model_type', default='vit_h',
+                           help='SAM model type (vit_h, vit_l, vit_b)')
+
+    args = parser.parse_args()
+
+    output_dir = args.output or join(args.data, 'masks')
+    cam_names = get_cam_names(args.data)
+    print(f'[generate_masks] Cameras: {cam_names}')
+    print(f'[generate_masks] Mode: {args.mode}, frame: {args.frame}')
+    print(f'[generate_masks] Output: {output_dir}')
+
+    if args.mode == 'bg_sub':
+        if args.bg_frame is None:
+            parser.error('--bg_frame is required for background subtraction mode')
+        background_subtraction(
+            args.data, cam_names, args.frame, args.bg_frame, args.ext,
+            args.threshold, args.morph_kernel, output_dir,
+        )
+    elif args.mode == 'sam':
+        if args.sam_checkpoint is None:
+            parser.error('--sam_checkpoint is required for SAM mode')
+        sam_segmentation(
+            args.data, cam_names, args.frame, args.ext, output_dir,
+            args.sam_checkpoint, args.sam_model_type,
+        )
+
+    print('[generate_masks] Done.')
+
+
+if __name__ == '__main__':
+    main()

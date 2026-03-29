@@ -1,6 +1,6 @@
-# Motion Capture Pipeline — Technical Report & Workflow Summary
+# Foundation Motion Capture Pipeline — Technical Report & Workflow Summary
 
-This document serves as a **technical report**, **code review overview**, and **onboarding guide** for the multi-view markerless human motion capture pipeline. It describes the end-to-end workflow from camera calibration through 3D body reconstruction.
+This document serves as a **technical report**, **code review overview**, and **onboarding guide** for the multi-view markerless motion capture pipeline. It describes the end-to-end workflow from camera calibration through 3D human body reconstruction and **arbitrary object reconstruction**.
 
 ---
 
@@ -14,10 +14,10 @@ This document serves as a **technical report**, **code review overview**, and **
 
 ## Pipeline Overview
 
-The pipeline consists of three main stages: (1) Camera calibration → (2) 2D pose estimation → (3) 3D reconstruction. Outputs flow as intri.yml/extri.yml → annots/*.json → keypoints3d, smpl/.
+The pipeline consists of four main stages: (1) Camera calibration → (2) 2D pose estimation → (3) 3D human reconstruction → (4) 3D object reconstruction. Outputs flow as intri.yml/extri.yml → annots/*.json → keypoints3d, smpl/ (human) or COLMAP workspace → Gaussians/mesh (object).
 
 **Input**: Multi-view synchronized images  
-**Output**: SMPL-X body model parameters (pose, shape) per frame
+**Output**: SMPL-X body model parameters (human) or 3D Gaussians / mesh (arbitrary objects)
 
 ---
 
@@ -110,7 +110,7 @@ Other modes: `openpose`, `hrnet`, `mp-holistic`, etc. See `extract_keypoints.py`
 
 ---
 
-## Stage 3: 3D Reconstruction
+## Stage 3: 3D Human Reconstruction
 
 Triangulate 2D keypoints and fit an SMPL-X body model.
 
@@ -157,6 +157,73 @@ python apps/demo/mv1p.py <path> \
 
 ---
 
+## Stage 4: 3D Object Reconstruction
+
+Reconstruct arbitrary objects (no predefined body model) from calibrated multi-view images using neural surface reconstruction or 3D Gaussian Splatting.
+
+### 4.1 Export Calibration to COLMAP Format
+
+Convert `intri.yml` / `extri.yml` to a COLMAP sparse model that standard reconstruction frameworks accept:
+
+```bash
+python apps/reconstruction/export_colmap.py <data_path> \
+  --frame 0 --output <colmap_workspace> --undistort
+```
+
+- `--undistort`: undistorts images and exports PINHOLE cameras (recommended for neural methods)
+- `--mask <dir>`: optionally copies foreground masks alongside images
+- Output: `<colmap_workspace>/images/`, `<colmap_workspace>/sparse/0/{cameras,images,points3D}.{bin,txt}`
+
+### 4.2 Generate Foreground Masks (Optional)
+
+Masks significantly improve reconstruction quality by excluding the background:
+
+```bash
+# Background subtraction (requires a background-only frame)
+python apps/reconstruction/generate_masks.py <data_path> \
+  --frame 0 --bg_frame 100 --threshold 30
+
+# SAM-based segmentation (requires segment-anything)
+python apps/reconstruction/generate_masks.py <data_path> \
+  --frame 0 --mode sam --sam_checkpoint /path/to/sam_vit_h.pth
+```
+
+### 4.3 3D Gaussian Splatting (Real-time Rendering)
+
+Fast reconstruction producing a real-time renderable Gaussian splat:
+
+```bash
+# Install (one-time)
+git clone https://github.com/graphdeco-inria/gaussian-splatting --recursive
+cd gaussian-splatting
+pip install submodules/diff-gaussian-rasterization submodules/simple-knn
+
+# Train
+python train.py -s <colmap_workspace> --iterations 7000
+```
+
+Or use the integrated wrapper for single/batch reconstruction:
+
+```bash
+python apps/reconstruction/run_3dgs.py <data_path> \
+  --frame 0 --output <recon_path> --undistort \
+  --gs_repo /path/to/gaussian-splatting
+```
+
+### 4.4 Mesh Extraction via Nerfstudio NeuS-facto
+
+High-quality watertight mesh from multi-view images:
+
+```bash
+pip install nerfstudio
+
+ns-train neus-facto --data <colmap_workspace> colmap
+
+ns-export poisson --load-config outputs/.../config.yml --output-dir meshes/
+```
+
+---
+
 ## Complete Workflow Summary
 
 ```bash
@@ -167,11 +234,16 @@ python apps/calibration/detect_chessboard.py <extri_path> --pattern 9,6 --grid 0
 python apps/calibration/calib_extri.py <extri_path> --stereo --intri <intri_path>/output/intri.yml
 python apps/calibration/chessboard_ba_colmap.py <extri_path>
 
-# 2. 2D pose estimation
+# 2. 2D pose estimation (human pipeline)
 python apps/preprocess/extract_keypoints.py <mocap_path> --mode mmpose
 
-# 3. 3D reconstruction
+# 3. 3D human reconstruction
 python apps/demo/mv1p.py <mocap_path> --body bodyhandface --model smplx --gender male --vis_det --vis_repro --vis_smpl
+
+# 4. 3D object reconstruction (arbitrary objects)
+python apps/reconstruction/export_colmap.py <data_path> --frame 0 --output <colmap_ws> --undistort
+python apps/reconstruction/generate_masks.py <data_path> --frame 0 --bg_frame 100  # optional
+python apps/reconstruction/run_3dgs.py <data_path> --frame 0 --output <recon> --gs_repo <gs_path> --undistort
 ```
 
 ---
@@ -189,8 +261,12 @@ Motion-Capture/
 │   │   └── vis_chess_sfm_ba.py
 │   ├── preprocess/            # Stage 2
 │   │   └── extract_keypoints.py
-│   └── demo/                  # Stage 3
-│       └── mv1p.py
+│   ├── demo/                  # Stage 3
+│   │   └── mv1p.py
+│   └── reconstruction/        # Stage 4
+│       ├── export_colmap.py
+│       ├── generate_masks.py
+│       └── run_3dgs.py
 ├── easymocap/
 │   ├── dataset/               # Data loaders
 │   ├── pyfitting/             # SMPL optimization
@@ -210,6 +286,12 @@ See the [EasyMocap documentation](https://chingswy.github.io/easymocap-public-do
 - MMPose (for `--mode mmpose`)
 - COLMAP (for `chessboard_ba_colmap.py`)
 - SMPL-X model files (from [SMPL-X](https://github.com/vchoutas/smplx))
+
+For Stage 4 (object reconstruction):
+
+- [3D Gaussian Splatting](https://github.com/graphdeco-inria/gaussian-splatting) (clone + install submodules)
+- [Nerfstudio](https://docs.nerf.studio/) (`pip install nerfstudio`) for NeuS-facto mesh extraction
+- (Optional) [Segment Anything](https://github.com/facebookresearch/segment-anything) for SAM-based masking
 
 ---
 
