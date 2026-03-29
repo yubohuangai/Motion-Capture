@@ -232,6 +232,7 @@ def triangulate_points(output_dir, cameras, cam_names, cam_id_map,
         os.remove(stale_ply)
 
     # 1. Feature extraction (creates database.db with cameras + images + SIFT)
+    mask_dir = join(output_dir, 'masks')
     cmd = (
         f'{colmap_bin} feature_extractor'
         f' --database_path {db_path}'
@@ -239,6 +240,9 @@ def triangulate_points(output_dir, cameras, cam_names, cam_id_map,
         f' --ImageReader.camera_model PINHOLE'
         f' --SiftExtraction.use_gpu {gpu_flag}'
     )
+    if os.path.isdir(mask_dir):
+        cmd += f' --ImageReader.mask_path {mask_dir}'
+        print(f'[triangulate] Using masks from {mask_dir}')
     print(f'[triangulate] Running: {cmd}')
     subprocess.check_call(cmd, shell=True)
 

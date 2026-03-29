@@ -33,7 +33,8 @@ import sys
 from os.path import join
 
 
-def run_export(data, output, frame, intri, extri, ext, undistort, mask):
+def run_export(data, output, frame, intri, extri, ext, undistort, mask,
+               triangulate=True, colmap_bin='colmap', gpu=False):
     """Run export_colmap.py for one frame."""
     script = join(os.path.dirname(__file__), 'export_colmap.py')
     cmd = [
@@ -43,11 +44,16 @@ def run_export(data, output, frame, intri, extri, ext, undistort, mask):
         '--intri', intri,
         '--extri', extri,
         '--ext', ext,
+        '--colmap', colmap_bin,
     ]
     if undistort:
         cmd.append('--undistort')
     if mask:
         cmd.extend(['--mask', mask])
+    if triangulate:
+        cmd.append('--triangulate')
+    if gpu:
+        cmd.append('--gpu')
 
     print(f'\n{"="*60}')
     print(f'[run_3dgs] Exporting frame {frame} -> {output}')
@@ -107,10 +113,16 @@ def main():
     parser.add_argument('--undistort', action='store_true')
     parser.add_argument('--mask', default=None,
                         help='Mask sub-directory name')
+    parser.add_argument('--no_triangulate', action='store_true',
+                        help='Skip COLMAP triangulation (use empty points3D)')
+    parser.add_argument('--colmap', default='colmap',
+                        help='Path to COLMAP binary')
     parser.add_argument('--iterations', type=int, default=7000,
                         help='3DGS training iterations (default: 7000)')
     parser.add_argument('--gpu', type=int, default=0,
                         help='GPU index (default: 0)')
+    parser.add_argument('--colmap_gpu', action='store_true',
+                        help='Use GPU for COLMAP feature extraction/matching')
     parser.add_argument('--skip_export', action='store_true',
                         help='Skip export step (use existing COLMAP workspace)')
     parser.add_argument('--skip_train', action='store_true',
@@ -139,6 +151,8 @@ def main():
                 args.data, colmap_dir, frame,
                 args.intri, args.extri, args.ext,
                 args.undistort, args.mask,
+                triangulate=not args.no_triangulate,
+                colmap_bin=args.colmap, gpu=args.colmap_gpu,
             )
 
         if not args.skip_train:
