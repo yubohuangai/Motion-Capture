@@ -114,7 +114,7 @@ def background_subtraction(data_root, cam_names, frame, bg_frame, ext,
 
     When --center_only is set, uses a two-pass strategy:
       Pass 1 (locate): light opening on high-threshold diff → find object bbox
-      Pass 2 (refine): low-threshold diff masked to expanded bbox → clean mask
+      Pass 2 (refine): same threshold inside tight bbox → largest blob only
     """
     bg_root = bg_data or data_root
     for cam in cam_names:
@@ -141,30 +141,31 @@ def background_subtraction(data_root, cam_names, frame, bg_frame, ext,
             if bbox is not None:
                 bx, by, bw, bh = bbox
                 h, w = diff.shape[:2]
-                # expand bbox by 50% on each side for safety margin
-                pad_x, pad_y = int(bw * 0.5), int(bh * 0.5)
+                # expand bbox by 20% for safety margin
+                pad_x, pad_y = int(bw * 0.2), int(bh * 0.2)
                 x1 = max(0, bx - pad_x)
                 y1 = max(0, by - pad_y)
                 x2 = min(w, bx + bw + pad_x)
                 y2 = min(h, by + bh + pad_y)
 
-                # --- Pass 2: sensitive threshold inside bbox only ---
-                fine_thr = max(threshold * 0.5, 15)
-                mask = np.zeros_like(coarse)
+                # --- Pass 2: same threshold but restricted to bbox ---
+                mask = np.zeros((h, w), dtype=np.uint8)
                 roi = diff[y1:y2, x1:x2]
-                mask[y1:y2, x1:x2] = (roi > fine_thr).astype(np.uint8) * 255
+                mask[y1:y2, x1:x2] = (roi > threshold).astype(np.uint8) * 255
 
+                # close to fill gaps within the box, open to remove speckles
                 mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel,
                                         iterations=3)
                 mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, small_k,
                                         iterations=1)
-                # fill contours for solid mask
+
+                # keep only the largest contour (= the box, not table noise)
                 cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL,
                                            cv2.CHAIN_APPROX_SIMPLE)
                 if cnts:
-                    filled = np.zeros_like(mask)
-                    cv2.drawContours(filled, cnts, -1, 255, cv2.FILLED)
-                    mask = filled
+                    biggest = max(cnts, key=cv2.contourArea)
+                    mask = np.zeros_like(mask)
+                    cv2.drawContours(mask, [biggest], -1, 255, cv2.FILLED)
             else:
                 mask = np.zeros(diff.shape[:2], dtype=np.uint8)
                 print(f'  {cam}: WARNING - no object blob found')
