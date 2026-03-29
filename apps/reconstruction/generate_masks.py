@@ -72,159 +72,32 @@ def save_mask_overlay(img_bgr, mask, vis_dir, cam, frame):
     return out_path
 
 
-def select_object_blob(mask, diff, erode_sizes=(41, 31, 21), max_area_ratio=0.05,
-                       max_aspect=2.2):
+def filter_center_blob(mask, center_ratio=0.5, min_area_ratio=0.001):
     """
-    Isolate the object (compact blob on the table) from people/clutter.
-
-    Strategy:
-      1. Try several erosion strengths to break connections between the
-         object and nearby clutter/person.
-      2. Reject components that are too large, too elongated, too close to
-         the border, or too high in the image.
-      3. Pick the remaining component whose centroid is closest to the
-         expected object region near the image center / lower half, while also
-         preferring components with strong foreground difference.
-      4. Recover the object from a tight local window around that eroded
-         component instead of globally growing the mask back.
+    Keep only contours whose bounding box overlaps the center region of the
+    image, and discard small noise blobs.  This removes people/clutter at the
+    image edges while preserving the object sitting in the middle of the rig.
     """
     h, w = mask.shape[:2]
-    img_area = h * w
+    min_area = h * w * min_area_ratio
 
-    ref_x, ref_y = w / 2, h * 0.70
-    border_margin = int(min(h, w) * 0.03)
+    # define center region
+    cx, cy = w // 2, h // 2
+    rw, rh = int(w * center_ratio / 2), int(h * center_ratio / 2)
+    center_rect = (cx - rw, cy - rh, cx + rw, cy + rh)
 
-    for erode_size in erode_sizes:
-        ek = cv2.getStructuringElement(
-            cv2.MORPH_ELLIPSE, (erode_size, erode_size),
-        )
-        eroded = cv2.erode(mask, ek, iterations=3)
-
-        num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(
-            eroded, connectivity=8,
-        )
-        if num_labels <= 1:
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    filtered = np.zeros_like(mask)
+    for cnt in contours:
+        area = cv2.contourArea(cnt)
+        if area < min_area:
             continue
-
-        best_label = -1
-        best_score = float('inf')
-        for lbl in range(1, num_labels):
-            area = stats[lbl, cv2.CC_STAT_AREA]
-            if area < 120:
-                continue
-            if area > img_area * max_area_ratio:
-                continue
-
-            x = stats[lbl, cv2.CC_STAT_LEFT]
-            y = stats[lbl, cv2.CC_STAT_TOP]
-            bw = stats[lbl, cv2.CC_STAT_WIDTH]
-            bh = stats[lbl, cv2.CC_STAT_HEIGHT]
-            x2, y2 = x + bw, y + bh
-
-            # Border-touching blobs are usually rig edges / stray reflections.
-            if (x <= border_margin or y <= border_margin or
-                    x2 >= w - border_margin or y2 >= h - border_margin):
-                continue
-
-            cx, cy = centroids[lbl]
-            # The object sits on the platform, not at the very top of frame.
-            if cy < h * 0.30:
-                continue
-
-            aspect = max(bw, bh) / (min(bw, bh) + 1e-6)
-            if aspect > max_aspect:
-                continue
-
-            comp_mask = (labels == lbl)
-            mean_diff = float(diff[comp_mask].mean()) if np.any(comp_mask) else 0.0
-
-            # Favor candidates near image center/lower half, and also prefer
-            # regions with stronger real appearance change over mild lighting
-            # shifts on the table.
-            dx = (cx - ref_x) / w
-            dy = (cy - ref_y) / h
-            score = dx * dx + 2.2 * dy * dy - 0.18 * (mean_diff / 255.0)
-            if score < best_score:
-                best_score = score
-                best_label = lbl
-
-        if best_label < 0:
-            continue
-
-        selected_eroded = ((labels == best_label) * 255).astype(np.uint8)
-        seed_mean_diff = float(diff[selected_eroded > 0].mean())
-        ys, xs = np.where(selected_eroded > 0)
-        if len(xs) == 0:
-            continue
-
-        # Recover only a local neighborhood around the selected eroded blob.
-        # This is more stable than a huge global grow-back and removes most
-        # table spill in the problematic views.
-        pad_x = max(int((xs.max() - xs.min() + 1) * 1.2), erode_size)
-        pad_y = max(int((ys.max() - ys.min() + 1) * 1.2), erode_size)
-        x0 = max(xs.min() - pad_x, 0)
-        x1 = min(xs.max() + pad_x + 1, w)
-        y0 = max(ys.min() - pad_y, 0)
-        y1 = min(ys.max() + pad_y + 1, h)
-
-        region = np.zeros_like(mask)
-        region[y0:y1, x0:x1] = 255
-        local = cv2.bitwise_and(mask, region)
-
-        overlap = cv2.dilate(
-            selected_eroded,
-            cv2.getStructuringElement(
-                cv2.MORPH_ELLIPSE, (max(erode_size // 2, 3), max(erode_size // 2, 3)),
-            ),
-            iterations=1,
-        )
-        num_local, local_labels, local_stats, local_centroids = cv2.connectedComponentsWithStats(
-            local, connectivity=8,
-        )
-        if num_local <= 1:
-            return local
-
-        recovered = np.zeros_like(mask)
-        seed_cx = xs.mean()
-        seed_cy = ys.mean()
-        for lbl in range(1, num_local):
-            area = local_stats[lbl, cv2.CC_STAT_AREA]
-            if area < 80 or area > img_area * 0.08:
-                continue
-
-            comp = ((local_labels == lbl) * 255).astype(np.uint8)
-            ov = cv2.countNonZero(cv2.bitwise_and(comp, overlap))
-            if ov <= 0:
-                continue
-
-            bw = local_stats[lbl, cv2.CC_STAT_WIDTH]
-            bh = local_stats[lbl, cv2.CC_STAT_HEIGHT]
-            aspect = max(bw, bh) / (min(bw, bh) + 1e-6)
-            if aspect > max_aspect + 0.6:
-                continue
-
-            mean_diff = float(diff[local_labels == lbl].mean())
-            cx, cy = local_centroids[lbl]
-            dx = abs(cx - seed_cx) / w
-            dy = abs(cy - seed_cy) / h
-            if dx > 0.18 or dy > 0.20:
-                continue
-            if mean_diff < max(18.0, seed_mean_diff * 0.45):
-                continue
-
-            recovered[local_labels == lbl] = 255
-
-        if cv2.countNonZero(recovered) > 0:
-            close_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
-            recovered = cv2.morphologyEx(recovered, cv2.MORPH_CLOSE, close_k, iterations=1)
-            contours, _ = cv2.findContours(
-                recovered, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE,
-            )
-            filled = np.zeros_like(recovered)
-            cv2.drawContours(filled, contours, -1, 255, cv2.FILLED)
-            return filled
-
-    return mask
+        x, y, bw, bh = cv2.boundingRect(cnt)
+        # check overlap with center region
+        if (x + bw > center_rect[0] and x < center_rect[2] and
+                y + bh > center_rect[1] and y < center_rect[3]):
+            cv2.drawContours(filtered, [cnt], -1, 255, cv2.FILLED)
+    return filtered
 
 
 def background_subtraction(data_root, cam_names, frame, bg_frame, ext,
@@ -248,14 +121,14 @@ def background_subtraction(data_root, cam_names, frame, bg_frame, ext,
         mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2)
         mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
 
-        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        if contours:
-            filled = np.zeros_like(mask)
-            cv2.drawContours(filled, contours, -1, 255, cv2.FILLED)
-            mask = filled
-
         if center_only:
-            mask = select_object_blob(mask, diff)
+            mask = filter_center_blob(mask)
+        else:
+            contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            if contours:
+                filled = np.zeros_like(mask)
+                cv2.drawContours(filled, contours, -1, 255, cv2.FILLED)
+                mask = filled
 
         if dilate > 0:
             dk = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (dilate, dilate))
