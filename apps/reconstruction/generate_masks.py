@@ -72,26 +72,29 @@ def save_mask_overlay(img_bgr, mask, vis_dir, cam, frame):
     return out_path
 
 
-def filter_center_blob(mask, center_ratio=0.5, min_area_ratio=0.001,
-                       max_area_ratio=0.15):
+def pick_object_blob(mask, max_area_ratio=0.10, min_area_ratio=0.002,
+                     bottom_ratio=0.7):
     """
-    Among all contours that overlap the image center, pick the single best
-    "object" blob: must be above min_area, below max_area, and of all
-    qualifying blobs choose the one closest to the image center.
+    Pick the single contour most likely to be the object on the table.
 
-    This rejects both small noise AND large regions (people, lighting shifts
-    covering half the image) while keeping the target object on the table.
+    Strategy (avoids fusing person + object before selection):
+      1. Only consider blobs whose centroid is in the bottom portion of the
+         image (the object sits on a table, not floating at the top).
+      2. Reject blobs smaller than min_area or larger than max_area.
+      3. Among survivors, pick the one with the largest area (= the object,
+         not a small noise speck).
+
+    The caller should run this on a mask that has NOT been morphologically
+    closed, so the person and object stay as separate contours.
     """
     h, w = mask.shape[:2]
     img_area = h * w
     min_area = img_area * min_area_ratio
     max_area = img_area * max_area_ratio
+    y_cutoff = h * (1.0 - bottom_ratio)
 
-    cx, cy = w / 2.0, h / 2.0
-    rw, rh = w * center_ratio / 2, h * center_ratio / 2
-    center_rect = (cx - rw, cy - rh, cx + rw, cy + rh)
-
-    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL,
+                                   cv2.CHAIN_APPROX_SIMPLE)
 
     candidates = []
     for cnt in contours:
@@ -99,26 +102,23 @@ def filter_center_blob(mask, center_ratio=0.5, min_area_ratio=0.001,
         if area < min_area or area > max_area:
             continue
         x, y, bw, bh = cv2.boundingRect(cnt)
-        if not (x + bw > center_rect[0] and x < center_rect[2] and
-                y + bh > center_rect[1] and y < center_rect[3]):
-            continue
-        blob_cx = x + bw / 2.0
         blob_cy = y + bh / 2.0
-        dist = ((blob_cx - cx) ** 2 + (blob_cy - cy) ** 2) ** 0.5
-        candidates.append((dist, cnt))
+        if blob_cy < y_cutoff:
+            continue
+        candidates.append((area, cnt))
 
-    filtered = np.zeros_like(mask)
+    result = np.zeros_like(mask)
     if candidates:
-        candidates.sort(key=lambda t: t[0])
-        cv2.drawContours(filtered, [candidates[0][1]], -1, 255, cv2.FILLED)
-    return filtered
+        candidates.sort(key=lambda t: t[0], reverse=True)
+        cv2.drawContours(result, [candidates[0][1]], -1, 255, cv2.FILLED)
+    return result
 
 
 def background_subtraction(data_root, cam_names, frame, bg_frame, ext,
                            threshold, morph_kernel, output_dir, vis_dir=None,
                            bg_data=None, center_only=False, dilate=0,
-                           max_area_ratio=0.15):
-    """Simple frame-difference masking."""
+                           max_area_ratio=0.10):
+    """Frame-difference masking with optional smart blob selection."""
     bg_root = bg_data or data_root
     for cam in cam_names:
         fg_path = find_image(data_root, cam, frame, ext)
@@ -133,13 +133,19 @@ def background_subtraction(data_root, cam_names, frame, bg_frame, ext,
         kernel = cv2.getStructuringElement(
             cv2.MORPH_ELLIPSE, (morph_kernel, morph_kernel),
         )
-        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
 
         if center_only:
-            mask = filter_center_blob(mask, max_area_ratio=max_area_ratio)
+            # OPEN only -- removes small noise but does NOT bridge nearby
+            # regions, so the person and the object stay separate contours.
+            mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=2)
+            mask = pick_object_blob(mask, max_area_ratio=max_area_ratio)
+            # Now close + fill the selected blob to get a solid mask
+            mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=3)
         else:
-            contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2)
+            mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
+            contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL,
+                                           cv2.CHAIN_APPROX_SIMPLE)
             if contours:
                 filled = np.zeros_like(mask)
                 cv2.drawContours(filled, contours, -1, 255, cv2.FILLED)
