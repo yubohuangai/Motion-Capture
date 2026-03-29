@@ -72,32 +72,62 @@ def save_mask_overlay(img_bgr, mask, vis_dir, cam, frame):
     return out_path
 
 
-def filter_center_blob(mask, center_ratio=0.5, min_area_ratio=0.001):
+def select_object_blob(mask, erode_size=31, max_area_ratio=0.15):
     """
-    Keep only contours whose bounding box overlaps the center region of the
-    image, and discard small noise blobs.  This removes people/clutter at the
-    image edges while preserving the object sitting in the middle of the rig.
+    Isolate the object (compact blob on the table) from people/clutter.
+
+    Strategy:
+      1. Erode the mask heavily to break thin connections (arms, shadows)
+         between the object and any person standing nearby.
+      2. Label connected components in the eroded mask.
+      3. Discard blobs that are too large (> max_area_ratio of the image)
+         since the object is small relative to the frame.
+      4. Among remaining blobs, pick the one whose centroid is closest to
+         the bottom-center of the image (where the table is).
+      5. Grow the selected blob back to its original extent by masking
+         the un-eroded mask with a dilated version of the selected region.
     """
     h, w = mask.shape[:2]
-    min_area = h * w * min_area_ratio
+    img_area = h * w
 
-    # define center region
-    cx, cy = w // 2, h // 2
-    rw, rh = int(w * center_ratio / 2), int(h * center_ratio / 2)
-    center_rect = (cx - rw, cy - rh, cx + rw, cy + rh)
+    # heavy erosion to split connected regions
+    ek = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (erode_size, erode_size))
+    eroded = cv2.erode(mask, ek, iterations=2)
 
-    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    filtered = np.zeros_like(mask)
-    for cnt in contours:
-        area = cv2.contourArea(cnt)
-        if area < min_area:
+    num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(
+        eroded, connectivity=8,
+    )
+    if num_labels <= 1:
+        return mask
+
+    # reference point: bottom-center of image (where the table/object sits)
+    ref_x, ref_y = w / 2, h * 0.7
+
+    best_label = -1
+    best_dist = float('inf')
+    for lbl in range(1, num_labels):
+        area = stats[lbl, cv2.CC_STAT_AREA]
+        if area < 200:
             continue
-        x, y, bw, bh = cv2.boundingRect(cnt)
-        # check overlap with center region
-        if (x + bw > center_rect[0] and x < center_rect[2] and
-                y + bh > center_rect[1] and y < center_rect[3]):
-            cv2.drawContours(filtered, [cnt], -1, 255, cv2.FILLED)
-    return filtered
+        if area > img_area * max_area_ratio:
+            continue
+        cx, cy = centroids[lbl]
+        dist = ((cx - ref_x) ** 2 + (cy - ref_y) ** 2) ** 0.5
+        if dist < best_dist:
+            best_dist = dist
+            best_label = lbl
+
+    if best_label < 0:
+        return mask
+
+    # expand the selected eroded blob back to the original mask extent
+    selected_eroded = ((labels == best_label) * 255).astype(np.uint8)
+    grow_k = cv2.getStructuringElement(
+        cv2.MORPH_ELLIPSE, (erode_size * 3, erode_size * 3),
+    )
+    region = cv2.dilate(selected_eroded, grow_k, iterations=2)
+    result = cv2.bitwise_and(mask, region)
+    return result
 
 
 def background_subtraction(data_root, cam_names, frame, bg_frame, ext,
@@ -121,14 +151,14 @@ def background_subtraction(data_root, cam_names, frame, bg_frame, ext,
         mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2)
         mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
 
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if contours:
+            filled = np.zeros_like(mask)
+            cv2.drawContours(filled, contours, -1, 255, cv2.FILLED)
+            mask = filled
+
         if center_only:
-            mask = filter_center_blob(mask)
-        else:
-            contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            if contours:
-                filled = np.zeros_like(mask)
-                cv2.drawContours(filled, contours, -1, 255, cv2.FILLED)
-                mask = filled
+            mask = select_object_blob(mask)
 
         if dilate > 0:
             dk = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (dilate, dilate))
