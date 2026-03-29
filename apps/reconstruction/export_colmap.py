@@ -248,9 +248,10 @@ def triangulate_points(output_dir, cameras, cam_names, cam_id_map,
 
     # 2. Feature matching
     cmd = (
-        f'{colmap_bin} exhaustive_matcher'
+        f'{colmap_bin} sequential_matcher'
         f' --database_path {db_path}'
         f' --SiftMatching.use_gpu {gpu_flag}'
+        f' --SequentialMatching.overlap 3'
     )
     print(f'[triangulate] Running: {cmd}')
     subprocess.check_call(cmd, shell=True)
