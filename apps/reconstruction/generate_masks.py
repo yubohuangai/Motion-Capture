@@ -72,27 +72,28 @@ def save_mask_overlay(img_bgr, mask, vis_dir, cam, frame):
     return out_path
 
 
-def select_object_blob(mask, erode_size=31, max_area_ratio=0.15):
+def select_object_blob(mask, erode_size=41, max_area_ratio=0.05,
+                       max_aspect=3.0):
     """
     Isolate the object (compact blob on the table) from people/clutter.
 
     Strategy:
-      1. Erode the mask heavily to break thin connections (arms, shadows)
+      1. Erode the mask heavily to break connections (arms, shadows)
          between the object and any person standing nearby.
       2. Label connected components in the eroded mask.
-      3. Discard blobs that are too large (> max_area_ratio of the image)
-         since the object is small relative to the frame.
-      4. Among remaining blobs, pick the one whose centroid is closest to
-         the bottom-center of the image (where the table is).
-      5. Grow the selected blob back to its original extent by masking
-         the un-eroded mask with a dilated version of the selected region.
+      3. Reject blobs that are too large (person), too small (noise),
+         or too elongated (person silhouette has aspect ratio > max_aspect).
+      4. Among remaining blobs, pick the one closest to bottom-center
+         (where the table/object sits).
+      5. Grow selected blob back with bounded dilation + AND with original
+         mask so we recover the object boundary without re-including the
+         person.
     """
     h, w = mask.shape[:2]
     img_area = h * w
 
-    # heavy erosion to split connected regions
     ek = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (erode_size, erode_size))
-    eroded = cv2.erode(mask, ek, iterations=2)
+    eroded = cv2.erode(mask, ek, iterations=3)
 
     num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(
         eroded, connectivity=8,
@@ -100,32 +101,38 @@ def select_object_blob(mask, erode_size=31, max_area_ratio=0.15):
     if num_labels <= 1:
         return mask
 
-    # reference point: bottom-center of image (where the table/object sits)
-    ref_x, ref_y = w / 2, h * 0.7
+    ref_x, ref_y = w / 2, h * 0.65
 
     best_label = -1
-    best_dist = float('inf')
+    best_score = float('inf')
     for lbl in range(1, num_labels):
         area = stats[lbl, cv2.CC_STAT_AREA]
-        if area < 200:
+        if area < 300:
             continue
         if area > img_area * max_area_ratio:
             continue
+        bw = stats[lbl, cv2.CC_STAT_WIDTH]
+        bh = stats[lbl, cv2.CC_STAT_HEIGHT]
+        aspect = max(bw, bh) / (min(bw, bh) + 1e-6)
+        if aspect > max_aspect:
+            continue
         cx, cy = centroids[lbl]
         dist = ((cx - ref_x) ** 2 + (cy - ref_y) ** 2) ** 0.5
-        if dist < best_dist:
-            best_dist = dist
+        if dist < best_score:
+            best_score = dist
             best_label = lbl
 
     if best_label < 0:
         return mask
 
-    # expand the selected eroded blob back to the original mask extent
     selected_eroded = ((labels == best_label) * 255).astype(np.uint8)
+    # grow back by a bounded amount -- enough to recover the object outline
+    # but not so much that it re-captures nearby clutter
+    grow_size = erode_size * 4
     grow_k = cv2.getStructuringElement(
-        cv2.MORPH_ELLIPSE, (erode_size * 3, erode_size * 3),
+        cv2.MORPH_ELLIPSE, (grow_size, grow_size),
     )
-    region = cv2.dilate(selected_eroded, grow_k, iterations=2)
+    region = cv2.dilate(selected_eroded, grow_k, iterations=1)
     result = cv2.bitwise_and(mask, region)
     return result
 
