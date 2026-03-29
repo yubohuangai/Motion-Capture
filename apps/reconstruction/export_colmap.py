@@ -206,56 +206,43 @@ def write_colmap_model(output_dir, colmap_cameras, colmap_images):
     write_points3D_text(empty_points, join(sparse_dir, 'points3D.txt'))
 
 
-def triangulate_points(output_dir, colmap_cameras, colmap_images, colmap_bin, gpu):
+def triangulate_points(output_dir, cameras, cam_names, cam_id_map,
+                       colmap_cameras, colmap_images, colmap_bin, gpu):
     """
     Run COLMAP feature extraction, matching, and triangulation to populate
     points3D using the known camera poses.
 
-    Steps:
-      1. Create database.db with our cameras and images (with known poses)
-      2. Run feature_extractor (detects SIFT features in images)
-      3. Run exhaustive_matcher (matches features across views)
-      4. Run point_triangulator (triangulates 3D points from known poses)
+    The correct workflow is:
+      1. Let feature_extractor create its own database (cameras + features)
+      2. Run exhaustive_matcher
+      3. Read back the DB to map image names -> COLMAP's internal IDs
+      4. Write a sparse model that uses COLMAP's DB IDs but our known poses
+      5. Run point_triangulator
     """
     db_path = join(output_dir, 'database.db')
     sparse_dir = join(output_dir, 'sparse', '0')
-
-    # 1. Create database with our camera info
-    create_empty_db(db_path)
-    db = COLMAPDatabase.connect(db_path)
-
-    for cam_id, cam in colmap_cameras.items():
-        model_id = CAMERA_MODEL_NAMES[cam.model].model_id
-        params = np.asarray(cam.params, np.float64)
-        db.execute(
-            "INSERT INTO cameras VALUES (?, ?, ?, ?, ?, ?)",
-            (cam_id, model_id, cam.width, cam.height,
-             array_to_blob(params), False),
-        )
-
-    for img_id, img in colmap_images.items():
-        db.execute(
-            "INSERT INTO images VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (img_id, img.name, img.camera_id,
-             img.qvec[0], img.qvec[1], img.qvec[2], img.qvec[3],
-             img.tvec[0], img.tvec[1], img.tvec[2]),
-        )
-
-    db.commit()
-    db.close()
-
-    # 2. Feature extraction
+    img_dir = join(output_dir, 'images')
     gpu_flag = '1' if gpu else '0'
+
+    # Remove stale database and any cached .ply from prior 3DGS runs
+    if os.path.exists(db_path):
+        os.remove(db_path)
+    stale_ply = join(sparse_dir, 'points3D.ply')
+    if os.path.exists(stale_ply):
+        os.remove(stale_ply)
+
+    # 1. Feature extraction (creates database.db with cameras + images + SIFT)
     cmd = (
         f'{colmap_bin} feature_extractor'
         f' --database_path {db_path}'
-        f' --image_path {join(output_dir, "images")}'
+        f' --image_path {img_dir}'
+        f' --ImageReader.camera_model PINHOLE'
         f' --SiftExtraction.use_gpu {gpu_flag}'
     )
     print(f'[triangulate] Running: {cmd}')
     subprocess.check_call(cmd, shell=True)
 
-    # 3. Feature matching
+    # 2. Feature matching
     cmd = (
         f'{colmap_bin} exhaustive_matcher'
         f' --database_path {db_path}'
@@ -264,15 +251,73 @@ def triangulate_points(output_dir, colmap_cameras, colmap_images, colmap_bin, gp
     print(f'[triangulate] Running: {cmd}')
     subprocess.check_call(cmd, shell=True)
 
-    # 4. Point triangulation using known camera poses
+    # 3. Read DB to get COLMAP's image_name -> (image_id, camera_id) mapping
+    db = COLMAPDatabase.connect(db_path)
+    rows = db.execute("SELECT image_id, name, camera_id FROM images").fetchall()
+    db_cameras = db.execute(
+        "SELECT camera_id, model, width, height, params FROM cameras"
+    ).fetchall()
+    db.close()
+
+    db_img_map = {}
+    for image_id, name, camera_id in rows:
+        db_img_map[name] = (image_id, camera_id)
+
+    # 4. Rebuild sparse model with DB's IDs but our known intrinsics + poses
+    #    For cameras: use the DB's camera_id but override params with ours
+    new_colmap_cameras = {}
+    for db_cam_id, model, width, height, params_blob in db_cameras:
+        new_colmap_cameras[db_cam_id] = Camera(
+            id=db_cam_id, model='PINHOLE',
+            width=width, height=height,
+            params=np.frombuffer(params_blob, dtype=np.float64),
+        )
+
+    new_colmap_images = {}
+    for cam in cam_names:
+        ext = list(colmap_images.values())[0].name.split('.')[-1]
+        img_name = f'{cam}.{ext}'
+        if img_name not in db_img_map:
+            print(f'  [triangulate] WARNING: {img_name} not in database, skipping')
+            continue
+        db_image_id, db_camera_id = db_img_map[img_name]
+
+        R = cameras[cam]['R']
+        T = cameras[cam]['T']
+        qvec = rotmat2qvec(R)
+        tvec = T.flatten()
+
+        # Override the DB camera params with our calibrated intrinsics
+        K = colmap_cameras[cam_id_map[cam]].params
+        orig_cam = new_colmap_cameras[db_camera_id]
+        new_colmap_cameras[db_camera_id] = Camera(
+            id=db_camera_id, model='PINHOLE',
+            width=orig_cam.width, height=orig_cam.height,
+            params=K,
+        )
+
+        new_colmap_images[db_image_id] = Image(
+            id=db_image_id,
+            qvec=qvec,
+            tvec=tvec,
+            camera_id=db_camera_id,
+            name=img_name,
+            xys=np.zeros((0, 2), dtype=np.float64),
+            point3D_ids=np.array([], dtype=np.int64),
+        )
+
+    # Write the new sparse model
+    write_cameras_binary(new_colmap_cameras, join(sparse_dir, 'cameras.bin'))
+    write_images_binary(new_colmap_images, join(sparse_dir, 'images.bin'))
+    write_points3d_binary({}, join(sparse_dir, 'points3D.bin'))
+
+    # 5. Point triangulation using known camera poses
     cmd = (
         f'{colmap_bin} point_triangulator'
         f' --database_path {db_path}'
-        f' --image_path {join(output_dir, "images")}'
+        f' --image_path {img_dir}'
         f' --input_path {sparse_dir}'
         f' --output_path {sparse_dir}'
-        f' --Mapper.tri_merge_max_reproj_error 3'
-        f' --Mapper.filter_max_reproj_error 2'
     )
     print(f'[triangulate] Running: {cmd}')
     subprocess.check_call(cmd, shell=True)
@@ -346,7 +391,8 @@ def main():
     if args.triangulate:
         print('[export_colmap] Triangulating 3D points via COLMAP ...')
         triangulate_points(
-            args.output, colmap_cameras, colmap_images,
+            args.output, cams, cam_names, cam_id_map,
+            colmap_cameras, colmap_images,
             args.colmap, args.gpu,
         )
 
