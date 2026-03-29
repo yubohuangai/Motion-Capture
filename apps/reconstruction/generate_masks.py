@@ -54,8 +54,26 @@ def find_image(data_root, cam, frame, ext):
     return candidates[0]
 
 
+def save_mask_overlay(img_bgr, mask, vis_dir, cam, frame):
+    """Save a side-by-side image: original | mask overlay (green tint on foreground)."""
+    os.makedirs(vis_dir, exist_ok=True)
+    overlay = img_bgr.copy()
+    green = np.zeros_like(img_bgr)
+    green[:, :, 1] = 255
+    overlay[mask > 0] = cv2.addWeighted(overlay, 0.5, green, 0.5, 0)[mask > 0]
+
+    # draw contour outline in red
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    cv2.drawContours(overlay, contours, -1, (0, 0, 255), 2)
+
+    combined = np.hstack([img_bgr, overlay])
+    out_path = join(vis_dir, f'{cam}_{frame:06d}.jpg')
+    cv2.imwrite(out_path, combined)
+    return out_path
+
+
 def background_subtraction(data_root, cam_names, frame, bg_frame, ext,
-                           threshold, morph_kernel, output_dir):
+                           threshold, morph_kernel, output_dir, vis_dir=None):
     """Simple frame-difference masking."""
     for cam in cam_names:
         fg_path = find_image(data_root, cam, frame, ext)
@@ -73,7 +91,6 @@ def background_subtraction(data_root, cam_names, frame, bg_frame, ext,
         mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2)
         mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
 
-        # fill holes: find largest contour and fill
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         if contours:
             filled = np.zeros_like(mask)
@@ -86,9 +103,14 @@ def background_subtraction(data_root, cam_names, frame, bg_frame, ext,
         cv2.imwrite(out_path, mask)
         print(f'  {cam}: {out_path}  (fg pixels: {mask.sum() // 255})')
 
+        if vis_dir is not None:
+            img_bgr = cv2.imread(fg_path)
+            vis_path = save_mask_overlay(img_bgr, mask, vis_dir, cam, frame)
+            print(f'    vis: {vis_path}')
+
 
 def sam_segmentation(data_root, cam_names, frame, ext, output_dir,
-                     sam_checkpoint, sam_model_type):
+                     sam_checkpoint, sam_model_type, vis_dir=None):
     """Use Segment Anything to produce masks from auto-detected boxes."""
     try:
         from segment_anything import SamAutomaticMaskGenerator, sam_model_registry
@@ -119,7 +141,6 @@ def sam_segmentation(data_root, cam_names, frame, ext, output_dir,
 
         masks = mask_generator.generate(img_rgb)
 
-        # combine all detected masks into one foreground mask
         combined = np.zeros(img.shape[:2], dtype=np.uint8)
         for m in masks:
             combined[m['segmentation']] = 255
@@ -129,6 +150,10 @@ def sam_segmentation(data_root, cam_names, frame, ext, output_dir,
         out_path = join(out_dir, f'{frame:06d}.png')
         cv2.imwrite(out_path, combined)
         print(f'  {cam}: {out_path}  ({len(masks)} segments)')
+
+        if vis_dir is not None:
+            vis_path = save_mask_overlay(img, combined, vis_dir, cam, frame)
+            print(f'    vis: {vis_path}')
 
 
 def main():
@@ -157,27 +182,33 @@ def main():
     sam_group.add_argument('--sam_model_type', default='vit_h',
                            help='SAM model type (vit_h, vit_l, vit_b)')
 
+    parser.add_argument('--vis', action='store_true',
+                        help='Save mask overlay visualizations to mask_vis/')
+
     args = parser.parse_args()
 
     output_dir = args.output or join(args.data, 'masks')
+    vis_dir = join(args.data, 'mask_vis') if args.vis else None
     cam_names = get_cam_names(args.data)
     print(f'[generate_masks] Cameras: {cam_names}')
     print(f'[generate_masks] Mode: {args.mode}, frame: {args.frame}')
     print(f'[generate_masks] Output: {output_dir}')
+    if vis_dir:
+        print(f'[generate_masks] Vis overlays: {vis_dir}')
 
     if args.mode == 'bg_sub':
         if args.bg_frame is None:
             parser.error('--bg_frame is required for background subtraction mode')
         background_subtraction(
             args.data, cam_names, args.frame, args.bg_frame, args.ext,
-            args.threshold, args.morph_kernel, output_dir,
+            args.threshold, args.morph_kernel, output_dir, vis_dir,
         )
     elif args.mode == 'sam':
         if args.sam_checkpoint is None:
             parser.error('--sam_checkpoint is required for SAM mode')
         sam_segmentation(
             args.data, cam_names, args.frame, args.ext, output_dir,
-            args.sam_checkpoint, args.sam_model_type,
+            args.sam_checkpoint, args.sam_model_type, vis_dir,
         )
 
     print('[generate_masks] Done.')

@@ -8,36 +8,19 @@ from tqdm import tqdm
 ALLOWED_EXTENSIONS = (".png", ".jpg", ".jpeg")
 
 CONFIG = {
-    "base_root": "/mnt/yubo/lab/raw",
+    "base_root": "/mnt/yubo/obj/raw",
     "tasks": [
         {
-            "name": "ground",
-            "dst": "/mnt/yubo/lab/ground",
-            "mode": "first",
-        },
-        {
-            "name": "board",
-            "dst": "/mnt/yubo/lab/board",
-            "start": "/mnt/yubo/lab/raw/01/images/1770250495383885349.jpg",
-            "end": "/mnt/yubo/lab/raw/01/images/1770250521086395757.jpg",
-        },
-        {
-            "name": "box",
-            "dst": "/mnt/yubo/lab/box",
-            "start": "/mnt/yubo/lab/raw/01/images/1770250528687138135.jpg",
-            "end": "/mnt/yubo/lab/raw/01/images/1770250539521529682.jpg",
+            "name": "background",
+            "dst": "/mnt/yubo/obj/background",
+            "start": "/mnt/yubo/obj/raw/01/images/1774222609113774772.jpg",
+            "end": "/mnt/yubo/obj/raw/01/images/1774222609113774772.jpg",
         },
         {
             "name": "cube",
-            "dst": "/mnt/yubo/lab/cube",
-            "start": "/mnt/yubo/lab/raw/01/images/1770250546488828235.jpg",
-            "end": "/mnt/yubo/lab/raw/01/images/1770250570124518728.jpg",
-        },
-        {
-            "name": "chair",
-            "dst": "/mnt/yubo/lab/chair",
-            "start": "/mnt/yubo/lab/raw/01/images/1770250580758890739.jpg",
-            "end": "/mnt/yubo/lab/raw/01/images/1770250584792618053.jpg",
+            "dst": "/mnt/yubo/obj/cube",
+            "start": "/mnt/yubo/obj/raw/01/images/1774222616981209864.jpg",
+            "end": "/mnt/yubo/obj/raw/01/images/1774222616981209864.jpg",
         },
     ],
 }
