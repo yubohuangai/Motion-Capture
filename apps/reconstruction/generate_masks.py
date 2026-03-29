@@ -141,8 +141,8 @@ def background_subtraction(data_root, cam_names, frame, bg_frame, ext,
             if bbox is not None:
                 bx, by, bw, bh = bbox
                 h, w = diff.shape[:2]
-                # expand bbox by 20% for safety margin
-                pad_x, pad_y = int(bw * 0.2), int(bh * 0.2)
+                # tight bbox: 10% padding (dilate adds margin later)
+                pad_x, pad_y = int(bw * 0.1), int(bh * 0.1)
                 x1 = max(0, bx - pad_x)
                 y1 = max(0, by - pad_y)
                 x2 = min(w, bx + bw + pad_x)
@@ -159,13 +159,14 @@ def background_subtraction(data_root, cam_names, frame, bg_frame, ext,
                 mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, small_k,
                                         iterations=1)
 
-                # keep only the largest contour (= the box, not table noise)
+                # keep only the largest contour, use convex hull for clean shape
                 cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL,
                                            cv2.CHAIN_APPROX_SIMPLE)
                 if cnts:
                     biggest = max(cnts, key=cv2.contourArea)
+                    hull = cv2.convexHull(biggest)
                     mask = np.zeros_like(mask)
-                    cv2.drawContours(mask, [biggest], -1, 255, cv2.FILLED)
+                    cv2.drawContours(mask, [hull], -1, 255, cv2.FILLED)
             else:
                 mask = np.zeros(diff.shape[:2], dtype=np.uint8)
                 print(f'  {cam}: WARNING - no object blob found')
