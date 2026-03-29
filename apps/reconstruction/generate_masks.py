@@ -72,37 +72,52 @@ def save_mask_overlay(img_bgr, mask, vis_dir, cam, frame):
     return out_path
 
 
-def filter_center_blob(mask, center_ratio=0.5, min_area_ratio=0.001):
+def filter_center_blob(mask, center_ratio=0.5, min_area_ratio=0.001,
+                       max_area_ratio=0.15):
     """
-    Keep only contours whose bounding box overlaps the center region of the
-    image, and discard small noise blobs.  This removes people/clutter at the
-    image edges while preserving the object sitting in the middle of the rig.
+    Among all contours that overlap the image center, pick the single best
+    "object" blob: must be above min_area, below max_area, and of all
+    qualifying blobs choose the one closest to the image center.
+
+    This rejects both small noise AND large regions (people, lighting shifts
+    covering half the image) while keeping the target object on the table.
     """
     h, w = mask.shape[:2]
-    min_area = h * w * min_area_ratio
+    img_area = h * w
+    min_area = img_area * min_area_ratio
+    max_area = img_area * max_area_ratio
 
-    # define center region
-    cx, cy = w // 2, h // 2
-    rw, rh = int(w * center_ratio / 2), int(h * center_ratio / 2)
+    cx, cy = w / 2.0, h / 2.0
+    rw, rh = w * center_ratio / 2, h * center_ratio / 2
     center_rect = (cx - rw, cy - rh, cx + rw, cy + rh)
 
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    filtered = np.zeros_like(mask)
+
+    candidates = []
     for cnt in contours:
         area = cv2.contourArea(cnt)
-        if area < min_area:
+        if area < min_area or area > max_area:
             continue
         x, y, bw, bh = cv2.boundingRect(cnt)
-        # check overlap with center region
-        if (x + bw > center_rect[0] and x < center_rect[2] and
+        if not (x + bw > center_rect[0] and x < center_rect[2] and
                 y + bh > center_rect[1] and y < center_rect[3]):
-            cv2.drawContours(filtered, [cnt], -1, 255, cv2.FILLED)
+            continue
+        blob_cx = x + bw / 2.0
+        blob_cy = y + bh / 2.0
+        dist = ((blob_cx - cx) ** 2 + (blob_cy - cy) ** 2) ** 0.5
+        candidates.append((dist, cnt))
+
+    filtered = np.zeros_like(mask)
+    if candidates:
+        candidates.sort(key=lambda t: t[0])
+        cv2.drawContours(filtered, [candidates[0][1]], -1, 255, cv2.FILLED)
     return filtered
 
 
 def background_subtraction(data_root, cam_names, frame, bg_frame, ext,
                            threshold, morph_kernel, output_dir, vis_dir=None,
-                           bg_data=None, center_only=False, dilate=0):
+                           bg_data=None, center_only=False, dilate=0,
+                           max_area_ratio=0.15):
     """Simple frame-difference masking."""
     bg_root = bg_data or data_root
     for cam in cam_names:
@@ -122,7 +137,7 @@ def background_subtraction(data_root, cam_names, frame, bg_frame, ext,
         mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
 
         if center_only:
-            mask = filter_center_blob(mask)
+            mask = filter_center_blob(mask, max_area_ratio=max_area_ratio)
         else:
             contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             if contours:
@@ -216,8 +231,11 @@ def main():
     bg_group.add_argument('--morph_kernel', type=int, default=7,
                           help='Morphology kernel size')
     bg_group.add_argument('--center_only', action='store_true',
-                          help='Keep only foreground blobs that overlap the '
-                               'center of the image (removes people/clutter at edges)')
+                          help='Keep only the single best foreground blob near '
+                               'the image center (removes people/clutter)')
+    bg_group.add_argument('--max_area_ratio', type=float, default=0.15,
+                          help='Max blob area as fraction of image (blobs '
+                               'larger than this are discarded, default 0.15)')
     bg_group.add_argument('--dilate', type=int, default=0,
                           help='Dilate final mask by N pixels (adds margin around object)')
 
@@ -248,7 +266,7 @@ def main():
             args.data, cam_names, args.frame, args.bg_frame, args.ext,
             args.threshold, args.morph_kernel, output_dir, vis_dir,
             bg_data=args.bg_data, center_only=args.center_only,
-            dilate=args.dilate,
+            dilate=args.dilate, max_area_ratio=args.max_area_ratio,
         )
     elif args.mode == 'sam':
         if args.sam_checkpoint is None:
