@@ -10,16 +10,17 @@ multi-view reconstruction frameworks can ingest directly:
     └── sparse/0/
         ├── cameras.bin  (+ cameras.txt)
         ├── images.bin   (+ images.txt)
-        └── points3D.bin (+ points3D.txt)   [empty]
+        └── points3D.bin (+ points3D.txt)
 
 Usage:
     python apps/reconstruction/export_colmap.py /path/to/data \\
-        --frame 0 --output /path/to/colmap_ws --undistort
+        --frame 0 --output /path/to/colmap_ws --undistort --triangulate
 """
 
 import argparse
 import os
 import shutil
+import subprocess
 import sys
 from glob import glob
 from os.path import join
@@ -34,13 +35,20 @@ from easymocap.mytools.colmap_structure import (
     Camera,
     Image,
     Point3D,
+    CAMERA_MODEL_NAMES,
     rotmat2qvec,
+    read_points3d_binary,
     write_cameras_binary,
     write_cameras_text,
     write_images_binary,
     write_images_text,
     write_points3d_binary,
     write_points3D_text,
+)
+from easymocap.mytools.colmap_wrapper import (
+    COLMAPDatabase,
+    create_empty_db,
+    array_to_blob,
 )
 
 
@@ -198,6 +206,82 @@ def write_colmap_model(output_dir, colmap_cameras, colmap_images):
     write_points3D_text(empty_points, join(sparse_dir, 'points3D.txt'))
 
 
+def triangulate_points(output_dir, colmap_cameras, colmap_images, colmap_bin, gpu):
+    """
+    Run COLMAP feature extraction, matching, and triangulation to populate
+    points3D using the known camera poses.
+
+    Steps:
+      1. Create database.db with our cameras and images (with known poses)
+      2. Run feature_extractor (detects SIFT features in images)
+      3. Run exhaustive_matcher (matches features across views)
+      4. Run point_triangulator (triangulates 3D points from known poses)
+    """
+    db_path = join(output_dir, 'database.db')
+    sparse_dir = join(output_dir, 'sparse', '0')
+
+    # 1. Create database with our camera info
+    create_empty_db(db_path)
+    db = COLMAPDatabase.connect(db_path)
+
+    for cam_id, cam in colmap_cameras.items():
+        model_id = CAMERA_MODEL_NAMES[cam.model].model_id
+        params = np.asarray(cam.params, np.float64)
+        db.execute(
+            "INSERT INTO cameras VALUES (?, ?, ?, ?, ?, ?)",
+            (cam_id, model_id, cam.width, cam.height,
+             array_to_blob(params), False),
+        )
+
+    for img_id, img in colmap_images.items():
+        db.execute(
+            "INSERT INTO images VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (img_id, img.name, img.camera_id,
+             img.qvec[0], img.qvec[1], img.qvec[2], img.qvec[3],
+             img.tvec[0], img.tvec[1], img.tvec[2]),
+        )
+
+    db.commit()
+    db.close()
+
+    # 2. Feature extraction
+    gpu_flag = '1' if gpu else '0'
+    cmd = (
+        f'{colmap_bin} feature_extractor'
+        f' --database_path {db_path}'
+        f' --image_path {join(output_dir, "images")}'
+        f' --SiftExtraction.use_gpu {gpu_flag}'
+    )
+    print(f'[triangulate] Running: {cmd}')
+    subprocess.check_call(cmd, shell=True)
+
+    # 3. Feature matching
+    cmd = (
+        f'{colmap_bin} exhaustive_matcher'
+        f' --database_path {db_path}'
+        f' --SiftMatching.use_gpu {gpu_flag}'
+    )
+    print(f'[triangulate] Running: {cmd}')
+    subprocess.check_call(cmd, shell=True)
+
+    # 4. Point triangulation using known camera poses
+    cmd = (
+        f'{colmap_bin} point_triangulator'
+        f' --database_path {db_path}'
+        f' --image_path {join(output_dir, "images")}'
+        f' --input_path {sparse_dir}'
+        f' --output_path {sparse_dir}'
+        f' --Mapper.tri_merge_max_reproj_error 3'
+        f' --Mapper.filter_max_reproj_error 2'
+    )
+    print(f'[triangulate] Running: {cmd}')
+    subprocess.check_call(cmd, shell=True)
+
+    # Report results
+    pts = read_points3d_binary(join(sparse_dir, 'points3D.bin'))
+    print(f'[triangulate] Triangulated {len(pts)} 3D points')
+
+
 def main():
     parser = argparse.ArgumentParser(
         description='Export EasyMocap calibration to COLMAP workspace',
@@ -218,6 +302,14 @@ def main():
     parser.add_argument('--mask', default=None,
                         help='Mask sub-directory name (e.g. "mask" or "masks"). '
                              'If set, copies masks alongside images.')
+    parser.add_argument('--triangulate', action='store_true',
+                        help='Run COLMAP feature extraction + matching + '
+                             'triangulation to populate initial 3D points '
+                             '(required for 3DGS)')
+    parser.add_argument('--colmap', default='colmap',
+                        help='Path to COLMAP binary (default: colmap)')
+    parser.add_argument('--gpu', action='store_true',
+                        help='Use GPU for COLMAP feature extraction/matching')
     args = parser.parse_args()
 
     intri_path = join(args.data, args.intri)
@@ -251,7 +343,14 @@ def main():
     print('[export_colmap] Writing COLMAP sparse model ...')
     write_colmap_model(args.output, colmap_cameras, colmap_images)
 
-    print(f'[export_colmap] Done. Output at: {args.output}')
+    if args.triangulate:
+        print('[export_colmap] Triangulating 3D points via COLMAP ...')
+        triangulate_points(
+            args.output, colmap_cameras, colmap_images,
+            args.colmap, args.gpu,
+        )
+
+    print(f'\n[export_colmap] Done. Output at: {args.output}')
     print(f'  images/        — {len(cam_names)} images')
     print(f'  sparse/0/      — cameras.{{bin,txt}}, images.{{bin,txt}}, points3D.{{bin,txt}}')
     print()
