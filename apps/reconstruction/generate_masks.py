@@ -72,25 +72,52 @@ def save_mask_overlay(img_bgr, mask, vis_dir, cam, frame):
     return out_path
 
 
+def _com_ref_masked(mask, roi_top_frac):
+    """Center of mass using only foreground below roi_top_frac * height (table region)."""
+    h, w = mask.shape[:2]
+    roi = mask.copy()
+    cut = int(h * roi_top_frac)
+    if cut > 0:
+        roi[:cut, :] = 0
+    m = cv2.moments(roi, binaryImage=True)
+    if m['m00'] > 1e-3:
+        return m['m10'] / m['m00'], m['m01'] / m['m00']
+    m2 = cv2.moments(mask, binaryImage=True)
+    if m2['m00'] > 1e-3:
+        return m2['m10'] / m2['m00'], m2['m01'] / m2['m00']
+    return w / 2.0, h * 0.65
+
+
+def _nearest_mask_point(mask, x, y):
+    """Integer (x,y) on mask closest to (x,y); fallback to image center."""
+    h, w = mask.shape[:2]
+    xi, yi = int(np.clip(x, 0, w - 1)), int(np.clip(y, 0, h - 1))
+    if mask[yi, xi] > 0:
+        return xi, yi
+    ys, xs = np.where(mask > 0)
+    if len(xs) == 0:
+        return w // 2, h // 2
+    d = (xs.astype(np.float64) - x) ** 2 + (ys.astype(np.float64) - y) ** 2
+    j = int(np.argmin(d))
+    return int(xs[j]), int(ys[j])
+
+
 def select_object_blob(mask, erode_size=41, max_area_ratio=0.05,
-                       max_aspect=3.0):
+                       max_aspect=3.0, roi_top_frac=0.38,
+                       min_centroid_y_frac=0.36):
     """
     Isolate the object (compact blob on the table) from people/clutter.
 
-    Strategy:
-      1. Erode the mask heavily to break connections (arms, shadows)
-         between the object and any person standing nearby.
-      2. Label connected components in the eroded mask.
-      3. Reject blobs that are too large (person), too small (noise),
-         or too elongated (person silhouette has aspect ratio > max_aspect).
-      4. Among remaining blobs, pick the one closest to bottom-center
-         (where the table/object sits).
-      5. Grow selected blob back with bounded dilation + AND with original
-         mask so we recover the object boundary without re-including the
-         person.
+    Uses center-of-mass of the difference mask in the *lower* image (table
+    ROI) as the reference -- not fixed bottom-center -- so side cameras
+    (e.g. box on the right) are not biased toward wrong blobs.  Rejects
+    components whose centroid lies above min_centroid_y_frac * H to drop
+    upper-field false positives (chairs, frame glare).
     """
     h, w = mask.shape[:2]
     img_area = h * w
+    ref_x, ref_y = _com_ref_masked(mask, roi_top_frac)
+    min_cy = h * min_centroid_y_frac
 
     ek = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (erode_size, erode_size))
     eroded = cv2.erode(mask, ek, iterations=3)
@@ -101,45 +128,69 @@ def select_object_blob(mask, erode_size=41, max_area_ratio=0.05,
     if num_labels <= 1:
         return mask
 
-    ref_x, ref_y = w / 2, h * 0.65
+    def pick_label(require_lower_centroid):
+        best_lbl = -1
+        best_d = float('inf')
+        for lbl in range(1, num_labels):
+            area = stats[lbl, cv2.CC_STAT_AREA]
+            if area < 300:
+                continue
+            if area > img_area * max_area_ratio:
+                continue
+            bw = stats[lbl, cv2.CC_STAT_WIDTH]
+            bh = stats[lbl, cv2.CC_STAT_HEIGHT]
+            aspect = max(bw, bh) / (min(bw, bh) + 1e-6)
+            if aspect > max_aspect:
+                continue
+            cx, cy = centroids[lbl]
+            if require_lower_centroid and cy < min_cy:
+                continue
+            d = ((cx - ref_x) ** 2 + (cy - ref_y) ** 2) ** 0.5
+            if d < best_d:
+                best_d = d
+                best_lbl = lbl
+        return best_lbl
 
-    best_label = -1
-    best_score = float('inf')
-    for lbl in range(1, num_labels):
-        area = stats[lbl, cv2.CC_STAT_AREA]
-        if area < 300:
-            continue
-        if area > img_area * max_area_ratio:
-            continue
-        bw = stats[lbl, cv2.CC_STAT_WIDTH]
-        bh = stats[lbl, cv2.CC_STAT_HEIGHT]
-        aspect = max(bw, bh) / (min(bw, bh) + 1e-6)
-        if aspect > max_aspect:
-            continue
-        cx, cy = centroids[lbl]
-        dist = ((cx - ref_x) ** 2 + (cy - ref_y) ** 2) ** 0.5
-        if dist < best_score:
-            best_score = dist
-            best_label = lbl
+    best_label = pick_label(require_lower_centroid=True)
+    if best_label < 0:
+        best_label = pick_label(require_lower_centroid=False)
 
     if best_label < 0:
-        return mask
+        # Erosion removed all candidates: keep component of original mask that
+        # contains the COM anchor (handles thin objects).
+        sx, sy = _nearest_mask_point(mask, ref_x, ref_y)
+        lbl_mask, _, stats2, _ = cv2.connectedComponentsWithStats(
+            mask, connectivity=8,
+        )
+        seed_l = int(lbl_mask[sy, sx])
+        if seed_l <= 0:
+            return mask
+        selected = (lbl_mask == seed_l).astype(np.uint8) * 255
+        return cv2.bitwise_and(mask, selected)
 
     selected_eroded = ((labels == best_label) * 255).astype(np.uint8)
-    # grow back by a bounded amount -- enough to recover the object outline
-    # but not so much that it re-captures nearby clutter
     grow_size = erode_size * 4
     grow_k = cv2.getStructuringElement(
         cv2.MORPH_ELLIPSE, (grow_size, grow_size),
     )
     region = cv2.dilate(selected_eroded, grow_k, iterations=1)
     result = cv2.bitwise_and(mask, region)
+
+    # If we killed almost everything, the wrong blob was chosen; anchor to COM.
+    if mask.sum() > 0 and result.sum() < 0.12 * mask.sum():
+        sx, sy = _nearest_mask_point(mask, ref_x, ref_y)
+        lbl_mask, _, _, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+        seed_l = int(lbl_mask[sy, sx])
+        if seed_l > 0:
+            result = ((lbl_mask == seed_l).astype(np.uint8) * 255)
+            result = cv2.bitwise_and(mask, result)
     return result
 
 
 def background_subtraction(data_root, cam_names, frame, bg_frame, ext,
                            threshold, morph_kernel, output_dir, vis_dir=None,
-                           bg_data=None, center_only=False, dilate=0):
+                           bg_data=None, center_only=False, dilate=0,
+                           roi_top_frac=0.38, min_centroid_y_frac=0.36):
     """Simple frame-difference masking."""
     bg_root = bg_data or data_root
     for cam in cam_names:
@@ -165,7 +216,10 @@ def background_subtraction(data_root, cam_names, frame, bg_frame, ext,
             mask = filled
 
         if center_only:
-            mask = select_object_blob(mask)
+            mask = select_object_blob(
+                mask, roi_top_frac=roi_top_frac,
+                min_centroid_y_frac=min_centroid_y_frac,
+            )
 
         if dilate > 0:
             dk = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (dilate, dilate))
@@ -253,8 +307,14 @@ def main():
     bg_group.add_argument('--morph_kernel', type=int, default=7,
                           help='Morphology kernel size')
     bg_group.add_argument('--center_only', action='store_true',
-                          help='Keep only foreground blobs that overlap the '
-                               'center of the image (removes people/clutter at edges)')
+                          help='Isolate object on table: COM in lower image, reject '
+                               'upper-field blobs, erosion + grow-back (see --roi_top)')
+    bg_group.add_argument('--roi_top', type=float, default=0.38,
+                          help='With --center_only: ignore top fraction of image when '
+                               'computing center-of-mass anchor (0-1)')
+    bg_group.add_argument('--min_blob_y', type=float, default=0.36,
+                          help='With --center_only: min normalized centroid y for '
+                               'eroded blobs (0-1); rejects upper false positives')
     bg_group.add_argument('--dilate', type=int, default=0,
                           help='Dilate final mask by N pixels (adds margin around object)')
 
@@ -285,7 +345,8 @@ def main():
             args.data, cam_names, args.frame, args.bg_frame, args.ext,
             args.threshold, args.morph_kernel, output_dir, vis_dir,
             bg_data=args.bg_data, center_only=args.center_only,
-            dilate=args.dilate,
+            dilate=args.dilate, roi_top_frac=args.roi_top,
+            min_centroid_y_frac=args.min_blob_y,
         )
     elif args.mode == 'sam':
         if args.sam_checkpoint is None:
