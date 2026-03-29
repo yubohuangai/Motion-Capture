@@ -159,7 +159,7 @@ def select_object_blob(mask, erode_size=41, max_area_ratio=0.05,
         # Erosion removed all candidates: keep component of original mask that
         # contains the COM anchor (handles thin objects).
         sx, sy = _nearest_mask_point(mask, ref_x, ref_y)
-        lbl_mask, _, stats2, _ = cv2.connectedComponentsWithStats(
+        _, lbl_mask, _, _ = cv2.connectedComponentsWithStats(
             mask, connectivity=8,
         )
         seed_l = int(lbl_mask[sy, sx])
@@ -179,7 +179,7 @@ def select_object_blob(mask, erode_size=41, max_area_ratio=0.05,
     # If we killed almost everything, the wrong blob was chosen; anchor to COM.
     if mask.sum() > 0 and result.sum() < 0.12 * mask.sum():
         sx, sy = _nearest_mask_point(mask, ref_x, ref_y)
-        lbl_mask, _, _, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+        _, lbl_mask, _, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
         seed_l = int(lbl_mask[sy, sx])
         if seed_l > 0:
             result = ((lbl_mask == seed_l).astype(np.uint8) * 255)
