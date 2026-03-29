@@ -72,8 +72,8 @@ def save_mask_overlay(img_bgr, mask, vis_dir, cam, frame):
     return out_path
 
 
-def select_object_blob(mask, erode_sizes=(41, 31, 21), max_area_ratio=0.05,
-                       max_aspect=3.0):
+def select_object_blob(mask, diff, erode_sizes=(41, 31, 21), max_area_ratio=0.05,
+                       max_aspect=2.2):
     """
     Isolate the object (compact blob on the table) from people/clutter.
 
@@ -83,14 +83,15 @@ def select_object_blob(mask, erode_sizes=(41, 31, 21), max_area_ratio=0.05,
       2. Reject components that are too large, too elongated, too close to
          the border, or too high in the image.
       3. Pick the remaining component whose centroid is closest to the
-         expected object region near the image center / lower half.
+         expected object region near the image center / lower half, while also
+         preferring components with strong foreground difference.
       4. Recover the object from a tight local window around that eroded
          component instead of globally growing the mask back.
     """
     h, w = mask.shape[:2]
     img_area = h * w
 
-    ref_x, ref_y = w / 2, h * 0.65
+    ref_x, ref_y = w / 2, h * 0.70
     border_margin = int(min(h, w) * 0.03)
 
     for erode_size in erode_sizes:
@@ -134,12 +135,15 @@ def select_object_blob(mask, erode_sizes=(41, 31, 21), max_area_ratio=0.05,
             if aspect > max_aspect:
                 continue
 
-            # Favor candidates near image center, with extra penalty for being
-            # too high in the frame. This prevents cases like camera 09 where
-            # a stray upper-right blob was selected instead of the box.
+            comp_mask = (labels == lbl)
+            mean_diff = float(diff[comp_mask].mean()) if np.any(comp_mask) else 0.0
+
+            # Favor candidates near image center/lower half, and also prefer
+            # regions with stronger real appearance change over mild lighting
+            # shifts on the table.
             dx = (cx - ref_x) / w
             dy = (cy - ref_y) / h
-            score = dx * dx + 1.8 * dy * dy
+            score = dx * dx + 2.2 * dy * dy - 0.18 * (mean_diff / 255.0)
             if score < best_score:
                 best_score = score
                 best_label = lbl
@@ -148,6 +152,7 @@ def select_object_blob(mask, erode_sizes=(41, 31, 21), max_area_ratio=0.05,
             continue
 
         selected_eroded = ((labels == best_label) * 255).astype(np.uint8)
+        seed_mean_diff = float(diff[selected_eroded > 0].mean())
         ys, xs = np.where(selected_eroded > 0)
         if len(xs) == 0:
             continue
@@ -162,14 +167,9 @@ def select_object_blob(mask, erode_sizes=(41, 31, 21), max_area_ratio=0.05,
         y0 = max(ys.min() - pad_y, 0)
         y1 = min(ys.max() + pad_y + 1, h)
 
-        local = np.zeros_like(mask)
-        local[y0:y1, x0:x1] = mask[y0:y1, x0:x1]
-
-        num_local, local_labels, local_stats, _ = cv2.connectedComponentsWithStats(
-            local, connectivity=8,
-        )
-        if num_local <= 1:
-            return local
+        region = np.zeros_like(mask)
+        region[y0:y1, x0:x1] = 255
+        local = cv2.bitwise_and(mask, region)
 
         overlap = cv2.dilate(
             selected_eroded,
@@ -178,17 +178,51 @@ def select_object_blob(mask, erode_sizes=(41, 31, 21), max_area_ratio=0.05,
             ),
             iterations=1,
         )
-        best_local = -1
-        best_overlap = -1
-        for lbl in range(1, num_local):
-            comp = (local_labels == lbl).astype(np.uint8) * 255
-            ov = cv2.countNonZero(cv2.bitwise_and(comp, overlap))
-            if ov > best_overlap:
-                best_overlap = ov
-                best_local = lbl
+        num_local, local_labels, local_stats, local_centroids = cv2.connectedComponentsWithStats(
+            local, connectivity=8,
+        )
+        if num_local <= 1:
+            return local
 
-        if best_local > 0 and best_overlap > 0:
-            return ((local_labels == best_local) * 255).astype(np.uint8)
+        recovered = np.zeros_like(mask)
+        seed_cx = xs.mean()
+        seed_cy = ys.mean()
+        for lbl in range(1, num_local):
+            area = local_stats[lbl, cv2.CC_STAT_AREA]
+            if area < 80 or area > img_area * 0.08:
+                continue
+
+            comp = ((local_labels == lbl) * 255).astype(np.uint8)
+            ov = cv2.countNonZero(cv2.bitwise_and(comp, overlap))
+            if ov <= 0:
+                continue
+
+            bw = local_stats[lbl, cv2.CC_STAT_WIDTH]
+            bh = local_stats[lbl, cv2.CC_STAT_HEIGHT]
+            aspect = max(bw, bh) / (min(bw, bh) + 1e-6)
+            if aspect > max_aspect + 0.6:
+                continue
+
+            mean_diff = float(diff[local_labels == lbl].mean())
+            cx, cy = local_centroids[lbl]
+            dx = abs(cx - seed_cx) / w
+            dy = abs(cy - seed_cy) / h
+            if dx > 0.18 or dy > 0.20:
+                continue
+            if mean_diff < max(18.0, seed_mean_diff * 0.45):
+                continue
+
+            recovered[local_labels == lbl] = 255
+
+        if cv2.countNonZero(recovered) > 0:
+            close_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
+            recovered = cv2.morphologyEx(recovered, cv2.MORPH_CLOSE, close_k, iterations=1)
+            contours, _ = cv2.findContours(
+                recovered, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE,
+            )
+            filled = np.zeros_like(recovered)
+            cv2.drawContours(filled, contours, -1, 255, cv2.FILLED)
+            return filled
 
     return mask
 
@@ -221,7 +255,7 @@ def background_subtraction(data_root, cam_names, frame, bg_frame, ext,
             mask = filled
 
         if center_only:
-            mask = select_object_blob(mask)
+            mask = select_object_blob(mask, diff)
 
         if dilate > 0:
             dk = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (dilate, dilate))
