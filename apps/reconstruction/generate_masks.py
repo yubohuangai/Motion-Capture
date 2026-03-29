@@ -73,11 +73,13 @@ def save_mask_overlay(img_bgr, mask, vis_dir, cam, frame):
 
 
 def background_subtraction(data_root, cam_names, frame, bg_frame, ext,
-                           threshold, morph_kernel, output_dir, vis_dir=None):
+                           threshold, morph_kernel, output_dir, vis_dir=None,
+                           bg_data=None):
     """Simple frame-difference masking."""
+    bg_root = bg_data or data_root
     for cam in cam_names:
         fg_path = find_image(data_root, cam, frame, ext)
-        bg_path = find_image(data_root, cam, bg_frame, ext)
+        bg_path = find_image(bg_root, cam, bg_frame, ext)
 
         fg = cv2.imread(fg_path).astype(np.float32)
         bg = cv2.imread(bg_path).astype(np.float32)
@@ -171,6 +173,9 @@ def main():
     bg_group = parser.add_argument_group('background subtraction')
     bg_group.add_argument('--bg_frame', type=int, default=None,
                           help='Background-only frame index (required for bg_sub)')
+    bg_group.add_argument('--bg_data', default=None,
+                          help='Separate data root for background frames '
+                               '(if background is in a different directory)')
     bg_group.add_argument('--threshold', type=float, default=30.0,
                           help='Pixel difference threshold (0-255)')
     bg_group.add_argument('--morph_kernel', type=int, default=7,
@@ -202,6 +207,7 @@ def main():
         background_subtraction(
             args.data, cam_names, args.frame, args.bg_frame, args.ext,
             args.threshold, args.morph_kernel, output_dir, vis_dir,
+            bg_data=args.bg_data,
         )
     elif args.mode == 'sam':
         if args.sam_checkpoint is None:
