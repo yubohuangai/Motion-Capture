@@ -1,15 +1,14 @@
 """
-COLMAP dense reconstruction with circular camera layout support.
+COLMAP dense reconstruction with spatial-aware camera pairing.
 
-For camera rigs where cameras are arranged in a circle (01, 02, ..., N),
-this script generates a custom patch-match config that only pairs each
-camera with its circular neighbors, preventing false matches from
-repeated textures on opposite sides of the object.
+Reads camera positions from the COLMAP sparse model and pairs each camera
+with its K nearest spatial neighbors for stereo matching.  This prevents
+false matches from repeated textures seen by distant/opposite cameras.
 
 Pipeline:
     1. image_undistorter  (prepare dense workspace)
     2. Apply masks        (optional, blacks out background)
-    3. Generate circular patch-match.cfg
+    3. Generate neighbor-based patch-match.cfg from camera positions
     4. patch_match_stereo (estimate depth maps)
     5. stereo_fusion      (fuse into dense point cloud)
 
@@ -17,39 +16,70 @@ Usage:
     python apps/reconstruction/dense_reconstruct.py \\
         /mnt/yubo/obj/cube/output/colmap \\
         --neighbor 3 --mask --min_num_pixels 2
-
-    The input is the COLMAP workspace produced by export_colmap.py,
-    which must contain images/ and sparse/0/.
 """
 
 import argparse
 import os
 import subprocess
 import shutil
+import sys
 from glob import glob
 from os.path import join
 
+import numpy as np
 
-def generate_circular_cfg(image_names, neighbor_k, output_path):
-    """Generate patch-match.cfg for a circular camera arrangement.
+sys.path.insert(0, join(os.path.dirname(__file__), '..', '..'))
 
-    Each camera uses its ±neighbor_k nearest neighbors as source images,
-    wrapping around the circle. Sources are ordered by proximity.
+from easymocap.mytools.colmap_structure import (
+    read_images_binary,
+    qvec2rotmat,
+)
+
+
+def get_camera_positions(sparse_dir):
+    """Extract camera world positions from COLMAP sparse model.
+
+    Returns dict[image_name] -> np.array([x, y, z])
+    """
+    images = read_images_binary(join(sparse_dir, 'images.bin'))
+    positions = {}
+    for img in images.values():
+        R = qvec2rotmat(img.qvec)
+        t = img.tvec
+        center = -R.T @ t
+        positions[img.name] = center
+    return positions
+
+
+def generate_neighbor_cfg(image_names, positions, neighbor_k, output_path):
+    """Generate patch-match.cfg pairing each camera with its K nearest neighbors.
+
+    Neighbors are determined by Euclidean distance between camera world positions,
+    so this works for any camera layout (circular, linear, dome, etc.).
     """
     n = len(image_names)
+    centers = np.array([positions[name] for name in image_names])
+
+    dists = np.linalg.norm(centers[:, None] - centers[None, :], axis=2)
+
     lines = []
+    print(f'  Camera neighbor graph (K={neighbor_k}):')
     for i in range(n):
-        ref = image_names[i]
-        sources = []
-        for delta in range(1, neighbor_k + 1):
-            sources.append(image_names[(i + delta) % n])
-            sources.append(image_names[(i - delta) % n])
-        lines.append(ref)
+        sorted_idx = np.argsort(dists[i])
+        # skip self (index 0), take K nearest
+        nearest_idx = sorted_idx[1:neighbor_k + 1]
+        sources = [image_names[j] for j in nearest_idx]
+        source_dists = [dists[i, j] for j in nearest_idx]
+
+        lines.append(image_names[i])
         lines.append(', '.join(sources))
+
+        dist_str = ', '.join(f'{d:.3f}' for d in source_dists)
+        print(f'    {image_names[i]} -> [{", ".join(sources)}]  (d={dist_str})')
 
     with open(output_path, 'w') as f:
         f.write('\n'.join(lines) + '\n')
-    print(f'[dense] Wrote {output_path}  ({n} cameras, ±{neighbor_k} neighbors)')
+    print(f'  Wrote {output_path}  ({n} cameras, K={neighbor_k} neighbors)')
 
 
 def apply_masks(dense_img_dir, mask_dir, ext='.jpg'):
@@ -88,13 +118,13 @@ def apply_masks(dense_img_dir, mask_dir, ext='.jpg'):
 
 def main():
     parser = argparse.ArgumentParser(
-        description='COLMAP dense reconstruction with circular camera support',
+        description='COLMAP dense reconstruction with spatial camera pairing',
     )
     parser.add_argument('workspace',
                         help='COLMAP workspace (containing images/ and sparse/0/)')
-    parser.add_argument('--neighbor', '-k', type=int, default=3,
-                        help='Number of circular neighbors per side (default: 3, '
-                             'so each camera uses 2*k=6 source images)')
+    parser.add_argument('--neighbor', '-k', type=int, default=6,
+                        help='Number of nearest camera neighbors for stereo matching '
+                             '(default: 6)')
     parser.add_argument('--mask', action='store_true',
                         help='Apply masks from workspace/masks/ to dense images')
     parser.add_argument('--ext', default='.jpg',
@@ -119,6 +149,14 @@ def main():
     sparse_dir = join(ws, 'sparse', '0')
     mask_dir = join(ws, 'masks')
     colmap = args.colmap
+
+    # --- Step 0: Read camera positions from sparse model ---
+    print(f'\n{"="*60}')
+    print('[dense] Reading camera positions from sparse model')
+    print(f'{"="*60}')
+    positions = get_camera_positions(sparse_dir)
+    for name, pos in sorted(positions.items()):
+        print(f'  {name}: [{pos[0]:.3f}, {pos[1]:.3f}, {pos[2]:.3f}]')
 
     # --- Step 1: Prepare dense workspace ---
     if not args.skip_undistort:
@@ -150,18 +188,18 @@ def main():
     elif args.mask:
         print(f'[dense] WARNING: --mask set but {mask_dir} not found, skipping')
 
-    # --- Step 3: Generate circular patch-match.cfg ---
+    # --- Step 3: Generate neighbor-based patch-match.cfg ---
     print(f'\n{"="*60}')
-    print('[dense] Step 3: Generating circular patch-match.cfg')
+    print('[dense] Step 3: Generating spatial-neighbor patch-match.cfg')
     print(f'{"="*60}')
     image_names = sorted(
         f for f in os.listdir(dense_img_dir) if f.endswith(args.ext)
     )
-    print(f'  Found {len(image_names)} images: {image_names}')
+    print(f'  Found {len(image_names)} images')
 
     cfg_path = join(dense_dir, 'stereo', 'patch-match.cfg')
     os.makedirs(os.path.dirname(cfg_path), exist_ok=True)
-    generate_circular_cfg(image_names, args.neighbor, cfg_path)
+    generate_neighbor_cfg(image_names, positions, args.neighbor, cfg_path)
 
     # --- Step 4: Patch match stereo ---
     print(f'\n{"="*60}')

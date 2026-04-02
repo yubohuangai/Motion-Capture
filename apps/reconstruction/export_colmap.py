@@ -206,23 +206,87 @@ def write_colmap_model(output_dir, colmap_cameras, colmap_images):
     write_points3D_text(empty_points, join(sparse_dir, 'points3D.txt'))
 
 
+def _camera_neighbor_pairs(cameras, cam_names, ext, k=6):
+    """Compute camera neighbor pairs from 3D positions.
+
+    Returns list of (name_i, name_j) pairs where j is among i's K nearest.
+    """
+    centers = []
+    names = []
+    for cam in cam_names:
+        R = cameras[cam]['R']
+        T = cameras[cam]['T']
+        C = -R.T @ T.flatten()
+        centers.append(C)
+        names.append(f'{cam}{ext}')
+    centers = np.array(centers)
+
+    dists = np.linalg.norm(centers[:, None] - centers[None, :], axis=2)
+    pairs = set()
+    for i in range(len(names)):
+        nearest = np.argsort(dists[i])[1:k + 1]
+        for j in nearest:
+            a, b = min(i, j), max(i, j)
+            pairs.add((names[a], names[b]))
+    return sorted(pairs)
+
+
+def _inject_neighbor_matches(db_path, pairs):
+    """Delete match entries from DB that are not in the neighbor pair set.
+
+    After exhaustive_matcher populates all pairs, this removes non-neighbor
+    matches so triangulation only uses spatially nearby cameras.
+    """
+    import sqlite3
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT image_id, name FROM images")
+    name_to_id = {name: iid for iid, name in cursor.fetchall()}
+
+    valid_id_pairs = set()
+    for n1, n2 in pairs:
+        if n1 in name_to_id and n2 in name_to_id:
+            a = min(name_to_id[n1], name_to_id[n2])
+            b = max(name_to_id[n1], name_to_id[n2])
+            valid_id_pairs.add((a, b))
+
+    cursor.execute("SELECT pair_id FROM matches")
+    all_match_ids = [row[0] for row in cursor.fetchall()]
+    removed = 0
+    for pair_id in all_match_ids:
+        # COLMAP encodes pair_id as: image_id1 * MAX_NUM_IMAGES + image_id2
+        MAX = 2147483647
+        id2 = pair_id % MAX
+        id1 = (pair_id - id2) // MAX
+        a, b = min(id1, id2), max(id1, id2)
+        if (a, b) not in valid_id_pairs:
+            cursor.execute("DELETE FROM matches WHERE pair_id=?", (pair_id,))
+            cursor.execute(
+                "DELETE FROM two_view_geometries WHERE pair_id=?", (pair_id,))
+            removed += 1
+
+    conn.commit()
+    conn.close()
+    print(f'[triangulate] Kept {len(valid_id_pairs)} neighbor pairs, '
+          f'removed {removed} distant pairs')
+
+
 def triangulate_points(output_dir, cameras, cam_names, cam_id_map,
                        colmap_cameras, colmap_images, colmap_bin, gpu):
     """
     Run COLMAP feature extraction, matching, and triangulation to populate
     points3D using the known camera poses.
 
-    The correct workflow is:
-      1. Let feature_extractor create its own database (cameras + features)
-      2. Run exhaustive_matcher
-      3. Read back the DB to map image names -> COLMAP's internal IDs
-      4. Write a sparse model that uses COLMAP's DB IDs but our known poses
-      5. Run point_triangulator
+    Uses camera 3D positions to determine neighbor pairs -- only nearby
+    cameras are matched, preventing false matches from repeated textures
+    seen by distant/opposite cameras.
     """
     db_path = join(output_dir, 'database.db')
     sparse_dir = join(output_dir, 'sparse', '0')
     img_dir = join(output_dir, 'images')
     gpu_flag = '1' if gpu else '0'
+    ext = list(colmap_images.values())[0].name.split('.')[-1]
 
     # Remove stale database and any cached .ply from prior 3DGS runs
     if os.path.exists(db_path):
@@ -230,6 +294,13 @@ def triangulate_points(output_dir, cameras, cam_names, cam_id_map,
     stale_ply = join(sparse_dir, 'points3D.ply')
     if os.path.exists(stale_ply):
         os.remove(stale_ply)
+
+    # Compute spatial neighbor pairs from camera positions
+    neighbor_pairs = _camera_neighbor_pairs(cameras, cam_names, f'.{ext}', k=6)
+    print(f'[triangulate] Computed {len(neighbor_pairs)} neighbor pairs '
+          f'from camera positions (K=6)')
+    for n1, n2 in neighbor_pairs:
+        print(f'    {n1} <-> {n2}')
 
     # 1. Feature extraction (creates database.db with cameras + images + SIFT)
     mask_dir = join(output_dir, 'masks')
@@ -246,15 +317,16 @@ def triangulate_points(output_dir, cameras, cam_names, cam_id_map,
     print(f'[triangulate] Running: {cmd}')
     subprocess.check_call(cmd, shell=True)
 
-    # 2. Feature matching
+    # 2. Feature matching (exhaustive, then prune to neighbors only)
     cmd = (
-        f'{colmap_bin} sequential_matcher'
+        f'{colmap_bin} exhaustive_matcher'
         f' --database_path {db_path}'
         f' --SiftMatching.use_gpu {gpu_flag}'
-        f' --SequentialMatching.overlap 3'
     )
     print(f'[triangulate] Running: {cmd}')
     subprocess.check_call(cmd, shell=True)
+
+    _inject_neighbor_matches(db_path, neighbor_pairs)
 
     # 3. Read DB to get COLMAP's image_name -> (image_id, camera_id) mapping
     db = COLMAPDatabase.connect(db_path)

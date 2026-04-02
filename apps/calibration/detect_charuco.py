@@ -8,18 +8,29 @@
   Requires OpenCV 4.7+ aruco API (CharucoBoard + CharucoDetector), same as
   CalibCam/detect_charuco_image.py style boards.
 
+  Presets are defined in charuco_board_presets.py (shared with generate_charuco_board.py).
+
+  Default preset is 8x5_7x4_inner (DICT_4X4_50, 7×4 inner corners, marker ratio 0.7).
+
   Example (dataset root with images under <path>/images/):
+    python3 apps/calibration/detect_charuco.py /path/to/data
     python3 apps/calibration/detect_charuco.py /path/to/data --preset 5x7_a4
 
-  Flat folder of JPGs (e.g. images in <path>/images/*.jpg only):
-    python3 apps/calibration/detect_charuco.py /path/to/data --preset 5x7_a4
+  Print a matching board PNG:
+    python3 apps/calibration/generate_charuco_board.py
 '''
 from __future__ import annotations
 
 import argparse
 import os
+import sys
 import threading
 from os.path import join
+from pathlib import Path
+
+_CALIB_DIR = Path(__file__).resolve().parent
+if str(_CALIB_DIR) not in sys.path:
+    sys.path.insert(0, str(_CALIB_DIR))
 
 import cv2
 import cv2.aruco as aruco
@@ -30,32 +41,12 @@ from easymocap.annotator import ImageFolder
 from easymocap.annotator.file_utils import getFileList, read_json, save_json
 from easymocap.mytools.debug_utils import mywarn
 
-# Align with hand/CalibCam/detect_charuco_image.py BOARD_PRESETS
-BOARD_PRESETS: dict[str, dict] = {
-    "5x7_a4": {
-        "squares": (5, 7),
-        "marker_ratio": 25.5 / 30,
-        "dictionary": "DICT_4X4_250",
-    },
-    "6x9_a4": {
-        "squares": (6, 9),
-        "marker_ratio": 560 / 800,
-        "dictionary": "DICT_6X6_250",
-    },
-    "4x6_a4": {
-        "squares": (4, 6),
-        "marker_ratio": 560 / 800,
-        "dictionary": "DICT_6X6_250",
-    },
-}
-
-
-def get_aruco_dictionary(name: str):
-    if not hasattr(aruco, name):
-        raise ValueError(
-            f"Unknown ArUco dictionary name: {name!r} (expected cv2.aruco.DICT_* name)"
-        )
-    return aruco.getPredefinedDictionary(getattr(aruco, name))
+from charuco_board_presets import (
+    BOARD_PRESETS,
+    DEFAULT_CHARUCO_DICTIONARY,
+    DEFAULT_CHARUCO_PRESET,
+    get_aruco_dictionary,
+)
 
 
 def build_board(squares_xy: tuple[int, int], marker_ratio: float, dict_name: str):
@@ -204,7 +195,12 @@ def main():
     parser.add_argument("--image", type=str, default="images", help="Subfolder of path with images")
     parser.add_argument("--out", type=str, default=None, help="Visualization output root")
     parser.add_argument("--ext", type=str, default=".jpg", choices=[".jpg", ".png"])
-    parser.add_argument("--preset", type=str, default="5x7_a4", choices=sorted(BOARD_PRESETS.keys()))
+    parser.add_argument(
+        "--preset",
+        type=str,
+        default=DEFAULT_CHARUCO_PRESET,
+        choices=sorted(BOARD_PRESETS.keys()),
+    )
     parser.add_argument(
         "--manual",
         nargs=3,
@@ -236,7 +232,7 @@ def main():
         sx_s, sy_s, r_s = args.manual
         args.squares = (int(sx_s), int(sy_s))
         marker_ratio = float(r_s)
-        dict_name = args.dictionary or BOARD_PRESETS["5x7_a4"]["dictionary"]
+        dict_name = args.dictionary or DEFAULT_CHARUCO_DICTIONARY
         preset_label = "manual"
     else:
         cfg = BOARD_PRESETS[args.preset]

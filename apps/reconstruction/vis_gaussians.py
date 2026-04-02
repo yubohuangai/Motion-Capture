@@ -51,24 +51,34 @@ def load_gaussian_ply(path):
 def main():
     parser = argparse.ArgumentParser(description='Visualize 3DGS point cloud')
     parser.add_argument('ply', help='Path to point_cloud.ply')
-    parser.add_argument('--opacity_threshold', type=float, default=0.05,
-                        help='Filter Gaussians below this opacity (default: 0.05)')
+    parser.add_argument('--opacity', type=float, default=0.5,
+                        help='Filter Gaussians below this opacity (default: 0.5)')
     parser.add_argument('--point_size', type=float, default=1.0,
                         help='Point rendering size (default: 1.0)')
+    parser.add_argument('--save', default=None,
+                        help='Save filtered cloud to this .ply path')
     args = parser.parse_args()
 
     print(f'Loading {args.ply} ...')
     xyz, rgb, opacity = load_gaussian_ply(args.ply)
     print(f'  Total Gaussians: {len(xyz):,}')
+    print(f'  Opacity: >0.5 solid={int((opacity>0.5).sum()):,}, '
+          f'0.1-0.5={int(((opacity>=0.1)&(opacity<=0.5)).sum()):,}, '
+          f'<0.1 ghost={int((opacity<0.1).sum()):,}')
 
-    mask = opacity >= args.opacity_threshold
+    mask = opacity >= args.opacity
     xyz = xyz[mask]
     rgb = rgb[mask]
-    print(f'  After opacity filter (>={args.opacity_threshold}): {len(xyz):,}')
+    opacity = opacity[mask]
+    print(f'  After opacity filter (>={args.opacity}): {len(xyz):,}')
 
     pcd = o3d.geometry.PointCloud()
     pcd.points = o3d.utility.Vector3dVector(xyz)
     pcd.colors = o3d.utility.Vector3dVector(rgb)
+
+    if args.save:
+        o3d.io.write_point_cloud(args.save, pcd)
+        print(f'  Saved to {args.save}')
 
     vis = o3d.visualization.Visualizer()
     vis.create_window(window_name='3D Gaussian Splatting Viewer', width=1280, height=720)

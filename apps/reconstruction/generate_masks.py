@@ -109,7 +109,7 @@ def locate_object_bbox(mask, max_area_ratio=0.10, min_area_ratio=0.0005,
 def background_subtraction(data_root, cam_names, frame, bg_frame, ext,
                            threshold, morph_kernel, output_dir, vis_dir=None,
                            bg_data=None, center_only=False, dilate=0,
-                           max_area_ratio=0.10):
+                           max_area_ratio=0.10, save_fg_dir=None):
     """Frame-difference masking with optional smart blob selection.
 
     When --center_only is set, uses a two-pass strategy:
@@ -191,6 +191,16 @@ def background_subtraction(data_root, cam_names, frame, bg_frame, ext,
         cv2.imwrite(out_path, mask)
         print(f'  {cam}: {out_path}  (fg pixels: {mask.sum() // 255})')
 
+        if save_fg_dir is not None:
+            img_bgr = cv2.imread(fg_path)
+            fg_img = img_bgr.copy()
+            fg_img[mask == 0] = 0
+            out_fg_dir = join(save_fg_dir, cam)
+            os.makedirs(out_fg_dir, exist_ok=True)
+            out_fg_path = join(out_fg_dir, f'{frame:06d}{ext}')
+            cv2.imwrite(out_fg_path, fg_img)
+            print(f'    fg: {out_fg_path}')
+
         if vis_dir is not None:
             img_bgr = cv2.imread(fg_path)
             vis_path = save_mask_overlay(img_bgr, mask, vis_dir, cam, frame)
@@ -198,7 +208,8 @@ def background_subtraction(data_root, cam_names, frame, bg_frame, ext,
 
 
 def sam_segmentation(data_root, cam_names, frame, ext, output_dir,
-                     sam_checkpoint, sam_model_type, vis_dir=None):
+                     sam_checkpoint, sam_model_type, vis_dir=None,
+                     save_fg_dir=None):
     """Use Segment Anything to produce masks from auto-detected boxes."""
     try:
         from segment_anything import SamAutomaticMaskGenerator, sam_model_registry
@@ -238,6 +249,15 @@ def sam_segmentation(data_root, cam_names, frame, ext, output_dir,
         out_path = join(out_dir, f'{frame:06d}.png')
         cv2.imwrite(out_path, combined)
         print(f'  {cam}: {out_path}  ({len(masks)} segments)')
+
+        if save_fg_dir is not None:
+            fg_img = img.copy()
+            fg_img[combined == 0] = 0
+            out_fg_dir = join(save_fg_dir, cam)
+            os.makedirs(out_fg_dir, exist_ok=True)
+            out_fg_path = join(out_fg_dir, f'{frame:06d}{ext}')
+            cv2.imwrite(out_fg_path, fg_img)
+            print(f'    fg: {out_fg_path}')
 
         if vis_dir is not None:
             vis_path = save_mask_overlay(img, combined, vis_dir, cam, frame)
@@ -283,17 +303,23 @@ def main():
 
     parser.add_argument('--vis', action='store_true',
                         help='Save mask overlay visualizations to mask_vis/')
+    parser.add_argument('--save_fg_images', action='store_true',
+                        help='Save foreground-only RGB images (background set to black) '
+                             'to <data>/foreground_images/<cam>/')
 
     args = parser.parse_args()
 
     output_dir = args.output or join(args.data, 'masks')
     vis_dir = join(args.data, 'mask_vis') if args.vis else None
+    fg_out_dir = join(args.data, 'foreground_images') if args.save_fg_images else None
     cam_names = get_cam_names(args.data)
     print(f'[generate_masks] Cameras: {cam_names}')
     print(f'[generate_masks] Mode: {args.mode}, frame: {args.frame}')
     print(f'[generate_masks] Output: {output_dir}')
     if vis_dir:
         print(f'[generate_masks] Vis overlays: {vis_dir}')
+    if fg_out_dir:
+        print(f'[generate_masks] Foreground images: {fg_out_dir}')
 
     if args.mode == 'bg_sub':
         if args.bg_frame is None:
@@ -303,6 +329,7 @@ def main():
             args.threshold, args.morph_kernel, output_dir, vis_dir,
             bg_data=args.bg_data, center_only=args.center_only,
             dilate=args.dilate, max_area_ratio=args.max_area_ratio,
+            save_fg_dir=fg_out_dir,
         )
     elif args.mode == 'sam':
         if args.sam_checkpoint is None:
@@ -310,6 +337,7 @@ def main():
         sam_segmentation(
             args.data, cam_names, args.frame, args.ext, output_dir,
             args.sam_checkpoint, args.sam_model_type, vis_dir,
+            save_fg_dir=fg_out_dir,
         )
 
     print('[generate_masks] Done.')

@@ -119,6 +119,10 @@ yolov5m.pt
 
 # output
 output/
+# ChArUco generator: ignore PNGs; track .json metadata and .gitkeep
+apps/calibration/generated_charuco_boards/*
+!apps/calibration/generated_charuco_boards/.gitkeep
+!apps/calibration/generated_charuco_boards/*.json
 tmp/
 res/
 docs/

@@ -1,0 +1,49 @@
+{
+  "preset": "8x5_7x4_inner",
+  "dictionary": "DICT_4X4_50",
+  "squares": [
+    8,
+    5
+  ],
+  "marker_ratio": 0.7,
+  "square_length": 800.0,
+  "marker_length": 560.0,
+  "inner_corners_pattern": [
+    7,
+    4
+  ],
+  "image_size_wh": [
+    9450,
+    5906
+  ],
+  "border_copyMakeBorder_top_bottom_left_right": [
+    647,
+    647,
+    675,
+    675
+  ],
+  "final_image_wh": [
+    10800,
+    7200
+  ],
+  "detect_charuco_hint": "python3 apps/calibration/detect_charuco.py <data> --preset 8x5_7x4_inner",
+  "print_page_inches_wh": [
+    36.0,
+    24.0
+  ],
+  "print_safe_pattern_meters_wh": [
+    0.83,
+    0.5
+  ],
+  "print_dpi": 300,
+  "physical_meters": {
+    "paper_width_m": 0.914,
+    "paper_height_m": 0.61,
+    "pattern_width_m": 0.8,
+    "pattern_height_m": 0.5,
+    "chessboard_square_side_m": 0.1,
+    "chessboard_square_side_from_x_m": 0.1,
+    "chessboard_square_side_from_y_m": 0.1,
+    "marker_side_m": 0.07
+  }
+}
