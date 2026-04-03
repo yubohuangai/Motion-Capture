@@ -11,16 +11,10 @@ CONFIG = {
     "base_root": "/mnt/yubo/obj/raw",
     "tasks": [
         {
-            "name": "background",
-            "dst": "/mnt/yubo/obj/background",
-            "start": "/mnt/yubo/obj/raw/01/images/1774222609113774772.jpg",
-            "end": "/mnt/yubo/obj/raw/01/images/1774222609113774772.jpg",
-        },
-        {
-            "name": "cube",
-            "dst": "/mnt/yubo/obj/cube",
-            "start": "/mnt/yubo/obj/raw/01/images/1774222616981209864.jpg",
-            "end": "/mnt/yubo/obj/raw/01/images/1774222616981209864.jpg",
+            "name": "jug",
+            "dst": "/mnt/yubo/obj/jug",
+            "start": "/mnt/yubo/obj/raw/01/images/1774222649651067452.jpg",
+            "end": "/mnt/yubo/obj/raw/01/images/1774222649651067452.jpg",
         },
     ],
 }
