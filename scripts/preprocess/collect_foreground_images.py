@@ -75,7 +75,7 @@ def main() -> None:
         help="Root folder containing <cam>/<frame>.<ext> (e.g. foreground_images).",
     )
     parser.add_argument(
-        "--mode",
+        "--copy",
         choices=["move", "copy"],
         default="move",
         help="Whether to move or copy files (default: move).",
