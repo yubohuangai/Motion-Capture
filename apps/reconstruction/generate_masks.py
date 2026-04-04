@@ -4,12 +4,19 @@ Generate foreground masks for multi-view object reconstruction.
 Modes:
   1. **background subtraction** (default): requires a background-only frame.
      Computes per-pixel difference, thresholds, and cleans with morphology.
-  2. **SAM**: `SamAutomaticMaskGenerator` over the full image (union of masks).
-     Requires `segment_anything` to be installed.
-  3. **hybrid**: background subtraction to estimate a tight box, then SAM
-     (`SamPredictor` box prompt) for a cleaner boundary—good when diff masks
-     include extra table/background.  Use `--hybrid_combine intersect` to trim
-     to the overlap of both masks.
+  2. **SAM**: full-image automatic masks—SAM1 (`segment_anything`) or SAM2
+     (`SAM2AutomaticMaskGenerator`).  Choose with ``--sam_backend``.
+  3. **hybrid**: background subtraction mask → bounding box → SAM on a **crop**
+     of that box (default) or the full frame (`--hybrid_sam_space full`).
+     SAM can output multiple masks; the one with best **IoU** vs. the diff mask
+     is kept when a prior is available.  Use `--hybrid_combine intersect` to
+     AND with bg_sub.
+
+**SAM 2** ([facebookresearch/sam2](https://github.com/facebookresearch/sam2)) is
+often stronger than SAM 1, but the upstream project requires **Python ≥3.10**
+and **torch ≥2.5.1**—use a separate conda env, not an older (e.g. 3.9) stack.
+Pass ``--sam_backend sam2``, ``--sam2_checkpoint`` (``.pt``), and optionally
+``--sam2_config`` (Hydra config name, default matches SAM 2.1 Hiera Large).
 
 Output layout mirrors the image directory:
     <data>/masks/<cam>/NNNNNN.png   (255 = foreground, 0 = background)
@@ -23,10 +30,16 @@ Usage:
     python apps/reconstruction/generate_masks.py /path/to/data \\
         --frame 0 --mode sam --sam_checkpoint /path/to/sam_vit_h.pth
 
-    # Hybrid: bg_sub box + SAM box prompt (object in one root, bg in another)
+    # Hybrid with SAM 1 (ViT, .pth)
     python apps/reconstruction/generate_masks.py /mnt/yubo/obj/cube \\
         --bg_data /mnt/yubo/obj/background --frame 0 --bg_frame 0 \\
-        --mode hybrid --sam_checkpoint /path/to/sam_vit_h.pth
+        --mode hybrid --sam_backend sam1 --sam_checkpoint /path/to/sam_vit_h.pth
+
+    # Hybrid with SAM 2 (.pt + yaml config name; see sam2 repo checkpoints)
+    python apps/reconstruction/generate_masks.py /mnt/yubo/obj/cube \\
+        --bg_data /mnt/yubo/obj/background --frame 0 --bg_frame 0 \\
+        --mode hybrid --sam_backend sam2 \\
+        --sam2_checkpoint /path/to/sam2.1_hiera_large.pt
 
     # Shrink a slightly bloated diff mask (no SAM)
     python apps/reconstruction/generate_masks.py /path/to/data \\
@@ -34,6 +47,7 @@ Usage:
 """
 
 import argparse
+import contextlib
 import os
 import sys
 from glob import glob
@@ -67,20 +81,18 @@ def find_image(data_root, cam, frame, ext):
 
 
 def save_mask_overlay(img_bgr, mask, vis_dir, cam, frame):
-    """Save a side-by-side image: original | mask overlay (green tint on foreground)."""
+    """Save mask overlay only: green tint on foreground + red contour (same size as input)."""
     os.makedirs(vis_dir, exist_ok=True)
     overlay = img_bgr.copy()
     green = np.zeros_like(img_bgr)
     green[:, :, 1] = 255
     overlay[mask > 0] = cv2.addWeighted(overlay, 0.5, green, 0.5, 0)[mask > 0]
 
-    # draw contour outline in red
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     cv2.drawContours(overlay, contours, -1, (0, 0, 255), 2)
 
-    combined = np.hstack([img_bgr, overlay])
     out_path = join(vis_dir, f'{cam}_{frame:06d}.jpg')
-    cv2.imwrite(out_path, combined)
+    cv2.imwrite(out_path, overlay)
     return out_path
 
 
@@ -224,6 +236,77 @@ def bbox_from_mask(mask, pad_ratio=0.0):
     return np.array([x1, y1, x2, y2], dtype=np.float32)
 
 
+def _mask_from_predict_output(masks_arr):
+    """Normalize SAM1/SAM2 ``predict()`` mask output to HxW uint8 {0, 255}."""
+    m = np.asarray(masks_arr)
+    if m.ndim == 4:
+        m = m[0]
+    if m.ndim == 3:
+        m = m[0]
+    return (m.astype(np.uint8) > 0).astype(np.uint8) * 255
+
+
+def _binary_iou(mask_a, mask_b):
+    a = np.asarray(mask_a) > 0
+    b = np.asarray(mask_b) > 0
+    inter = np.logical_and(a, b).sum(dtype=np.float64)
+    union = np.logical_or(a, b).sum(dtype=np.float64)
+    return float(inter / union) if union > 0 else 0.0
+
+
+def hybrid_sam_predict_mask(
+    predictor,
+    image_rgb,
+    box_xyxy,
+    *,
+    use_sam2,
+    use_cuda,
+    mask_prior=None,
+):
+    """
+    Box prompt in the same pixel frame as ``image_rgb``.
+    If ``mask_prior`` is set (HxW, same size as image), requests multiple
+    candidate masks and returns the one with highest IoU to the prior.
+    """
+    import torch
+
+    box = np.asarray(box_xyxy, dtype=np.float32)
+    multimask = mask_prior is not None
+    if use_sam2:
+        with torch.inference_mode():
+            ctx = (
+                torch.autocast('cuda', dtype=torch.bfloat16)
+                if use_cuda else contextlib.nullcontext()
+            )
+            with ctx:
+                predictor.set_image(image_rgb)
+                masks, _, _ = predictor.predict(
+                    box=box.astype(np.float32),
+                    multimask_output=multimask,
+                )
+    else:
+        predictor.set_image(image_rgb)
+        masks, _, _ = predictor.predict(
+            point_coords=None,
+            point_labels=None,
+            box=box,
+            multimask_output=multimask,
+        )
+    if not multimask:
+        return _mask_from_predict_output(masks)
+    ms = np.asarray(masks)
+    if ms.ndim == 4:
+        ms = ms[0]
+    best_m, best_s = None, -1.0
+    for i in range(ms.shape[0]):
+        mi = _mask_from_predict_output(ms[i : i + 1])
+        s = _binary_iou(mi, mask_prior)
+        if s > best_s:
+            best_s = s
+            best_m = mi
+    return best_m if best_m is not None else _mask_from_predict_output(masks)
+
+
 def background_subtraction(data_root, cam_names, frame, bg_frame, ext,
                            threshold, morph_kernel, output_dir, vis_dir=None,
                            bg_data=None, center_only=False, dilate=0, erode=0,
@@ -327,33 +410,122 @@ def sam_segmentation(data_root, cam_names, frame, ext, output_dir,
             print(f'    vis: {vis_path}')
 
 
+def sam2_segmentation(data_root, cam_names, frame, ext, output_dir,
+                      sam2_checkpoint, sam2_config, vis_dir=None,
+                      save_fg_dir=None):
+    """Full-image automatic masks via SAM2 ``SAM2AutomaticMaskGenerator``."""
+    try:
+        from sam2.build_sam import build_sam2
+        from sam2.automatic_mask_generator import SAM2AutomaticMaskGenerator
+    except ImportError:
+        print('ERROR: sam2 is not installed.')
+        print('  See https://github.com/facebookresearch/sam2 (Python>=3.10, torch>=2.5.1)')
+        sys.exit(1)
+
+    import torch
+
+    use_cuda = torch.cuda.is_available()
+    device = 'cuda' if use_cuda else 'cpu'
+    cfg = sam2_config or 'configs/sam2.1/sam2.1_hiera_l.yaml'
+    print(f'[SAM2] Loading config={cfg!r} checkpoint={sam2_checkpoint!r} ...')
+    model = build_sam2(cfg, sam2_checkpoint, device=device)
+    mask_generator = SAM2AutomaticMaskGenerator(
+        model,
+        points_per_side=32,
+        pred_iou_thresh=0.86,
+        stability_score_thresh=0.92,
+        min_mask_region_area=1000,
+    )
+
+    for cam in cam_names:
+        img_path = find_image(data_root, cam, frame, ext)
+        img = cv2.imread(img_path)
+        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+
+        with torch.inference_mode():
+            ctx = (
+                torch.autocast('cuda', dtype=torch.bfloat16)
+                if use_cuda else contextlib.nullcontext()
+            )
+            with ctx:
+                masks = mask_generator.generate(img_rgb)
+
+        combined = np.zeros(img.shape[:2], dtype=np.uint8)
+        for m in masks:
+            combined[m['segmentation']] = 255
+
+        out_dir = join(output_dir, cam)
+        os.makedirs(out_dir, exist_ok=True)
+        out_path = join(out_dir, f'{frame:06d}.png')
+        cv2.imwrite(out_path, combined)
+        print(f'  {cam}: {out_path}  ({len(masks)} segments)')
+
+        if save_fg_dir is not None:
+            fg_img = img.copy()
+            fg_img[combined == 0] = 0
+            out_fg_dir = join(save_fg_dir, cam)
+            os.makedirs(out_fg_dir, exist_ok=True)
+            out_fg_path = join(out_fg_dir, f'{frame:06d}{ext}')
+            cv2.imwrite(out_fg_path, fg_img)
+            print(f'    fg: {out_fg_path}')
+
+        if vis_dir is not None:
+            vis_path = save_mask_overlay(img, combined, vis_dir, cam, frame)
+            print(f'    vis: {vis_path}')
+
+
 def hybrid_bg_sam(data_root, cam_names, frame, bg_frame, ext,
                   threshold, morph_kernel, output_dir, vis_dir=None,
                   bg_data=None, center_only=False, dilate=0, erode=0,
                   max_area_ratio=0.10, save_fg_dir=None,
                   sam_checkpoint=None, sam_model_type='vit_h',
-                  hybrid_combine='sam', sam_box_pad_ratio=0.12):
+                  hybrid_combine='sam', sam_box_pad_ratio=0.12,
+                  sam_backend='sam1', sam2_checkpoint=None,
+                  sam2_config=None, hybrid_sam_space='crop'):
     """
-    Background subtraction for a coarse mask → bbox → SAM box prompt.
+    Background subtraction mask → bbox → SAM1/SAM2 box prompt.
+
+    ``hybrid_sam_space``:
+      * ``crop`` — crop the padded bbox, run SAM inside (less global confusion).
+      * ``full`` — ``set_image`` on the full frame (previous behavior).
+
     ``hybrid_combine``:
-      * ``sam`` — use SAM mask only (often tighter than diff/convex hull).
-      * ``intersect`` — bitwise AND of diff mask and SAM (trim SAM leakage).
+      * ``sam`` — use SAM mask only (after optional IoU pick vs. diff mask).
+      * ``intersect`` — bitwise AND of diff mask and SAM.
     """
-    try:
-        from segment_anything import SamPredictor, sam_model_registry
-    except ImportError:
-        print('ERROR: segment_anything is not installed.')
-        print('  pip install segment-anything')
-        print('  Download checkpoint from https://github.com/facebookresearch/segment-anything')
-        sys.exit(1)
-
     import torch
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-    print(f'[hybrid] Loading SAM {sam_model_type} from {sam_checkpoint} ...')
-    sam = sam_model_registry[sam_model_type](checkpoint=sam_checkpoint)
-    sam.to(device)
-    predictor = SamPredictor(sam)
+    use_cuda = torch.cuda.is_available()
+    device = 'cuda' if use_cuda else 'cpu'
+    use_sam2 = sam_backend == 'sam2'
+
+    if use_sam2:
+        try:
+            from sam2.build_sam import build_sam2
+            from sam2.sam2_image_predictor import SAM2ImagePredictor
+        except ImportError:
+            print('ERROR: sam2 is not installed.')
+            print('  See https://github.com/facebookresearch/sam2 (Python>=3.10, torch>=2.5.1)')
+            sys.exit(1)
+        cfg = sam2_config or 'configs/sam2.1/sam2.1_hiera_l.yaml'
+        print(f'[hybrid] Loading SAM2 config={cfg!r} checkpoint={sam2_checkpoint!r} ...')
+        sam2_model = build_sam2(cfg, sam2_checkpoint, device=device)
+        predictor = SAM2ImagePredictor(sam2_model)
+    else:
+        try:
+            from segment_anything import SamPredictor, sam_model_registry
+        except ImportError:
+            print('ERROR: segment_anything is not installed.')
+            print('  pip install segment-anything')
+            print('  Download checkpoint from https://github.com/facebookresearch/segment-anything')
+            sys.exit(1)
+
+        print(f'[hybrid] Loading SAM1 {sam_model_type} from {sam_checkpoint} ...')
+        sam = sam_model_registry[sam_model_type](checkpoint=sam_checkpoint)
+        sam.to(device)
+        predictor = SamPredictor(sam)
+
+    print(f'[hybrid] SAM image space: {hybrid_sam_space}')
 
     bg_root = bg_data or data_root
     for cam in cam_names:
@@ -377,19 +549,43 @@ def hybrid_bg_sam(data_root, cam_names, frame, bg_frame, ext,
             mask = mask_bg
             print(f'  {cam}: hybrid fallback — no bbox, using bg_sub only')
         else:
-            predictor.set_image(img_rgb)
-            masks, _, _ = predictor.predict(
-                point_coords=None,
-                point_labels=None,
-                box=box,
-                multimask_output=False,
-            )
-            m = np.asarray(masks)
-            if m.ndim == 4:
-                m = m[0]
-            if m.ndim == 3:
-                m = m[0]
-            mask_sam = (m.astype(np.uint8) > 0).astype(np.uint8) * 255
+            if hybrid_sam_space == 'crop':
+                xi1, yi1, xi2, yi2 = [int(round(float(v))) for v in box]
+                xi1 = max(0, xi1)
+                yi1 = max(0, yi1)
+                xi2 = min(img_rgb.shape[1], max(xi1 + 1, xi2))
+                yi2 = min(img_rgb.shape[0], max(yi1 + 1, yi2))
+                min_side = 32
+                if (xi2 - xi1) < min_side or (yi2 - yi1) < min_side:
+                    mask_sam = hybrid_sam_predict_mask(
+                        predictor, img_rgb, box,
+                        use_sam2=use_sam2, use_cuda=use_cuda,
+                        mask_prior=mask_bg,
+                    )
+                else:
+                    crop_rgb = img_rgb[yi1:yi2, xi1:xi2]
+                    mask_c = mask_bg[yi1:yi2, xi1:xi2]
+                    box_l = bbox_from_mask(mask_c, pad_ratio=0.05)
+                    if box_l is None or mask_c.sum() == 0:
+                        mask_sam = hybrid_sam_predict_mask(
+                            predictor, img_rgb, box,
+                            use_sam2=use_sam2, use_cuda=use_cuda,
+                            mask_prior=mask_bg,
+                        )
+                    else:
+                        mask_sam_c = hybrid_sam_predict_mask(
+                            predictor, crop_rgb, box_l,
+                            use_sam2=use_sam2, use_cuda=use_cuda,
+                            mask_prior=mask_c,
+                        )
+                        mask_sam = np.zeros(mask_bg.shape[:2], dtype=np.uint8)
+                        mask_sam[yi1:yi2, xi1:xi2] = mask_sam_c
+            else:
+                mask_sam = hybrid_sam_predict_mask(
+                    predictor, img_rgb, box,
+                    use_sam2=use_sam2, use_cuda=use_cuda,
+                    mask_prior=mask_bg,
+                )
             if hybrid_combine == 'intersect':
                 mask = cv2.bitwise_and(mask_bg, mask_sam)
             else:
@@ -415,6 +611,34 @@ def hybrid_bg_sam(data_root, cam_names, frame, bg_frame, ext,
         if vis_dir is not None:
             vis_path = save_mask_overlay(img, mask, vis_dir, cam, frame)
             print(f'    vis: {vis_path}')
+
+
+def _ensure_sam_checkpoint(path, parser):
+    """Exit with a clear message if the checkpoint path is missing (not a placeholder)."""
+    if path is None:
+        return
+    if not os.path.isfile(path):
+        parser.error(
+            f'SAM checkpoint file not found: {path}\n'
+            'Download a .pth from '
+            'https://github.com/facebookresearch/segment-anything#model-checkpoints '
+            'and pass the real path, e.g.\n'
+            '  --sam_checkpoint /path/where/you/saved/sam_vit_h_4b8939.pth\n'
+            '(Replace /path/to/sam_vit_h.pth in examples with your actual file.)'
+        )
+
+
+def _ensure_sam2_checkpoint(path, parser):
+    if path is None:
+        return
+    if not os.path.isfile(path):
+        parser.error(
+            f'SAM2 checkpoint file not found: {path}\n'
+            'Download a .pt from https://github.com/facebookresearch/sam2 '
+            '(see README / checkpoints) and pass e.g.\n'
+            '  --sam2_checkpoint /path/to/sam2.1_hiera_large.pt\n'
+            'Match --sam2_config to the checkpoint (default is SAM 2.1 Hiera Large).'
+        )
 
 
 def main():
@@ -452,19 +676,32 @@ def main():
                                'included background/table halo)')
 
     sam_group = parser.add_argument_group('SAM / hybrid')
+    sam_group.add_argument('--sam_backend', choices=['sam1', 'sam2'], default='sam1',
+                           help='segment_anything (sam1) vs SAM 2 (sam2); sam2 needs '
+                                'Python>=3.10 and torch>=2.5.1 per upstream')
     sam_group.add_argument('--sam_checkpoint', default=None,
-                           help='Path to SAM model checkpoint (required for sam / hybrid)')
+                           help='SAM1 .pth checkpoint (sam_backend sam1, modes sam/hybrid)')
     sam_group.add_argument('--sam_model_type', default='vit_h',
-                           help='SAM model type (vit_h, vit_l, vit_b)')
+                           help='SAM1 model type (vit_h, vit_l, vit_b)')
+    sam_group.add_argument('--sam2_checkpoint', default=None,
+                           help='SAM2 .pt checkpoint (sam_backend sam2, modes sam/hybrid)')
+    sam_group.add_argument('--sam2_config', default=None,
+                           help='SAM2 Hydra config name (default: configs/sam2.1/'
+                                'sam2.1_hiera_l.yaml — pair with matching .pt)')
     sam_group.add_argument('--hybrid_combine', choices=['sam', 'intersect'],
                            default='sam',
                            help='hybrid only: use SAM mask only, or AND with bg_sub')
     sam_group.add_argument('--sam_box_pad_ratio', type=float, default=0.12,
                            help='hybrid only: expand bg_sub bbox by this fraction '
                                 'before SAM box prompt (each side)')
+    sam_group.add_argument('--hybrid_sam_space', choices=['crop', 'full'],
+                           default='crop',
+                           help='hybrid only: run SAM on cropped ROI around bg_sub '
+                                'bbox (crop) or on the full frame (full)')
 
     parser.add_argument('--vis', action='store_true',
-                        help='Save mask overlay visualizations to mask_vis/')
+                        help='Save per-camera overlay JPEGs to <data>/mask_vis/ '
+                             '(green foreground + red contour; not side-by-side with raw RGB)')
     parser.add_argument('--save_fg_images', action='store_true',
                         help='Save foreground-only RGB images (background set to black) '
                              'to <data>/foreground_images/<cam>/')
@@ -476,7 +713,9 @@ def main():
     fg_out_dir = join(args.data, 'foreground_images') if args.save_fg_images else None
     cam_names = get_cam_names(args.data)
     print(f'[generate_masks] Cameras: {cam_names}')
-    print(f'[generate_masks] Mode: {args.mode}, frame: {args.frame}')
+    print(f'[generate_masks] Mode: {args.mode}, frame: {args.frame}, '
+          f'sam_backend: {args.sam_backend}'
+          + (f', hybrid_sam_space: {args.hybrid_sam_space}' if args.mode == 'hybrid' else ''))
     print(f'[generate_masks] Output: {output_dir}')
     if vis_dir:
         print(f'[generate_masks] Vis overlays: {vis_dir}')
@@ -495,18 +734,35 @@ def main():
             save_fg_dir=fg_out_dir,
         )
     elif args.mode == 'sam':
-        if args.sam_checkpoint is None:
-            parser.error('--sam_checkpoint is required for SAM mode')
-        sam_segmentation(
-            args.data, cam_names, args.frame, args.ext, output_dir,
-            args.sam_checkpoint, args.sam_model_type, vis_dir,
-            save_fg_dir=fg_out_dir,
-        )
+        if args.sam_backend == 'sam1':
+            if args.sam_checkpoint is None:
+                parser.error('--sam_checkpoint is required for sam mode with sam_backend sam1')
+            _ensure_sam_checkpoint(args.sam_checkpoint, parser)
+            sam_segmentation(
+                args.data, cam_names, args.frame, args.ext, output_dir,
+                args.sam_checkpoint, args.sam_model_type, vis_dir,
+                save_fg_dir=fg_out_dir,
+            )
+        else:
+            if args.sam2_checkpoint is None:
+                parser.error('--sam2_checkpoint is required for sam mode with sam_backend sam2')
+            _ensure_sam2_checkpoint(args.sam2_checkpoint, parser)
+            sam2_segmentation(
+                args.data, cam_names, args.frame, args.ext, output_dir,
+                args.sam2_checkpoint, args.sam2_config, vis_dir,
+                save_fg_dir=fg_out_dir,
+            )
     elif args.mode == 'hybrid':
         if args.bg_frame is None:
             parser.error('--bg_frame is required for hybrid mode')
-        if args.sam_checkpoint is None:
-            parser.error('--sam_checkpoint is required for hybrid mode')
+        if args.sam_backend == 'sam1':
+            if args.sam_checkpoint is None:
+                parser.error('--sam_checkpoint is required for hybrid mode with sam_backend sam1')
+            _ensure_sam_checkpoint(args.sam_checkpoint, parser)
+        else:
+            if args.sam2_checkpoint is None:
+                parser.error('--sam2_checkpoint is required for hybrid mode with sam_backend sam2')
+            _ensure_sam2_checkpoint(args.sam2_checkpoint, parser)
         hybrid_bg_sam(
             args.data, cam_names, args.frame, args.bg_frame, args.ext,
             args.threshold, args.morph_kernel, output_dir, vis_dir,
@@ -518,6 +774,10 @@ def main():
             sam_model_type=args.sam_model_type,
             hybrid_combine=args.hybrid_combine,
             sam_box_pad_ratio=args.sam_box_pad_ratio,
+            sam_backend=args.sam_backend,
+            sam2_checkpoint=args.sam2_checkpoint,
+            sam2_config=args.sam2_config,
+            hybrid_sam_space=args.hybrid_sam_space,
         )
 
     print('[generate_masks] Done.')
