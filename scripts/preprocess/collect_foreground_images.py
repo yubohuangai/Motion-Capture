@@ -1,15 +1,18 @@
 """
-Flatten foreground images produced by `apps/reconstruction/generate_masks.py`.
+Flatten legacy nested foreground images to a single directory.
 
-Input layout:
+``generate_masks.py --save_fg_images`` now writes flat names directly
+(``<cam>_<frame>.<ext>`` under ``foreground_images/``, same pattern as
+``mask_vis``).  Use this script only for older outputs that used:
+
   <root>/<cam>/<frame>.jpg
 
 Output layout (flat):
   <root>/<cam>_<frame>.jpg
 
 Example:
-  /Users/yubo/data/obj/cube/foreground_images/01/000000.jpg
-    -> /Users/yubo/data/obj/cube/foreground_images/01_000000.jpg
+  .../foreground_images/01/000000.jpg
+    -> .../foreground_images/01_000000.jpg
 """
 
 from __future__ import annotations
@@ -72,7 +75,7 @@ def main() -> None:
     parser.add_argument(
         "--root",
         required=True,
-        help="Root folder containing <cam>/<frame>.<ext> (e.g. foreground_images).",
+        help="Root folder with nested <cam>/<frame>.<ext> to flatten (legacy layout).",
     )
     parser.add_argument(
         "--copy",
@@ -92,8 +95,8 @@ def main() -> None:
     exts = tuple([e.strip().lower() for e in args.ext.split(",") if e.strip()])
     root = Path(args.root)
 
-    moved = gather_images(root, mode=args.mode, exts=exts, overwrite=args.overwrite, dry_run=args.dry_run)
-    print(f"[done] {moved} file(s) processed. mode={args.mode} dry_run={args.dry_run}")
+    moved = gather_images(root, mode=args.copy, exts=exts, overwrite=args.overwrite, dry_run=args.dry_run)
+    print(f"[done] {moved} file(s) processed. mode={args.copy} dry_run={args.dry_run}")
 
 
 if __name__ == "__main__":

@@ -18,8 +18,10 @@ and **torch ≥2.5.1**—use a separate conda env, not an older (e.g. 3.9) stack
 Pass ``--sam_backend sam2``, ``--sam2_checkpoint`` (``.pt``), and optionally
 ``--sam2_config`` (Hydra config name, default matches SAM 2.1 Hiera Large).
 
-Output layout mirrors the image directory:
+Output layout:
     <data>/masks/<cam>/NNNNNN.png   (255 = foreground, 0 = background)
+    With ``--save_fg_images``: <data>/foreground_images/<cam>_NNNNNN.<ext>
+    (same flat naming as ``--vis`` → mask_vis/<cam>_NNNNNN.jpg)
 
 Usage:
     # Background subtraction (fast, works well in controlled studios)
@@ -93,6 +95,16 @@ def save_mask_overlay(img_bgr, mask, vis_dir, cam, frame):
 
     out_path = join(vis_dir, f'{cam}_{frame:06d}.jpg')
     cv2.imwrite(out_path, overlay)
+    return out_path
+
+
+def save_foreground_image(img_bgr, mask, fg_dir, cam, frame, ext):
+    """Black out background; save as ``<cam>_<frame>.<ext>`` in one folder (like mask_vis)."""
+    os.makedirs(fg_dir, exist_ok=True)
+    fg_img = img_bgr.copy()
+    fg_img[mask == 0] = 0
+    out_path = join(fg_dir, f'{cam}_{frame:06d}{ext}')
+    cv2.imwrite(out_path, fg_img)
     return out_path
 
 
@@ -339,12 +351,9 @@ def background_subtraction(data_root, cam_names, frame, bg_frame, ext,
 
         if save_fg_dir is not None:
             img_bgr = cv2.imread(fg_path)
-            fg_img = img_bgr.copy()
-            fg_img[mask == 0] = 0
-            out_fg_dir = join(save_fg_dir, cam)
-            os.makedirs(out_fg_dir, exist_ok=True)
-            out_fg_path = join(out_fg_dir, f'{frame:06d}{ext}')
-            cv2.imwrite(out_fg_path, fg_img)
+            out_fg_path = save_foreground_image(
+                img_bgr, mask, save_fg_dir, cam, frame, ext,
+            )
             print(f'    fg: {out_fg_path}')
 
         if vis_dir is not None:
@@ -397,12 +406,9 @@ def sam_segmentation(data_root, cam_names, frame, ext, output_dir,
         print(f'  {cam}: {out_path}  ({len(masks)} segments)')
 
         if save_fg_dir is not None:
-            fg_img = img.copy()
-            fg_img[combined == 0] = 0
-            out_fg_dir = join(save_fg_dir, cam)
-            os.makedirs(out_fg_dir, exist_ok=True)
-            out_fg_path = join(out_fg_dir, f'{frame:06d}{ext}')
-            cv2.imwrite(out_fg_path, fg_img)
+            out_fg_path = save_foreground_image(
+                img, combined, save_fg_dir, cam, frame, ext,
+            )
             print(f'    fg: {out_fg_path}')
 
         if vis_dir is not None:
@@ -461,12 +467,9 @@ def sam2_segmentation(data_root, cam_names, frame, ext, output_dir,
         print(f'  {cam}: {out_path}  ({len(masks)} segments)')
 
         if save_fg_dir is not None:
-            fg_img = img.copy()
-            fg_img[combined == 0] = 0
-            out_fg_dir = join(save_fg_dir, cam)
-            os.makedirs(out_fg_dir, exist_ok=True)
-            out_fg_path = join(out_fg_dir, f'{frame:06d}{ext}')
-            cv2.imwrite(out_fg_path, fg_img)
+            out_fg_path = save_foreground_image(
+                img, combined, save_fg_dir, cam, frame, ext,
+            )
             print(f'    fg: {out_fg_path}')
 
         if vis_dir is not None:
@@ -600,12 +603,9 @@ def hybrid_bg_sam(data_root, cam_names, frame, bg_frame, ext,
         print(f'  {cam}: {out_path}  (fg pixels: {mask.sum() // 255})')
 
         if save_fg_dir is not None:
-            fg_img = img.copy()
-            fg_img[mask == 0] = 0
-            out_fg_dir = join(save_fg_dir, cam)
-            os.makedirs(out_fg_dir, exist_ok=True)
-            out_fg_path = join(out_fg_dir, f'{frame:06d}{ext}')
-            cv2.imwrite(out_fg_path, fg_img)
+            out_fg_path = save_foreground_image(
+                img, mask, save_fg_dir, cam, frame, ext,
+            )
             print(f'    fg: {out_fg_path}')
 
         if vis_dir is not None:
@@ -703,8 +703,8 @@ def main():
                         help='Save per-camera overlay JPEGs to <data>/mask_vis/ '
                              '(green foreground + red contour; not side-by-side with raw RGB)')
     parser.add_argument('--save_fg_images', action='store_true',
-                        help='Save foreground-only RGB images (background set to black) '
-                             'to <data>/foreground_images/<cam>/')
+                        help='Save foreground-only RGB (bg black) to '
+                             '<data>/foreground_images/<cam>_NNNNNN.<ext> (flat, same as mask_vis)')
 
     args = parser.parse_args()
 
