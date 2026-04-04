@@ -51,7 +51,26 @@ def parse_args():
     parser.add_argument(
         "--extract",
         action="store_true",
-        help="Extract frames"
+        help="Extract frames to <cam>/images/ (skipped if that folder already exists), then run matching.",
+    )
+
+    parser.add_argument(
+        "--session-slug",
+        default=None,
+        metavar="NAME",
+        help=(
+            "Short label for output folder under output/exp/ (default: folder above 'raw', "
+            "e.g. .../data/sync0403/raw → sync0403)."
+        ),
+    )
+
+    parser.add_argument(
+        "--skip-match",
+        action="store_true",
+        help=(
+            "Do not write matched.csv / matched_full.csv. Use with --extract to only "
+            "extract frames and rename from per-camera CSVs after you already ran a match pass."
+        ),
     )
 
     return parser.parse_args()
@@ -185,6 +204,21 @@ def extract_frames(video_path, output_dir, gpu=True, script_only=False):
     logging.info(f"[{video_name}] Extracted frames → {output_dir} in {elapsed:.1f}s")
 
 
+def raw_session_slug(data_root: str) -> str:
+    """
+    .../data/sync0403/raw → sync0403
+    .../my_dataset → my_dataset
+    """
+    p = Path(data_root).resolve()
+    name = p.name
+    if name.lower() == "raw" and p.parent != p:
+        slug = p.parent.name
+    else:
+        slug = name
+    slug = re.sub(r"[^\w\-]+", "_", slug, flags=re.ASCII).strip("_") or "session"
+    return slug[:80]
+
+
 def format_threshold_filename(threshold_ns):
     """Convert nanoseconds to a compact filename-safe string like 30ms or 250us."""
     if threshold_ns % 1e9 == 0:
@@ -230,25 +264,59 @@ def setup_logger(log_file_path):
     )
 
 
+def load_timestamp_csv_int_rows(csv_path: str, label: str = "") -> pd.DataFrame:
+    """
+    Load single-column timestamp CSV.
+
+    - ``t`` (int64): sort/merge key only.
+    - ``ts_exact`` (str): exact characters from the file for that row.
+
+    Nanosecond values exceed float53's exact range (~9e15); ``merge_asof`` promotes
+    columns with NaNs to float64 and corrupts large ints. Output columns must use
+    ``ts_exact``, not float-rounded values.
+
+    Rows that are not integers (e.g. analyze_vid POSTPROCESS pad lines) are dropped.
+    """
+    p = Path(csv_path)
+    raw = pd.read_csv(p, header=None, names=["t_raw"], dtype=str, engine="python")
+    raw["t_raw"] = raw["t_raw"].str.strip()
+    t = pd.to_numeric(raw["t_raw"], errors="coerce")
+    dropped = int(t.isna().sum())
+    if dropped:
+        logging.warning(
+            "%sDropped %d non-integer row(s) from %s",
+            f"[{label}] " if label else "",
+            dropped,
+            p,
+        )
+    valid = t.notna()
+    if not valid.any():
+        raise ValueError(f"No integer timestamp rows in {p}")
+    out = pd.DataFrame(
+        {
+            "t": t[valid].astype(np.int64).to_numpy(),
+            "ts_exact": raw.loc[valid, "t_raw"].to_numpy(),
+        }
+    ).reset_index(drop=True)
+    return out
+
+
 def match_frames_from_csv(csv_path_left, csv_path_right, output_csv_path, threshold_ns):
     """
     Match frame timestamps from two CSV files instead of image filenames.
     Each CSV should have one timestamp per line (as integer nanoseconds).
     """
-    # Load CSVs
-    df_left = pd.read_csv(csv_path_left, header=None, names=["t"])
-    df_right = pd.read_csv(csv_path_right, header=None, names=["t"])
+    df_left = load_timestamp_csv_int_rows(csv_path_left, "left")
+    df_right = load_timestamp_csv_int_rows(csv_path_right, "right")
 
-    # Prepare dataframes
     left = pd.DataFrame({
-        't': df_left["t"].astype(np.int64),
-        'left': df_left["t"].astype(np.int64)
+        't': df_left["t"],
+        'left': df_left["ts_exact"],
     })
 
     right = pd.DataFrame({
-        't': df_right["t"].astype(np.int64),
-        'right_int': df_right["t"].astype(np.int64),
-        'right': df_right["t"].astype(str)
+        't': df_right["t"],
+        'right': df_right["ts_exact"],
     })
 
     # Perform matching
@@ -261,7 +329,7 @@ def match_frames_from_csv(csv_path_left, csv_path_right, output_csv_path, thresh
         direction='nearest'
     )
     df = df.dropna()
-    df = df.drop(['t', 'right_int'], axis=1).reset_index(drop=True)
+    df = df.drop(columns=['t']).reset_index(drop=True)
 
     # Save result
     df.to_csv(output_csv_path, index=False)
@@ -273,20 +341,17 @@ def match_frames_full_from_csv(csv_path_left, csv_path_right, output_csv_path, t
     Match all timestamps from left CSV with right CSV (full match), including unmatched.
     Each CSV should have one timestamp per line (as integer nanoseconds).
     """
-    # Load CSVs
-    df_left = pd.read_csv(csv_path_left, header=None, names=["t"])
-    df_right = pd.read_csv(csv_path_right, header=None, names=["t"])
+    df_left = load_timestamp_csv_int_rows(csv_path_left, "left")
+    df_right = load_timestamp_csv_int_rows(csv_path_right, "right")
 
-    # Prepare dataframes
     left_df = pd.DataFrame({
-        't': df_left["t"].astype(np.int64),
-        'left': df_left["t"].astype(np.int64)
+        't': df_left["t"],
+        'left': df_left["ts_exact"],
     })
 
     right_df = pd.DataFrame({
-        't': df_right["t"].astype(np.int64),
-        'right_int': df_right["t"].astype(np.int64),
-        'right': df_right["t"].astype(str)
+        't': df_right["t"],
+        'right': df_right["ts_exact"],
     })
 
     # Match frames with merge_asof
@@ -302,8 +367,7 @@ def match_frames_full_from_csv(csv_path_left, csv_path_right, output_csv_path, t
     matched_df = matched_df.reset_index(drop=True)
     full_output_df = matched_df[['left', 'right']].copy()
 
-    # Fill unmatched with empty string
-    full_output_df['left'] = full_output_df['left'].astype("Int64")
+    full_output_df['left'] = full_output_df['left'].fillna('').astype(str)
     full_output_df['right'] = full_output_df['right'].fillna('').astype(str)
 
     # Add match status
@@ -313,16 +377,15 @@ def match_frames_full_from_csv(csv_path_left, csv_path_right, output_csv_path, t
     logging.info(f"Full match completed: {len(full_output_df)} entries → {output_csv_path}")
 
 def match_frames_from_csv_multi(csv_path_left, csv_path_right_list, output_csv_path, threshold_ns):
-    df_left = pd.read_csv(csv_path_left, header=None, names=["t"])
-    base_df = pd.DataFrame({'t': df_left["t"].astype(np.int64), 'left': df_left["t"].astype(str)})
+    df_left = load_timestamp_csv_int_rows(csv_path_left, "device_0")
+    base_df = pd.DataFrame({"t": df_left["t"], "left": df_left["ts_exact"]})
 
     for idx, csv_path_right in enumerate(csv_path_right_list):
-        df_right = pd.read_csv(csv_path_right, header=None, names=["t"])
+        df_right = load_timestamp_csv_int_rows(csv_path_right, f"device_{idx + 1}")
         shifted_idx = idx + 1
         right_df = pd.DataFrame({
-            't': df_right["t"].astype(np.int64),
-            f'right{shifted_idx}_int': df_right["t"].astype(np.int64),
-            f'right{shifted_idx}': df_right["t"].astype(str)
+            "t": df_right["t"],
+            f"right{shifted_idx}": df_right["ts_exact"],
         })
 
         base_df = pd.merge_asof(
@@ -333,8 +396,6 @@ def match_frames_from_csv_multi(csv_path_left, csv_path_right_list, output_csv_p
             allow_exact_matches=True,
             direction='nearest'
         )
-
-        base_df.drop(columns=[f'right{shifted_idx}_int'], inplace=True)
 
     # Drop all rows with any missing values
     base_df.dropna(inplace=True)
@@ -347,16 +408,15 @@ def match_frames_from_csv_multi(csv_path_left, csv_path_right_list, output_csv_p
 
 
 def match_frames_full_from_csv_multi(csv_path_left, csv_path_right_list, output_csv_path, threshold_ns, duration_0):
-    df_left = pd.read_csv(csv_path_left, header=None, names=["t"])
-    base_df = pd.DataFrame({'t': df_left["t"].astype(np.int64), 'left': df_left["t"].astype(np.int64)})
+    df_left = load_timestamp_csv_int_rows(csv_path_left, "device_0")
+    base_df = pd.DataFrame({"t": df_left["t"], "left": df_left["ts_exact"]})
 
     # Merge each right stream
     for idx, csv_path_right in enumerate(csv_path_right_list, start=1):
-        df_right = pd.read_csv(csv_path_right, header=None, names=["t"])
+        df_right = load_timestamp_csv_int_rows(csv_path_right, f"device_{idx}")
         right_df = pd.DataFrame({
-            't': df_right["t"].astype(np.int64),
-            f'right{idx}_int': df_right["t"].astype(np.int64),
-            f'right{idx}': df_right["t"].astype(str)
+            "t": df_right["t"],
+            f"right{idx}": df_right["ts_exact"],
         })
         base_df = pd.merge_asof(
             base_df.sort_values('t'),
@@ -366,7 +426,6 @@ def match_frames_full_from_csv_multi(csv_path_left, csv_path_right_list, output_
             allow_exact_matches=True,
             direction='nearest'
         )
-        base_df.drop(columns=[f'right{idx}_int'], inplace=True)
 
     base_df = base_df.reset_index(drop=True)
 
@@ -490,8 +549,15 @@ def main():
     video_path_0 = video_paths[0]
     video_name_0 = Path(video_path_0).stem
 
-    # --- Prepare output directory (under repo: output/exp/<first video stem>/) ---
-    base_output = _REPO_ROOT / "output" / "exp" / video_name_0
+    session_slug = args.session_slug or raw_session_slug(root)
+    threshold_str_for_filename = format_threshold_filename(threshold_ns)
+    # e.g. output/exp/sync0403_16ms/
+    base_output = (
+        _REPO_ROOT
+        / "output"
+        / "exp"
+        / f"{session_slug}_{threshold_str_for_filename}"
+    )
     base_output.mkdir(parents=True, exist_ok=True)
 
     # --- Setup logger ---
@@ -499,6 +565,7 @@ def main():
     setup_logger(log_file_path)
     logging.info("==== New matching session started ====")
     logging.info(f"Loaded {num_videos} video paths from command line")
+    logging.info(f"Output directory: {base_output}")
 
     # --- Get video 0 duration ---
     cap = cv2.VideoCapture(video_path_0)
@@ -545,9 +612,15 @@ def main():
     csv_0 = csv_paths[0]
     right_csvs = csv_paths[1:]
 
-    threshold_str_for_filename = format_threshold_filename(threshold_ns)
-    matched_csv_path = str(base_output / f"matched_multi_{threshold_str_for_filename}.csv")
-    matched_csv_full_path = str(base_output / f"matched_multi_{threshold_str_for_filename}_full.csv")
+    if args.skip_match:
+        if not extract_flag:
+            logging.warning("--skip-match without --extract: no matching and no extraction; nothing to do.")
+        else:
+            logging.info("Skipping multi-match (--skip-match).")
+        return
+
+    matched_csv_path = str(base_output / "matched.csv")
+    matched_csv_full_path = str(base_output / "matched_full.csv")
 
     # --- Multi-match ---
     match_frames_from_csv_multi(csv_0, right_csvs, matched_csv_path, threshold_ns)

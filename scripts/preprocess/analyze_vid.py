@@ -1,6 +1,9 @@
+from __future__ import annotations
+
 import argparse
 import cv2
 import os
+import statistics
 import subprocess
 from datetime import datetime
 from pathlib import Path
@@ -16,6 +19,11 @@ CONFIG = dict(
     end_cam=None,   # inclusive; None = auto-detect
     truncate=False,
     truncate_from="end",
+    pad_csv=True,
+    pad_to="end",  # "end" | "begin" — where to append missing timestamp lines
+    # marker = explicit __POSTPROCESS__ labels (default); extrapolate/repeat_last = numeric (can look like real ts)
+    pad_fill="marker",
+    pad_marker="extra1",
     clear_log=False,
 )
 
@@ -177,11 +185,121 @@ def get_frame_count_fast(video_path):
         return None
 
 
-def analyze_video(video_path: str, log_file: str, truncate=False, truncate_from="end", print_log=False):
+def _read_csv_nonempty_stripped_lines(csv_path: Path) -> list[str]:
+    with csv_path.open("r", encoding="utf-8") as f:
+        return [ln.strip() for ln in f if ln.strip()]
+
+
+def _sanitize_pad_marker(s: str) -> str:
+    """Safe token for CSV lines / frame basename stems (alnum, _, -)."""
+    t = (s or "").strip() or "PAD"
+    t = re.sub(r"[^\w\-]+", "_", t, flags=re.ASCII)
+    return (t[:64] or "PAD")
+
+
+def _infer_timestamp_step_ns(timestamps: list[int], fps: float | None) -> int:
+    if len(timestamps) >= 2:
+        diffs = [b - a for a, b in zip(timestamps, timestamps[1:]) if b > a]
+        if diffs:
+            return int(statistics.median(diffs))
+    if fps is not None and fps > 0:
+        return max(1, int(round(1e9 / fps)))
+    raise ValueError(
+        "pad_fill=extrapolate needs ≥2 ascending integer timestamps or valid video FPS."
+    )
+
+
+def pad_timestamp_csv(
+    csv_path: Path,
+    target_nlines: int,
+    pad_to: str,
+    pad_fill: str,
+    fps: float | None,
+    pad_marker: str = "PAD",
+) -> tuple[int, int]:
+    """
+    Extend CSV until line count == target_nlines.
+    pad_to: "end" → append after last line; "begin" → prepend before first line.
+    pad_fill:
+      "marker" → lines contain fixed __POSTPROCESS__ and optional prefix (not real capture timestamps).
+      "extrapolate" → synthetic ints from median step / FPS (can be mistaken for real data).
+      "repeat_last" → duplicate edge int for each added line.
+    Returns (count_before, count_after).
+    """
+    lines = _read_csv_nonempty_stripped_lines(csv_path)
+    n = len(lines)
+    if n >= target_nlines:
+        return n, n
+
+    n_add = target_nlines - n
+    if pad_fill == "marker":
+        label = _sanitize_pad_marker(pad_marker)
+        if pad_to == "end":
+            extra = [
+                f"{label}__POSTPROCESS__append_{i:06d}" for i in range(1, n_add + 1)
+            ]
+            new_lines = lines + extra
+        elif pad_to == "begin":
+            extra = [
+                f"{label}__POSTPROCESS__prepend_{i:06d}" for i in range(1, n_add + 1)
+            ]
+            new_lines = extra + lines
+        else:
+            raise ValueError("pad_to must be 'begin' or 'end'.")
+        csv_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+        return n, len(new_lines)
+
+    try:
+        ts = [int(x) for x in lines]
+    except ValueError as e:
+        raise ValueError(
+            f"CSV padding ({pad_fill}) requires existing lines to be integers: {e}"
+        ) from e
+
+    if pad_fill == "repeat_last":
+        if pad_to == "end":
+            extra = [ts[-1]] * n_add
+            new_ts = ts + extra
+        elif pad_to == "begin":
+            extra = [ts[0]] * n_add
+            new_ts = extra + ts
+        else:
+            raise ValueError("pad_to must be 'begin' or 'end'.")
+    elif pad_fill == "extrapolate":
+        step = _infer_timestamp_step_ns(ts, fps)
+        if pad_to == "end":
+            last = ts[-1]
+            new_ts = ts + [last + step * (i + 1) for i in range(n_add)]
+        elif pad_to == "begin":
+            first = ts[0]
+            head = [first - step * (i + 1) for i in range(n_add)]
+            head.reverse()
+            new_ts = head + ts
+        else:
+            raise ValueError("pad_to must be 'begin' or 'end'.")
+    else:
+        raise ValueError("pad_fill must be 'marker', 'extrapolate', or 'repeat_last'.")
+
+    csv_path.write_text("\n".join(str(x) for x in new_ts) + "\n", encoding="utf-8")
+    return n, len(new_ts)
+
+
+def analyze_video(
+    video_path: str,
+    log_file: str,
+    truncate=False,
+    truncate_from="end",
+    pad_csv=False,
+    pad_to="end",
+    pad_fill="marker",
+    pad_marker="extra1",
+    print_log=False,
+):
     """
     Analyze video & optionally truncate CSV if timestamp_count > frame_count.
     truncate_from: "end" (default) → cut extra lines at the end,
                    "begin" → cut extra lines at the beginning.
+    Optionally pad CSV when timestamp_count < frame_count (see pad_csv / pad_to / pad_fill / pad_marker).
     """
     if not os.path.exists(video_path):
         raise FileNotFoundError(f"Video not found: {video_path}")
@@ -217,6 +335,7 @@ def analyze_video(video_path: str, log_file: str, truncate=False, truncate_from=
         f.write(f"{csv_msg}\n")
 
         # --- OpenCV properties ---
+        fps = None
         cap = cv2.VideoCapture(video_path)
         if not cap.isOpened():
             f.write(f"Failed to open video with OpenCV: {video_path}\n")
@@ -269,6 +388,33 @@ def analyze_video(video_path: str, log_file: str, truncate=False, truncate_from=
 
                 f.write(f"[TRUNCATE] CSV truncated ({truncate_from}) from {timestamp_count} → {frame_count} lines\n")
 
+        # --- Pad CSV if timestamp lines < frame count (e.g. sync extract_frame_data) ---
+        if pad_csv and csv_path and frame_count:
+            path_p = Path(csv_path)
+            if path_p.exists():
+                n_nonempty = len(_read_csv_nonempty_stripped_lines(path_p))
+                if n_nonempty < frame_count:
+                    backup_csv = path_p.parent / f"{path_p.stem}_ori{path_p.suffix}"
+                    if not backup_csv.exists():
+                        shutil.copy(path_p, backup_csv)
+                        f.write(f"[PAD] CSV backed up to {backup_csv}\n")
+                    try:
+                        old_c, new_c = pad_timestamp_csv(
+                            path_p,
+                            frame_count,
+                            pad_to,
+                            pad_fill,
+                            fps,
+                            pad_marker=pad_marker,
+                        )
+                        f.write(
+                            f"[PAD] CSV padded ({pad_to}, fill={pad_fill}"
+                            + (f", marker={pad_marker!r}" if pad_fill == "marker" else "")
+                            + f") {old_c} → {new_c} lines (target={frame_count} frames)\n"
+                        )
+                    except ValueError as exc:
+                        f.write(f"[PAD] skipped: {exc}\n")
+
         # --- FFmpeg probe ---
         try:
             ffmpeg_cmd = ["ffmpeg", "-i", video_path]
@@ -306,6 +452,31 @@ if __name__ == "__main__":
     parser.add_argument("--end_cam", type=int, default=CONFIG["end_cam"])
     parser.add_argument("--truncate", action="store_true", default=CONFIG["truncate"])
     parser.add_argument("--truncate_from", default=CONFIG["truncate_from"], choices=["begin", "end"])
+    parser.add_argument(
+        "--pad_csv",
+        action="store_true",
+        default=CONFIG["pad_csv"],
+        help="If CSV has fewer lines than video frames, add lines (see --pad_to, --pad_fill).",
+    )
+    parser.add_argument(
+        "--pad_to",
+        default=CONFIG["pad_to"],
+        choices=["begin", "end"],
+        help='Where to insert missing lines: "end" (default) or "begin".',
+    )
+    parser.add_argument(
+        "--pad_fill",
+        default=CONFIG["pad_fill"],
+        choices=["marker", "extrapolate", "repeat_last"],
+        help="marker: lines with __POSTPROCESS__ + --pad_marker (default, obvious postprocessing). "
+        "extrapolate/repeat_last: numeric only (can look like real timestamps).",
+    )
+    parser.add_argument(
+        "--pad_marker",
+        default=CONFIG["pad_marker"],
+        metavar="LABEL",
+        help='With pad_fill=marker: prefix token (default from CONFIG; e.g. extra1 → extra1__POSTPROCESS__append_000001).',
+    )
     parser.add_argument("--clear_log", action="store_true", default=CONFIG["clear_log"])
     parser.add_argument("--print_log", action="store_true", default=True)
     args = parser.parse_args()
@@ -327,6 +498,10 @@ if __name__ == "__main__":
                 log_file,
                 truncate=args.truncate,
                 truncate_from=args.truncate_from,
+                pad_csv=args.pad_csv,
+                pad_to=args.pad_to,
+                pad_fill=args.pad_fill,
+                pad_marker=args.pad_marker,
                 print_log=args.print_log,
             )
             print(f"✓ Finished: {video_path}")
@@ -353,7 +528,11 @@ if __name__ == "__main__":
                 log_file,
                 truncate=args.truncate,
                 truncate_from=args.truncate_from,
-                print_log=args.print_log
+                pad_csv=args.pad_csv,
+                pad_to=args.pad_to,
+                pad_fill=args.pad_fill,
+                pad_marker=args.pad_marker,
+                print_log=args.print_log,
             )
             print(f"✓ Finished: {video_path}")
 

@@ -23,7 +23,7 @@ def parse_args():
     parser.add_argument(
         "--csv",
         default=None,
-        help="Path to matched_multi_xx.csv (required unless --move-back)"
+        help="Path to sync output matched.csv (required unless --move-back)"
     )
     parser.add_argument(
         "--move-back",
