@@ -27,6 +27,14 @@ from os.path import join
 import numpy as np
 import open3d as o3d
 
+sys.path.insert(0, join(os.path.dirname(__file__), '..', '..'))
+
+from easymocap.mytools.colmap_structure import (
+    read_images_binary,
+    read_images_text,
+    qvec2rotmat,
+)
+
 
 def resolve_input(path):
     """Accept a .ply file, a colmap_ws directory, or a data root."""
@@ -41,6 +49,35 @@ def resolve_input(path):
         if os.path.isfile(c):
             return c
     return path
+
+
+def find_sparse_dir(ply_path):
+    """Walk up from the .ply to find the COLMAP sparse/0 directory."""
+    d = os.path.dirname(ply_path)
+    for _ in range(5):
+        candidate = join(d, 'sparse', '0')
+        if os.path.isdir(candidate):
+            return candidate
+        d = os.path.dirname(d)
+    return None
+
+
+def load_camera_centers(sparse_dir):
+    """Read camera world positions from COLMAP sparse model."""
+    images_bin = join(sparse_dir, 'images.bin')
+    images_txt = join(sparse_dir, 'images.txt')
+    if os.path.exists(images_bin):
+        images = read_images_binary(images_bin)
+    elif os.path.exists(images_txt):
+        images = read_images_text(images_txt)
+    else:
+        return None
+    centers = []
+    for img in images.values():
+        R = qvec2rotmat(img.qvec)
+        C = -R.T @ img.tvec
+        centers.append(C)
+    return np.array(centers)
 
 
 def print_stats(pcd, label=""):
@@ -203,7 +240,19 @@ def main():
         pcd.estimate_normals(
             o3d.geometry.KDTreeSearchParamHybrid(radius=nr, max_nn=30)
         )
-        pcd.orient_normals_consistent_tangent_plane(k=15)
+
+        sparse_dir = find_sparse_dir(ply_path)
+        cam_centers = load_camera_centers(sparse_dir) if sparse_dir else None
+
+        if cam_centers is not None:
+            print(f'  orienting normals toward {len(cam_centers)} camera centers')
+            cam_centroid = cam_centers.mean(axis=0)
+            pcd.orient_normals_towards_camera_location(cam_centroid)
+        else:
+            print('  WARNING: no COLMAP sparse model found — '
+                  'falling back to tangent-plane orientation (may flip)')
+            pcd.orient_normals_consistent_tangent_plane(k=15)
+
         print(f'  normals computed for {len(pcd.points):,} points')
     else:
         print('\n[clean] Step 5: Normal estimation skipped')
