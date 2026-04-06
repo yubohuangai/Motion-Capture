@@ -10,7 +10,9 @@ Modes:
      of that box (default) or the full frame (`--hybrid_sam_space full`).
      SAM can output multiple masks; the one with best **IoU** vs. the diff mask
      is kept when a prior is available.  Use `--hybrid_combine intersect` to
-     AND with bg_sub.
+     AND with bg_sub.  By default, **post-SAM center-blob** refinement runs
+     (same spatial idea as center_only on the diff mask) to drop extra SAM
+     blobs; disable with ``--no_post_sam_center_only``.
 
 **SAM 2** ([facebookresearch/sam2](https://github.com/facebookresearch/sam2)) is
 often stronger than SAM 1, but the upstream project requires **Python ≥3.10**
@@ -213,6 +215,67 @@ def compute_background_subtraction_mask(fg_path, bg_path, threshold, morph_kerne
             mask = filled
 
     return mask
+
+
+def refine_hybrid_mask_single_blob(mask_uint8, morph_kernel, max_area_ratio):
+    """
+    After SAM, keep one primary blob using the same spatial prior as
+    ``center_only`` on the diff mask: light opening → ``locate_object_bbox`` →
+    restrict to padded ROI → close/open → largest contour → convex hull.
+
+    If no bbox is found on the opened mask, falls back to the largest contour
+    on the opened mask (convex hull).
+    """
+    if mask_uint8 is None or mask_uint8.sum() == 0:
+        return mask_uint8
+
+    h, w = mask_uint8.shape[:2]
+    small_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    kernel = cv2.getStructuringElement(
+        cv2.MORPH_ELLIPSE, (morph_kernel, morph_kernel),
+    )
+    coarse = cv2.morphologyEx(mask_uint8, cv2.MORPH_OPEN, small_k, iterations=1)
+    bbox = locate_object_bbox(coarse, max_area_ratio=max_area_ratio)
+
+    if bbox is None:
+        cnts, _ = cv2.findContours(coarse, cv2.RETR_EXTERNAL,
+                                   cv2.CHAIN_APPROX_SIMPLE)
+        if not cnts:
+            return mask_uint8
+        biggest = max(cnts, key=cv2.contourArea)
+        out = np.zeros((h, w), dtype=np.uint8)
+        cv2.drawContours(out, [cv2.convexHull(biggest)], -1, 255, cv2.FILLED)
+        return out
+
+    bx, by, bw, bh = bbox
+    pad_x, pad_y = int(bw * 0.1), int(bh * 0.1)
+    x1 = max(0, bx - pad_x)
+    y1 = max(0, by - pad_y)
+    x2 = min(w, bx + bw + pad_x)
+    y2 = min(h, by + bh + pad_y)
+
+    mask = np.zeros((h, w), dtype=np.uint8)
+    roi = mask_uint8[y1:y2, x1:x2]
+    mask[y1:y2, x1:x2] = np.where(roi > 127, 255, 0).astype(np.uint8)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=3)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, small_k, iterations=1)
+
+    cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not cnts:
+        cnts, _ = cv2.findContours(coarse, cv2.RETR_EXTERNAL,
+                                   cv2.CHAIN_APPROX_SIMPLE)
+        if not cnts:
+            return mask_uint8
+        biggest = max(cnts, key=cv2.contourArea)
+        out = np.zeros((h, w), dtype=np.uint8)
+        cv2.drawContours(out, [cv2.convexHull(biggest)], -1, 255, cv2.FILLED)
+        return out
+
+    biggest = max(cnts, key=cv2.contourArea)
+    hull = cv2.convexHull(biggest)
+    out = np.zeros((h, w), dtype=np.uint8)
+    cv2.drawContours(out, [hull], -1, 255, cv2.FILLED)
+    return out
 
 
 def apply_mask_postprocess(mask, dilate=0, erode=0):
@@ -486,7 +549,8 @@ def hybrid_bg_sam(data_root, cam_names, frame, bg_frame, ext,
                   sam_checkpoint=None, sam_model_type='vit_h',
                   hybrid_combine='sam', sam_box_pad_ratio=0.12,
                   sam_backend='sam1', sam2_checkpoint=None,
-                  sam2_config=None, hybrid_sam_space='crop'):
+                  sam2_config=None, hybrid_sam_space='crop',
+                  post_sam_center_only=True):
     """
     Background subtraction mask → bbox → SAM1/SAM2 box prompt.
 
@@ -497,6 +561,11 @@ def hybrid_bg_sam(data_root, cam_names, frame, bg_frame, ext,
     ``hybrid_combine``:
       * ``sam`` — use SAM mask only (after optional IoU pick vs. diff mask).
       * ``intersect`` — bitwise AND of diff mask and SAM.
+
+    ``post_sam_center_only``:
+      If True, run :func:`refine_hybrid_mask_single_blob` after SAM (and after
+      ``intersect`` if used) to remove stray SAM regions using the same table /
+      center spatial prior as traditional ``center_only``.
     """
     import torch
 
@@ -530,7 +599,8 @@ def hybrid_bg_sam(data_root, cam_names, frame, bg_frame, ext,
         sam.to(device)
         predictor = SamPredictor(sam)
 
-    print(f'[hybrid] SAM image space: {hybrid_sam_space}')
+    print(f'[hybrid] SAM image space: {hybrid_sam_space}, '
+          f'post_sam_center_only: {post_sam_center_only}')
 
     bg_root = bg_data or data_root
     for cam in cam_names:
@@ -595,6 +665,11 @@ def hybrid_bg_sam(data_root, cam_names, frame, bg_frame, ext,
                 mask = cv2.bitwise_and(mask_bg, mask_sam)
             else:
                 mask = mask_sam
+
+        if post_sam_center_only and mask is not None and mask.sum() > 0:
+            mask = refine_hybrid_mask_single_blob(
+                mask, morph_kernel, max_area_ratio,
+            )
 
         mask = apply_mask_postprocess(mask, dilate=dilate, erode=erode)
 
@@ -666,8 +741,9 @@ def main():
     bg_group.add_argument('--morph_kernel', type=int, default=7,
                           help='Morphology kernel size')
     bg_group.add_argument('--no_center_only', action='store_true',
-                          help='Disable center-only blob filtering (keep all '
-                               'foreground blobs after threshold/morphology)')
+                          help='Disable center-only blob filtering on the '
+                               'background-subtraction mask (bg_sub and hybrid; '
+                               'hybrid still uses this mask for bbox + optional IoU prior)')
     bg_group.add_argument('--max_area_ratio', type=float, default=0.15,
                           help='Max blob area as fraction of image (blobs '
                                'larger than this are discarded, default 0.15)')
@@ -700,6 +776,9 @@ def main():
                            default='crop',
                            help='hybrid only: run SAM on cropped ROI around bg_sub '
                                 'bbox (crop) or on the full frame (full)')
+    sam_group.add_argument('--no_post_sam_center_only', action='store_true',
+                           help='hybrid only: skip post-SAM single-blob refinement '
+                                '(refine_hybrid_mask_single_blob; on by default)')
 
     parser.add_argument('--no_vis', action='store_true',
                         help='Do not save per-camera overlay JPEGs to <data>/mask_vis/')
@@ -709,6 +788,7 @@ def main():
     args = parser.parse_args()
 
     center_only = not args.no_center_only
+    post_sam_center_only = not args.no_post_sam_center_only
     use_vis = not args.no_vis
     save_fg = not args.no_save_fg_images
 
@@ -720,7 +800,8 @@ def main():
     print(f'[generate_masks] Mode: {args.mode}, frame: {args.frame}, '
           f'sam_backend: {args.sam_backend}'
           + (f', hybrid_sam_space: {args.hybrid_sam_space}' if args.mode == 'hybrid' else '')
-          + (f', center_only: {center_only}' if args.mode in ('bg_sub', 'hybrid') else ''))
+          + (f', center_only: {center_only}' if args.mode in ('bg_sub', 'hybrid') else '')
+          + (f', post_sam_center_only: {post_sam_center_only}' if args.mode == 'hybrid' else ''))
     print(f'[generate_masks] mask_vis: {use_vis}, foreground_images: {save_fg}')
     print(f'[generate_masks] Output: {output_dir}')
     if vis_dir:
@@ -784,6 +865,7 @@ def main():
             sam2_checkpoint=args.sam2_checkpoint,
             sam2_config=args.sam2_config,
             hybrid_sam_space=args.hybrid_sam_space,
+            post_sam_center_only=post_sam_center_only,
         )
 
     print('[generate_masks] Done.')
