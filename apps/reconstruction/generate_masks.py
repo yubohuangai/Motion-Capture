@@ -28,9 +28,13 @@ Output layout:
     use **center-only** blob filtering by default (disable with ``--no_center_only``).
 
 Usage:
-    # Background subtraction (fast; by default: center_only, mask_vis/, foreground_images/)
+    # Minimal hybrid (defaults: mode=hybrid, frame=0, bg_frame=0, threshold=30,
+    # SAM checkpoint at <Motion-Capture>/data/sam/sam_vit_h_4b8939.pth)
+    python apps/reconstruction/generate_masks.py /path/to/data --bg_data /path/to/background
+
+    # Background subtraction only
     python apps/reconstruction/generate_masks.py /path/to/data \\
-        --frame 0 --bg_frame 100 --threshold 30
+        --mode bg_sub --frame 0 --bg_frame 100 --threshold 30
 
     # SAM automatic masks (needs segment_anything + model checkpoint)
     python apps/reconstruction/generate_masks.py /path/to/data \\
@@ -63,6 +67,10 @@ import cv2
 import numpy as np
 
 sys.path.insert(0, join(os.path.dirname(__file__), '..', '..'))
+
+# Repo root (Motion-Capture): default SAM path works regardless of cwd.
+_REPO_ROOT = os.path.normpath(join(os.path.dirname(os.path.abspath(__file__)), '..', '..'))
+DEFAULT_SAM_CHECKPOINT = join(_REPO_ROOT, 'data', 'sam', 'sam_vit_h_4b8939.pth')
 
 
 def get_cam_names(data_root):
@@ -727,12 +735,12 @@ def main():
     parser.add_argument('--ext', default='.jpg', help='Image extension')
     parser.add_argument('--output', default=None,
                         help='Output mask directory (default: <data>/masks)')
-    parser.add_argument('--mode', choices=['bg_sub', 'sam', 'hybrid'], default='bg_sub',
-                        help='Mask generation mode (hybrid = bg_sub bbox + SAM box prompt)')
+    parser.add_argument('--mode', choices=['bg_sub', 'sam', 'hybrid'], default='hybrid',
+                        help='Mask generation mode (default: hybrid = bg_sub bbox + SAM)')
 
     bg_group = parser.add_argument_group('background subtraction')
-    bg_group.add_argument('--bg_frame', type=int, default=None,
-                          help='Background-only frame index (required for bg_sub / hybrid)')
+    bg_group.add_argument('--bg_frame', type=int, default=0,
+                          help='Background-only frame index (default: 0; used by bg_sub / hybrid)')
     bg_group.add_argument('--bg_data', default=None,
                           help='Separate data root for background frames '
                                '(if background is in a different directory)')
@@ -757,8 +765,11 @@ def main():
     sam_group.add_argument('--sam_backend', choices=['sam1', 'sam2'], default='sam1',
                            help='segment_anything (sam1) vs SAM 2 (sam2); sam2 needs '
                                 'Python>=3.10 and torch>=2.5.1 per upstream')
-    sam_group.add_argument('--sam_checkpoint', default=None,
-                           help='SAM1 .pth checkpoint (sam_backend sam1, modes sam/hybrid)')
+    sam_group.add_argument(
+        '--sam_checkpoint',
+        default=DEFAULT_SAM_CHECKPOINT,
+        help=f'SAM1 .pth checkpoint (default: {DEFAULT_SAM_CHECKPOINT})',
+    )
     sam_group.add_argument('--sam_model_type', default='vit_h',
                            help='SAM1 model type (vit_h, vit_l, vit_b)')
     sam_group.add_argument('--sam2_checkpoint', default=None,
@@ -810,8 +821,6 @@ def main():
         print(f'[generate_masks] Foreground images: {fg_out_dir}')
 
     if args.mode == 'bg_sub':
-        if args.bg_frame is None:
-            parser.error('--bg_frame is required for background subtraction mode')
         background_subtraction(
             args.data, cam_names, args.frame, args.bg_frame, args.ext,
             args.threshold, args.morph_kernel, output_dir, vis_dir,
@@ -840,8 +849,6 @@ def main():
                 save_fg_dir=fg_out_dir,
             )
     elif args.mode == 'hybrid':
-        if args.bg_frame is None:
-            parser.error('--bg_frame is required for hybrid mode')
         if args.sam_backend == 'sam1':
             if args.sam_checkpoint is None:
                 parser.error('--sam_checkpoint is required for hybrid mode with sam_backend sam1')

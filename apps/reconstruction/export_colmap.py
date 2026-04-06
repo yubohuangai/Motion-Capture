@@ -13,8 +13,13 @@ multi-view reconstruction frameworks can ingest directly:
         └── points3D.bin (+ points3D.txt)
 
 Usage:
-    python apps/reconstruction/export_colmap.py /path/to/data \\
-        --frame 0 --output /path/to/colmap_ws --undistort --triangulate
+    python apps/reconstruction/export_colmap.py /path/to/data
+
+    Defaults: ``<data>/colmap_ws``, frame 0, undistort, mask dir ``masks``,
+    triangulate, COLMAP GPU, Open3D sparse viewer. Opt out with ``--no_*``
+    flags (see ``--help``).
+
+    Override workspace: ``-o /path/to/colmap_ws``
 """
 
 import argparse
@@ -407,10 +412,13 @@ def triangulate_points(output_dir, cameras, cam_names, cam_id_map,
 def main():
     parser = argparse.ArgumentParser(
         description='Export EasyMocap calibration to COLMAP workspace',
+        epilog='Defaults: output <data>/colmap_ws; undistort; mask subdir masks; '
+               'triangulate; COLMAP GPU; Open3D viewer. Use --no_* to disable.',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument('data', help='Root data path containing images/ and intri.yml/extri.yml')
-    parser.add_argument('--output', '-o', required=True,
-                        help='Output COLMAP workspace directory')
+    parser.add_argument('--output', '-o', default=None,
+                        help='Output COLMAP workspace (default: <data>/colmap_ws)')
     parser.add_argument('--frame', type=int, default=0,
                         help='Frame index to export (default: 0)')
     parser.add_argument('--intri', default='intri.yml',
@@ -419,20 +427,33 @@ def main():
                         help='Extrinsics file name (default: extri.yml)')
     parser.add_argument('--ext', default='.jpg',
                         help='Image extension (default: .jpg)')
-    parser.add_argument('--undistort', action='store_true',
-                        help='Undistort images and export PINHOLE cameras')
-    parser.add_argument('--mask', default=None,
-                        help='Mask sub-directory name (e.g. "mask" or "masks"). '
-                             'If set, copies masks alongside images.')
-    parser.add_argument('--triangulate', action='store_true',
-                        help='Run COLMAP feature extraction + matching + '
-                             'triangulation to populate initial 3D points '
-                             '(required for 3DGS)')
+    parser.add_argument('--no_undistort', action='store_true',
+                        help='Keep distorted images and OPENCV camera model')
+    parser.add_argument('--mask', default='masks',
+                        help='Mask sub-directory under data (default: masks). '
+                             'Ignored with --no_mask.')
+    parser.add_argument('--no_mask', action='store_true',
+                        help='Do not copy masks into the workspace')
+    parser.add_argument('--no_triangulate', action='store_true',
+                        help='Skip COLMAP feature extraction / matching / triangulation')
     parser.add_argument('--colmap', default='colmap',
                         help='Path to COLMAP binary (default: colmap)')
-    parser.add_argument('--gpu', action='store_true',
-                        help='Use GPU for COLMAP feature extraction/matching')
+    parser.add_argument('--no_gpu', action='store_true',
+                        help='Use CPU for COLMAP feature extraction/matching')
+    parser.add_argument('--no_vis', action='store_true',
+                        help='Do not open Open3D sparse viewer after export')
+    parser.add_argument('--vis_frustum_scale', type=float, default=0.3,
+                        help='Sparse viewer: camera frustum scale (default: 0.3)')
+    parser.add_argument('--vis_point_size', type=float, default=2.0,
+                        help='Sparse viewer: point size (default: 2.0)')
     args = parser.parse_args()
+
+    output_dir = args.output if args.output is not None else join(args.data, 'colmap_ws')
+    undistort = not args.no_undistort
+    mask_dir = None if args.no_mask else args.mask
+    triangulate = not args.no_triangulate
+    use_colmap_gpu = not args.no_gpu
+    do_vis = not args.no_vis
 
     intri_path = join(args.data, args.intri)
     extri_path = join(args.data, args.extri)
@@ -450,36 +471,61 @@ def main():
 
     print('[export_colmap] Building COLMAP cameras ...')
     colmap_cameras, new_K_map, cam_id_map = build_colmap_cameras(
-        cams, cam_names, sizes, args.undistort,
+        cams, cam_names, sizes, undistort,
     )
 
     print('[export_colmap] Building COLMAP images ...')
     colmap_images = build_colmap_images(cams, cam_names, cam_id_map, args.ext)
 
-    print(f'[export_colmap] Processing images (undistort={args.undistort}) ...')
+    print(f'[export_colmap] Processing images (undistort={undistort}) ...')
     process_images(
-        args.data, args.output, cam_names, cams,
-        new_K_map, args.frame, args.ext, args.undistort, args.mask,
+        args.data, output_dir, cam_names, cams,
+        new_K_map, args.frame, args.ext, undistort, mask_dir,
     )
 
     print('[export_colmap] Writing COLMAP sparse model ...')
-    write_colmap_model(args.output, colmap_cameras, colmap_images)
+    write_colmap_model(output_dir, colmap_cameras, colmap_images)
 
-    if args.triangulate:
+    if triangulate:
         print('[export_colmap] Triangulating 3D points via COLMAP ...')
         triangulate_points(
-            args.output, cams, cam_names, cam_id_map,
+            output_dir, cams, cam_names, cam_id_map,
             colmap_cameras, colmap_images,
-            args.colmap, args.gpu,
+            args.colmap, use_colmap_gpu,
         )
 
-    print(f'\n[export_colmap] Done. Output at: {args.output}')
+    print(f'\n[export_colmap] Done. Output at: {output_dir}')
     print(f'  images/        — {len(cam_names)} images')
     print(f'  sparse/0/      — cameras.{{bin,txt}}, images.{{bin,txt}}, points3D.{{bin,txt}}')
     print()
     print('Next steps:')
-    print(f'  3DGS:       python train.py -s {args.output} --iterations 7000')
-    print(f'  Nerfstudio: ns-train neus-facto --data {args.output} colmap')
+    print(f'  3DGS:       python train.py -s {output_dir} --iterations 7000')
+    print(f'  Nerfstudio: ns-train neus-facto --data {output_dir} colmap')
+    print(f'  Sparse vis: python apps/reconstruction/vis_colmap_sparse.py '
+          f'{join(output_dir, "sparse", "0")} --images_dir {join(output_dir, "images")}')
+
+    if do_vis:
+        sparse_dir = join(output_dir, 'sparse', '0')
+        if not os.path.isdir(sparse_dir):
+            print(f'\n[export_colmap] Sparse viewer skipped: not a directory: {sparse_dir}')
+        else:
+            try:
+                import vis_colmap_sparse
+            except ImportError as e:
+                print(f'\n[export_colmap] Sparse viewer skipped: cannot import vis_colmap_sparse: {e}')
+            else:
+                try:
+                    print('\n[export_colmap] Launching sparse visualization ...')
+                    vis_colmap_sparse.visualize_sparse_model(
+                        sparse_dir,
+                        images_dir=join(output_dir, 'images'),
+                        frustum_scale=args.vis_frustum_scale,
+                        point_size=args.vis_point_size,
+                    )
+                except ImportError as e:
+                    print(f'\n[export_colmap] Sparse viewer skipped: {e}')
+                except Exception as e:
+                    print(f'\n[export_colmap] Sparse viewer failed: {e}')
 
 
 if __name__ == '__main__':

@@ -166,27 +166,40 @@ Reconstruct arbitrary objects (no predefined body model) from calibrated multi-v
 Convert `intri.yml` / `extri.yml` to a COLMAP sparse model that standard reconstruction frameworks accept:
 
 ```bash
-python apps/reconstruction/export_colmap.py <data_path> \
-  --frame 0 --output <colmap_workspace> --undistort
+python apps/reconstruction/export_colmap.py <data_path>
 ```
 
-- `--undistort`: undistorts images and exports PINHOLE cameras (recommended for neural methods)
-- `--mask <dir>`: optionally copies foreground masks alongside images
+Defaults write to `<data_path>/colmap_ws` with frame 0, undistorted PINHOLE cameras, masks from `<data_path>/masks/`, COLMAP triangulation on GPU, and the Open3D sparse viewer (needs `pip install open3d` and a display). Override workspace with `-o <colmap_workspace>`. Opt out with `--no_undistort`, `--no_mask`, `--no_triangulate`, `--no_gpu`, `--no_vis`. Optional viewer tuning: `--vis_frustum_scale`, `--vis_point_size`.
+
 - Output: `<colmap_workspace>/images/`, `<colmap_workspace>/sparse/0/{cameras,images,points3D}.{bin,txt}`
 
-### 4.2 Generate Foreground Masks (Optional)
+### 4.2 Foreground masks (required for object reconstruction)
 
-Masks significantly improve reconstruction quality by excluding the background:
+Generate masks before COLMAP export and any downstream step that expects masked images. They exclude background features and stabilize multi-view geometry.
+
+**Typical command** (run from the Motion-Capture repo root). Defaults: **hybrid** mode (background subtraction → SAM box prompt → post-SAM single blob), `frame=0`, `bg_frame=0`, `threshold=30`, SAM checkpoint at `data/sam/sam_vit_h_4b8939.pth`. Also writes `mask_vis/` and `foreground_images/` unless disabled.
 
 ```bash
-# Background subtraction (requires a background-only frame)
-python apps/reconstruction/generate_masks.py <data_path> \
-  --frame 0 --bg_frame 100 --threshold 30
-
-# SAM-based segmentation (requires segment-anything)
-python apps/reconstruction/generate_masks.py <data_path> \
-  --frame 0 --mode sam --sam_checkpoint /path/to/sam_vit_h.pth
+python apps/reconstruction/generate_masks.py /mnt/yubo/obj/cube \
+  --bg_data /mnt/yubo/obj/background
 ```
+
+Replace `/mnt/yubo/obj/cube` with your object data root (`images/<cam>/`, `intri.yml`, `extri.yml`) and `--bg_data` with the folder that holds the same per-camera layout for **background-only** captures. Masks are written to `<data_path>/masks/<cam>/000000.png`.
+
+Other modes (override `--mode` as needed):
+
+```bash
+# Background subtraction only (no SAM)
+python apps/reconstruction/generate_masks.py <data_path> \
+  --mode bg_sub --bg_data <background_root> \
+  --frame 0 --bg_frame 0 --threshold 30
+
+# Full-image SAM only (requires segment-anything)
+python apps/reconstruction/generate_masks.py <data_path> \
+  --mode sam --sam_checkpoint /path/to/sam_vit_h.pth
+```
+
+See `python apps/reconstruction/generate_masks.py --help` for hybrid options (`--hybrid_combine intersect`, `--no_post_sam_center_only`, SAM2, etc.).
 
 ### 4.3 3D Gaussian Splatting (Real-time Rendering)
 
@@ -241,8 +254,8 @@ python apps/preprocess/extract_keypoints.py <mocap_path> --mode mmpose
 python apps/demo/mv1p.py <mocap_path> --body bodyhandface --model smplx --gender male --vis_det --vis_repro --vis_smpl
 
 # 4. 3D object reconstruction (arbitrary objects)
-python apps/reconstruction/export_colmap.py <data_path> --frame 0 --output <colmap_ws> --undistort
-python apps/reconstruction/generate_masks.py <data_path> --frame 0 --bg_frame 100  # optional
+python apps/reconstruction/export_colmap.py <data_path>
+python apps/reconstruction/generate_masks.py <data_path> --bg_data <background_root>  # required; see section 4.2
 python apps/reconstruction/run_3dgs.py <data_path> --frame 0 --output <recon> --gs_repo <gs_path> --undistort
 ```
 
@@ -291,7 +304,7 @@ For Stage 4 (object reconstruction):
 
 - [3D Gaussian Splatting](https://github.com/graphdeco-inria/gaussian-splatting) (clone + install submodules)
 - [Nerfstudio](https://docs.nerf.studio/) (`pip install nerfstudio`) for NeuS-facto mesh extraction
-- (Optional) [Segment Anything](https://github.com/facebookresearch/segment-anything) for SAM-based masking
+- [Segment Anything](https://github.com/facebookresearch/segment-anything) for SAM-based masking (default hybrid path in `generate_masks.py`)
 
 ---
 
