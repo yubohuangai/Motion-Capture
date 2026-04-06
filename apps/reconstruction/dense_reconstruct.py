@@ -7,15 +7,16 @@ false matches from repeated textures seen by distant/opposite cameras.
 
 Pipeline:
     1. image_undistorter  (prepare dense workspace)
-    2. Apply masks        (optional, blacks out background)
+    2. Apply masks        (blacks out background in dense images)
     3. Generate neighbor-based patch-match.cfg from camera positions
-    4. patch_match_stereo (estimate depth maps)
+    4. patch_match_stereo (estimate depth maps — requires GPU)
     5. stereo_fusion      (fuse into dense point cloud)
 
 Usage:
-    python apps/reconstruction/dense_reconstruct.py \\
-        /mnt/yubo/obj/cube/output/colmap \\
-        --neighbor 3 --mask --min_num_pixels 2
+    python apps/reconstruction/dense_reconstruct.py /path/to/colmap_ws
+    python apps/reconstruction/dense_reconstruct.py /path/to/data
+    # If given a data root, auto-resolves to <data>/colmap_ws.
+    # Masks applied by default; disable with --no-mask.
 """
 
 import argparse
@@ -34,6 +35,40 @@ from easymocap.mytools.colmap_structure import (
     read_images_binary,
     qvec2rotmat,
 )
+
+
+def resolve_workspace(path):
+    """Accept a COLMAP workspace or a data root (tries <path>/colmap_ws)."""
+    path = os.path.abspath(path)
+    sparse = join(path, 'sparse', '0')
+    if os.path.isdir(sparse):
+        return path
+    nested = join(path, 'colmap_ws')
+    if os.path.isdir(join(nested, 'sparse', '0')):
+        return nested
+    return path
+
+
+def validate_workspace(ws):
+    """Check that the workspace has the required directories."""
+    sparse_dir = join(ws, 'sparse', '0')
+    img_dir = join(ws, 'images')
+    errors = []
+    if not os.path.isdir(sparse_dir):
+        errors.append(f'sparse model not found: {sparse_dir}')
+    elif not (os.path.exists(join(sparse_dir, 'cameras.bin'))
+              or os.path.exists(join(sparse_dir, 'cameras.txt'))):
+        errors.append(f'no cameras.bin/txt in {sparse_dir}')
+    if not os.path.isdir(img_dir):
+        errors.append(f'images directory not found: {img_dir}')
+    if errors:
+        print('[dense] ERROR: workspace validation failed:', file=sys.stderr)
+        for e in errors:
+            print(f'  - {e}', file=sys.stderr)
+        print(f'\nGot workspace path: {ws}', file=sys.stderr)
+        print('Expected: output of export_colmap.py (contains images/, sparse/0/)',
+              file=sys.stderr)
+        sys.exit(1)
 
 
 def get_camera_positions(sparse_dir):
@@ -120,17 +155,24 @@ def main():
     parser = argparse.ArgumentParser(
         description='COLMAP dense reconstruction with spatial camera pairing',
     )
-    parser.add_argument('workspace',
-                        help='COLMAP workspace (containing images/ and sparse/0/)')
+    parser.add_argument(
+        'workspace',
+        help='COLMAP workspace (containing images/ and sparse/0/) '
+             'or data root (auto-resolves to <data>/colmap_ws)',
+    )
     parser.add_argument('--neighbor', '-k', type=int, default=6,
                         help='Number of nearest camera neighbors for stereo matching '
                              '(default: 6)')
-    parser.add_argument('--mask', action='store_true',
-                        help='Apply masks from workspace/masks/ to dense images')
+    parser.add_argument(
+        '--mask', action=argparse.BooleanOptionalAction, default=True,
+        help='Apply masks from workspace/masks/ to dense images (default: on)',
+    )
     parser.add_argument('--ext', default='.jpg',
                         help='Image extension (default: .jpg)')
     parser.add_argument('--colmap', default='colmap',
                         help='Path to COLMAP binary')
+    parser.add_argument('--gpu_index', default='0',
+                        help='GPU index for patch_match_stereo (default: 0)')
     parser.add_argument('--min_num_pixels', type=int, default=2,
                         help='stereo_fusion min_num_pixels (default: 2)')
     parser.add_argument('--max_reproj_error', type=float, default=2.0,
@@ -143,7 +185,11 @@ def main():
                         help='Skip image_undistorter (dense/ already exists)')
     args = parser.parse_args()
 
-    ws = args.workspace
+    ws = resolve_workspace(args.workspace)
+    if ws != os.path.abspath(args.workspace):
+        print(f'[dense] Resolved workspace: {ws}')
+    validate_workspace(ws)
+
     dense_dir = join(ws, 'dense')
     img_dir = join(ws, 'images')
     sparse_dir = join(ws, 'sparse', '0')
@@ -180,13 +226,16 @@ def main():
     dense_img_dir = join(dense_dir, 'images')
 
     # --- Step 2: Apply masks ---
-    if args.mask and os.path.isdir(mask_dir):
-        print(f'\n{"="*60}')
-        print('[dense] Step 2: Applying masks to dense images')
-        print(f'{"="*60}')
-        apply_masks(dense_img_dir, mask_dir, args.ext)
-    elif args.mask:
-        print(f'[dense] WARNING: --mask set but {mask_dir} not found, skipping')
+    if args.mask:
+        if os.path.isdir(mask_dir):
+            print(f'\n{"="*60}')
+            print('[dense] Step 2: Applying masks to dense images')
+            print(f'{"="*60}')
+            apply_masks(dense_img_dir, mask_dir, args.ext)
+        else:
+            print(f'[dense] WARNING: masks enabled but {mask_dir} not found, skipping')
+    else:
+        print('[dense] Step 2: Skipping masks (--no-mask)')
 
     # --- Step 3: Generate neighbor-based patch-match.cfg ---
     print(f'\n{"="*60}')
@@ -217,6 +266,7 @@ def main():
         f'{colmap} patch_match_stereo'
         f' --workspace_path {dense_dir}'
         f' --workspace_format COLMAP'
+        f' --PatchMatchStereo.gpu_index {args.gpu_index}'
         f' --PatchMatchStereo.geom_consistency true'
         f' --PatchMatchStereo.window_radius {args.window_radius}'
         f' --PatchMatchStereo.num_iterations {args.num_iterations}'
@@ -246,12 +296,31 @@ def main():
     if os.path.exists(fused_path):
         size_mb = os.path.getsize(fused_path) / 1e6
         print(f'  File size: {size_mb:.1f} MB')
+        try:
+            from plyfile import PlyData
+            ply = PlyData.read(fused_path)
+            n_pts = ply['vertex'].count
+            x = np.array(ply['vertex']['x'])
+            y = np.array(ply['vertex']['y'])
+            z = np.array(ply['vertex']['z'])
+            print(f'  Points: {n_pts:,}')
+            print(f'  Bounding box:')
+            print(f'    X: [{x.min():.4f}, {x.max():.4f}]')
+            print(f'    Y: [{y.min():.4f}, {y.max():.4f}]')
+            print(f'    Z: [{z.min():.4f}, {z.max():.4f}]')
+        except ImportError:
+            print('  (install plyfile for point count / bounding box stats)')
+    else:
+        print('  WARNING: fused.ply was not created — check COLMAP output above')
     print(f'{"="*60}')
-    print(f'\nVisualize:')
+    print(f'\nNext steps:')
+    print(f'  # Visualize (headful machine):')
+    print(f'  python apps/reconstruction/vis_colmap_sparse.py {ws}  # sparse')
     print(f'  python -c "import open3d as o3d; '
           f'pcd=o3d.io.read_point_cloud(\'{fused_path}\'); '
-          f'print(len(pcd.points)); '
+          f'print(f\\"{{len(pcd.points):,}} points\\"); '
           f'o3d.visualization.draw_geometries([pcd])"')
+    print(f'  # Or copy fused.ply locally and open in MeshLab')
 
 
 if __name__ == '__main__':

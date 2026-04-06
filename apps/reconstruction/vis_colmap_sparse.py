@@ -2,8 +2,9 @@
 Visualize a COLMAP sparse model: triangulated 3D points + camera frustums.
 
 Usage:
-    python apps/reconstruction/vis_colmap_sparse.py /path/to/sparse/0
-    python apps/reconstruction/vis_colmap_sparse.py /path/to/sparse/0 --images_dir /path/to/images
+    python apps/reconstruction/vis_colmap_sparse.py /path/to/colmap_ws
+    python apps/reconstruction/vis_colmap_sparse.py /path/to/colmap_ws/sparse/0
+    python apps/reconstruction/vis_colmap_sparse.py /path/to/colmap_ws --images_dir /path/to/colmap_ws/images
 """
 
 import argparse
@@ -30,6 +31,21 @@ from easymocap.mytools.colmap_structure import (
     read_points3D_text,
     qvec2rotmat,
 )
+
+
+def resolve_sparse_dir(path):
+    """Accept either ``.../sparse/0`` or a COLMAP workspace root ``.../colmap_ws``."""
+    path = os.path.abspath(path)
+    if os.path.exists(join(path, 'cameras.bin')) or os.path.exists(
+        join(path, 'cameras.txt')
+    ):
+        return path
+    nested = join(path, 'sparse', '0')
+    if os.path.exists(join(nested, 'cameras.bin')) or os.path.exists(
+        join(nested, 'cameras.txt')
+    ):
+        return nested
+    return path
 
 
 def read_model_auto(sparse_dir):
@@ -96,7 +112,10 @@ def main():
     parser = argparse.ArgumentParser(
         description='Visualize COLMAP sparse model (points + cameras)',
     )
-    parser.add_argument('sparse_dir', help='Path to sparse/0/ directory')
+    parser.add_argument(
+        'sparse_dir',
+        help='COLMAP workspace root or sparse/0 directory (e.g. colmap_ws or colmap_ws/sparse/0)',
+    )
     parser.add_argument('--images_dir', default=None,
                         help='Path to images/ directory (for reading colors)')
     parser.add_argument('--frustum_scale', type=float, default=0.3,
@@ -105,8 +124,24 @@ def main():
                         help='Point rendering size (default: 2.0)')
     args = parser.parse_args()
 
-    print(f'[vis_colmap] Reading model from {args.sparse_dir} ...')
-    cameras, images, points3D = read_model_auto(args.sparse_dir)
+    sparse_dir = resolve_sparse_dir(args.sparse_dir)
+    if sparse_dir != os.path.abspath(args.sparse_dir):
+        print(f'[vis_colmap] Using sparse model at {sparse_dir}')
+
+    if not (
+        os.path.exists(join(sparse_dir, 'cameras.bin'))
+        or os.path.exists(join(sparse_dir, 'cameras.txt'))
+    ):
+        print(
+            f'[vis_colmap] ERROR: No cameras.bin/txt under {sparse_dir!r} or '
+            f'{join(args.sparse_dir, "sparse", "0")!r}. '
+            'Pass the COLMAP workspace or .../sparse/0.',
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    print(f'[vis_colmap] Reading model from {sparse_dir} ...')
+    cameras, images, points3D = read_model_auto(sparse_dir)
 
     print(f'  Cameras: {len(cameras)}')
     print(f'  Images:  {len(images)}')

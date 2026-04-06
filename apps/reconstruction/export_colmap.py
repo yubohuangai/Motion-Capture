@@ -13,8 +13,10 @@ multi-view reconstruction frameworks can ingest directly:
         └── points3D.bin (+ points3D.txt)
 
 Usage:
-    python apps/reconstruction/export_colmap.py /path/to/data \\
-        --frame 0 --output /path/to/colmap_ws --undistort --triangulate
+    python apps/reconstruction/export_colmap.py /path/to/data
+    # Default: -o <data>/colmap_ws, --frame 0, --undistort, --mask masks,
+    #          --triangulate, --gpu. Override with --no-undistort, --no-mask,
+    #          --no-triangulate, --no-gpu, or explicit -o.
 """
 
 import argparse
@@ -409,8 +411,10 @@ def main():
         description='Export EasyMocap calibration to COLMAP workspace',
     )
     parser.add_argument('data', help='Root data path containing images/ and intri.yml/extri.yml')
-    parser.add_argument('--output', '-o', required=True,
-                        help='Output COLMAP workspace directory')
+    parser.add_argument(
+        '--output', '-o', default=None,
+        help='Output COLMAP workspace directory (default: <data>/colmap_ws)',
+    )
     parser.add_argument('--frame', type=int, default=0,
                         help='Frame index to export (default: 0)')
     parser.add_argument('--intri', default='intri.yml',
@@ -419,20 +423,33 @@ def main():
                         help='Extrinsics file name (default: extri.yml)')
     parser.add_argument('--ext', default='.jpg',
                         help='Image extension (default: .jpg)')
-    parser.add_argument('--undistort', action='store_true',
-                        help='Undistort images and export PINHOLE cameras')
-    parser.add_argument('--mask', default=None,
-                        help='Mask sub-directory name (e.g. "mask" or "masks"). '
-                             'If set, copies masks alongside images.')
-    parser.add_argument('--triangulate', action='store_true',
-                        help='Run COLMAP feature extraction + matching + '
-                             'triangulation to populate initial 3D points '
-                             '(required for 3DGS)')
+    parser.add_argument(
+        '--undistort', action=argparse.BooleanOptionalAction, default=True,
+        help='Undistort images and export PINHOLE cameras (default: on)',
+    )
+    parser.add_argument(
+        '--mask', default='masks',
+        help='Mask sub-directory under data root (default: masks)',
+    )
+    parser.add_argument(
+        '--no-mask', action='store_true',
+        help='Do not copy masks (overrides --mask)',
+    )
+    parser.add_argument(
+        '--triangulate', action=argparse.BooleanOptionalAction, default=True,
+        help='Run COLMAP feature extraction + matching + triangulation for 3DGS '
+             '(default: on)',
+    )
     parser.add_argument('--colmap', default='colmap',
                         help='Path to COLMAP binary (default: colmap)')
-    parser.add_argument('--gpu', action='store_true',
-                        help='Use GPU for COLMAP feature extraction/matching')
+    parser.add_argument(
+        '--gpu', action=argparse.BooleanOptionalAction, default=True,
+        help='Use GPU for COLMAP feature extraction/matching (default: on)',
+    )
     args = parser.parse_args()
+
+    output_dir = args.output if args.output is not None else join(args.data, 'colmap_ws')
+    mask_dir = None if args.no_mask else args.mask
 
     intri_path = join(args.data, args.intri)
     extri_path = join(args.data, args.extri)
@@ -456,30 +473,31 @@ def main():
     print('[export_colmap] Building COLMAP images ...')
     colmap_images = build_colmap_images(cams, cam_names, cam_id_map, args.ext)
 
+    print(f'[export_colmap] Output directory: {output_dir}')
     print(f'[export_colmap] Processing images (undistort={args.undistort}) ...')
     process_images(
-        args.data, args.output, cam_names, cams,
-        new_K_map, args.frame, args.ext, args.undistort, args.mask,
+        args.data, output_dir, cam_names, cams,
+        new_K_map, args.frame, args.ext, args.undistort, mask_dir,
     )
 
     print('[export_colmap] Writing COLMAP sparse model ...')
-    write_colmap_model(args.output, colmap_cameras, colmap_images)
+    write_colmap_model(output_dir, colmap_cameras, colmap_images)
 
     if args.triangulate:
         print('[export_colmap] Triangulating 3D points via COLMAP ...')
         triangulate_points(
-            args.output, cams, cam_names, cam_id_map,
+            output_dir, cams, cam_names, cam_id_map,
             colmap_cameras, colmap_images,
             args.colmap, args.gpu,
         )
 
-    print(f'\n[export_colmap] Done. Output at: {args.output}')
+    print(f'\n[export_colmap] Done. Output at: {output_dir}')
     print(f'  images/        — {len(cam_names)} images')
     print(f'  sparse/0/      — cameras.{{bin,txt}}, images.{{bin,txt}}, points3D.{{bin,txt}}')
     print()
     print('Next steps:')
-    print(f'  3DGS:       python train.py -s {args.output} --iterations 7000')
-    print(f'  Nerfstudio: ns-train neus-facto --data {args.output} colmap')
+    print(f'  3DGS:       python train.py -s {output_dir} --iterations 7000')
+    print(f'  Nerfstudio: ns-train neus-facto --data {output_dir} colmap')
 
 
 if __name__ == '__main__':
