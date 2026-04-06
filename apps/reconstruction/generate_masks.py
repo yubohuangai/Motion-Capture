@@ -20,11 +20,13 @@ Pass ``--sam_backend sam2``, ``--sam2_checkpoint`` (``.pt``), and optionally
 
 Output layout:
     <data>/masks/<cam>/NNNNNN.png   (255 = foreground, 0 = background)
-    With ``--save_fg_images``: <data>/foreground_images/<cam>_NNNNNN.<ext>
-    (same flat naming as ``--vis`` → mask_vis/<cam>_NNNNNN.jpg)
+    By default also writes mask overlays to ``<data>/mask_vis/`` and
+    foreground-only RGB to ``<data>/foreground_images/`` (disable with
+    ``--no_vis`` / ``--no_save_fg_images``).  Background-subtraction modes
+    use **center-only** blob filtering by default (disable with ``--no_center_only``).
 
 Usage:
-    # Background subtraction (fast, works well in controlled studios)
+    # Background subtraction (fast; by default: center_only, mask_vis/, foreground_images/)
     python apps/reconstruction/generate_masks.py /path/to/data \\
         --frame 0 --bg_frame 100 --threshold 30
 
@@ -663,9 +665,9 @@ def main():
                           help='Pixel difference threshold (0-255)')
     bg_group.add_argument('--morph_kernel', type=int, default=7,
                           help='Morphology kernel size')
-    bg_group.add_argument('--center_only', action='store_true',
-                          help='Keep only the single best foreground blob near '
-                               'the image center (removes people/clutter)')
+    bg_group.add_argument('--no_center_only', action='store_true',
+                          help='Disable center-only blob filtering (keep all '
+                               'foreground blobs after threshold/morphology)')
     bg_group.add_argument('--max_area_ratio', type=float, default=0.15,
                           help='Max blob area as fraction of image (blobs '
                                'larger than this are discarded, default 0.15)')
@@ -699,23 +701,27 @@ def main():
                            help='hybrid only: run SAM on cropped ROI around bg_sub '
                                 'bbox (crop) or on the full frame (full)')
 
-    parser.add_argument('--vis', action='store_true',
-                        help='Save per-camera overlay JPEGs to <data>/mask_vis/ '
-                             '(green foreground + red contour; not side-by-side with raw RGB)')
-    parser.add_argument('--save_fg_images', action='store_true',
-                        help='Save foreground-only RGB (bg black) to '
-                             '<data>/foreground_images/<cam>_NNNNNN.<ext> (flat, same as mask_vis)')
+    parser.add_argument('--no_vis', action='store_true',
+                        help='Do not save per-camera overlay JPEGs to <data>/mask_vis/')
+    parser.add_argument('--no_save_fg_images', action='store_true',
+                        help='Do not save foreground-only RGB to <data>/foreground_images/')
 
     args = parser.parse_args()
 
+    center_only = not args.no_center_only
+    use_vis = not args.no_vis
+    save_fg = not args.no_save_fg_images
+
     output_dir = args.output or join(args.data, 'masks')
-    vis_dir = join(args.data, 'mask_vis') if args.vis else None
-    fg_out_dir = join(args.data, 'foreground_images') if args.save_fg_images else None
+    vis_dir = join(args.data, 'mask_vis') if use_vis else None
+    fg_out_dir = join(args.data, 'foreground_images') if save_fg else None
     cam_names = get_cam_names(args.data)
     print(f'[generate_masks] Cameras: {cam_names}')
     print(f'[generate_masks] Mode: {args.mode}, frame: {args.frame}, '
           f'sam_backend: {args.sam_backend}'
-          + (f', hybrid_sam_space: {args.hybrid_sam_space}' if args.mode == 'hybrid' else ''))
+          + (f', hybrid_sam_space: {args.hybrid_sam_space}' if args.mode == 'hybrid' else '')
+          + (f', center_only: {center_only}' if args.mode in ('bg_sub', 'hybrid') else ''))
+    print(f'[generate_masks] mask_vis: {use_vis}, foreground_images: {save_fg}')
     print(f'[generate_masks] Output: {output_dir}')
     if vis_dir:
         print(f'[generate_masks] Vis overlays: {vis_dir}')
@@ -728,7 +734,7 @@ def main():
         background_subtraction(
             args.data, cam_names, args.frame, args.bg_frame, args.ext,
             args.threshold, args.morph_kernel, output_dir, vis_dir,
-            bg_data=args.bg_data, center_only=args.center_only,
+            bg_data=args.bg_data, center_only=center_only,
             dilate=args.dilate, erode=args.erode,
             max_area_ratio=args.max_area_ratio,
             save_fg_dir=fg_out_dir,
@@ -766,7 +772,7 @@ def main():
         hybrid_bg_sam(
             args.data, cam_names, args.frame, args.bg_frame, args.ext,
             args.threshold, args.morph_kernel, output_dir, vis_dir,
-            bg_data=args.bg_data, center_only=args.center_only,
+            bg_data=args.bg_data, center_only=center_only,
             dilate=args.dilate, erode=args.erode,
             max_area_ratio=args.max_area_ratio,
             save_fg_dir=fg_out_dir,
