@@ -17,7 +17,7 @@ This document describes the **foundation motion capture** object-reconstruction 
 | Script | Role |
 |--------|------|
 | `generate_masks.py` | Foreground masks (background subtraction or SAM). |
-| `export_colmap.py` | Calibration → COLMAP (defaults: `<data>/colmap_ws`, undistort, `masks/`, triangulate, GPU, Open3D viewer; `--no_*` to disable). |
+| `export_colmap.py` | Calibration → COLMAP; undistort; copy masks (`--mask masks`); sparse triangulation with **spatial neighbor** matching. |
 | `dense_reconstruct.py` | COLMAP dense MVS with **spatial-neighbor** `patch-match.cfg`. |
 | `run_3dgs.py` | Wrapper: calls `export_colmap.py` then external `gaussian-splatting/train.py`. |
 | `vis_colmap_sparse.py` | Open3D: sparse points + camera frustums. |
@@ -48,29 +48,28 @@ python apps/reconstruction/generate_masks.py /path/to/data \
 Reads calibration paths (can be absolute or under `data/`):
 
 ```bash
-# Defaults: <data>/colmap_ws, frame 0, undistort, masks, triangulate, GPU, sparse viewer
-python apps/reconstruction/export_colmap.py /path/to/data
-
-# Custom intrinsics/extrinsics paths and workspace (still uses other defaults):
 python apps/reconstruction/export_colmap.py /path/to/data \
   --intri /path/to/intri_colmap_ba.yml \
   --extri /path/to/extri_colmap_ba.yml \
-  -o /path/to/colmap_ws
+  --frame 0 \
+  --output /path/to/colmap_ws \
+  --undistort \
+  --mask masks \
+  --triangulate \
+  --gpu
 ```
 
 **What it does:**
 
-1. Builds **PINHOLE** cameras (by default: undistorted images and intrinsics; `--no_undistort` keeps OpenCV distortion model).
-2. Copies images as `01.jpg`, `02.jpg`, … and masks as `masks/01.jpg.png`, … (skip masks with `--no_mask`).
+1. Builds **PINHOLE** cameras (with `--undistort`: undistorted images and intrinsics).
+2. Copies images as `01.jpg`, `02.jpg`, … and masks as `masks/01.jpg.png`, …
 3. Writes `sparse/0/` with **your** poses and intrinsics (COLMAP IDs aligned after feature extraction).
-4. By default runs triangulation (`--no_triangulate` to skip):
+4. If `--triangulate`:
    - `colmap feature_extractor` (optional `--ImageReader.mask_path`).
    - `colmap exhaustive_matcher`.
    - **Prune matches** to **K-nearest cameras in 3D** (default K = 6): camera center \(C = -R^\top t\) from extrinsics; only neighbor image pairs are kept in the SQLite DB before `point_triangulator`.
 
 **Why neighbor pruning:** On a **ring** of cameras, opposite views can see **visually similar** object sides (e.g. repeated packaging). Matching every pair encourages wrong correspondences. Restricting pairs to **geometrically nearby** cameras uses extrinsics as a prior consistent with “cameras 01…N arranged around the object.”
-
-By default, `export_colmap.py` opens the Open3D sparse viewer after export (same as `vis_colmap_sparse.py`). Use **`--no_vis`** on headless runs. Requires `open3d` and a display. Optional: `--vis_frustum_scale`, `--vis_point_size`.
 
 **Outputs:**
 
@@ -153,7 +152,7 @@ python apps/reconstruction/vis_gaussians.py /path/to/point_cloud.ply --opacity 0
 |------|----------|--------|
 | Neighbor count K (sparse) | `export_colmap.py` → `_camera_neighbor_pairs(..., k=6)` | How many nearest cameras per view for feature matching after exhaustive match. |
 | Neighbor count K (dense) | `dense_reconstruct.py --neighbor` | Sources per reference image in `patch-match.cfg`. |
-| Masks | `export_colmap.py --mask` / `--no_mask`, `dense_reconstruct.py --mask` | COLMAP feature extraction + dense image black-out. |
+| Masks | `export_colmap.py --mask`, `dense_reconstruct.py --mask` | COLMAP feature extraction + dense image black-out. |
 | Fusion density | `dense_reconstruct.py --min_num_pixels`, `--max_reproj_error` | More points vs. stricter consistency. |
 
 ---
@@ -176,7 +175,8 @@ python apps/reconstruction/generate_masks.py $DATA --frame 0 --bg_frame 0 \
 
 # 2) COLMAP + triangulation (spatial neighbors)
 python apps/reconstruction/export_colmap.py $DATA \
-  --intri $INTRI --extri $EXTRI -o $OUT/colmap --no_vis
+  --intri $INTRI --extri $EXTRI --frame 0 --output $OUT/colmap \
+  --undistort --mask masks --triangulate --gpu
 
 # 3) Dense (optional)
 python apps/reconstruction/dense_reconstruct.py $OUT/colmap --neighbor 6 --mask

@@ -46,17 +46,14 @@ def run_export(data, output, frame, intri, extri, ext, undistort, mask,
         '--ext', ext,
         '--colmap', colmap_bin,
     ]
-    if not undistort:
-        cmd.append('--no_undistort')
-    if mask is None:
-        cmd.append('--no_mask')
-    else:
+    if undistort:
+        cmd.append('--undistort')
+    if mask:
         cmd.extend(['--mask', mask])
-    if not triangulate:
-        cmd.append('--no_triangulate')
-    if not gpu:
-        cmd.append('--no_gpu')
-    cmd.append('--no_vis')
+    if triangulate:
+        cmd.append('--triangulate')
+    if gpu:
+        cmd.append('--gpu')
 
     print(f'\n{"="*60}')
     print(f'[run_3dgs] Exporting frame {frame} -> {output}')

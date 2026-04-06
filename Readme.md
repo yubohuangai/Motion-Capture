@@ -166,11 +166,12 @@ Reconstruct arbitrary objects (no predefined body model) from calibrated multi-v
 Convert `intri.yml` / `extri.yml` to a COLMAP sparse model that standard reconstruction frameworks accept:
 
 ```bash
-python apps/reconstruction/export_colmap.py <data_path>
+python apps/reconstruction/export_colmap.py <data_path> \
+  --frame 0 --output <colmap_workspace> --undistort --mask masks
 ```
 
-Defaults write to `<data_path>/colmap_ws` with frame 0, undistorted PINHOLE cameras, masks from `<data_path>/masks/`, COLMAP triangulation on GPU, and the Open3D sparse viewer (needs `pip install open3d` and a display). Override workspace with `-o <colmap_workspace>`. Opt out with `--no_undistort`, `--no_mask`, `--no_triangulate`, `--no_gpu`, `--no_vis`. Optional viewer tuning: `--vis_frustum_scale`, `--vis_point_size`.
-
+- `--undistort`: undistorts images and exports PINHOLE cameras (recommended for neural methods)
+- `--mask masks`: copies foreground masks from `<data_path>/masks/` (run `generate_masks.py` in section 4.2 first)
 - Output: `<colmap_workspace>/images/`, `<colmap_workspace>/sparse/0/{cameras,images,points3D}.{bin,txt}`
 
 ### 4.2 Foreground masks (required for object reconstruction)
@@ -254,7 +255,7 @@ python apps/preprocess/extract_keypoints.py <mocap_path> --mode mmpose
 python apps/demo/mv1p.py <mocap_path> --body bodyhandface --model smplx --gender male --vis_det --vis_repro --vis_smpl
 
 # 4. 3D object reconstruction (arbitrary objects)
-python apps/reconstruction/export_colmap.py <data_path>
+python apps/reconstruction/export_colmap.py <data_path> --frame 0 --output <colmap_ws> --undistort
 python apps/reconstruction/generate_masks.py <data_path> --bg_data <background_root>  # required; see section 4.2
 python apps/reconstruction/run_3dgs.py <data_path> --frame 0 --output <recon> --gs_repo <gs_path> --undistort
 ```
