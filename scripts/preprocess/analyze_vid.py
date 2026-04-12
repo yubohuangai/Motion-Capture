@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import cv2
 import os
+import sys
 import statistics
 import subprocess
 from datetime import datetime
@@ -11,15 +12,21 @@ import re
 import shutil
 import yaml
 
- 
+_PREP_DIR = Path(__file__).resolve().parent
+_SYNCTEST_DIR = _PREP_DIR / "synctest"
+if str(_SYNCTEST_DIR) not in sys.path:
+    sys.path.insert(0, str(_SYNCTEST_DIR))
+import session_paths  # noqa: E402
+
+DEFAULT_SYNCTEST_CONFIG = _SYNCTEST_DIR / "config.yaml"
+
 CONFIG = dict(
-    base_root="/Users/yubo/data/and",
     log_file="output/video_analysis.log",
     start_cam=1,
     end_cam=None,   # inclusive; None = auto-detect
     truncate=False,
     truncate_from="end",
-    pad_csv=True,
+    pad_csv=False,
     pad_to="end",  # "end" | "begin" — where to append missing timestamp lines
     # marker = explicit __POSTPROCESS__ labels (default); extrapolate/repeat_last = numeric (can look like real ts)
     pad_fill="marker",
@@ -294,17 +301,24 @@ def analyze_video(
     pad_fill="marker",
     pad_marker="extra1",
     print_log=False,
+    csv_path_override: str | None = None,
 ):
     """
     Analyze video & optionally truncate CSV if timestamp_count > frame_count.
     truncate_from: "end" (default) → cut extra lines at the end,
                    "begin" → cut extra lines at the beginning.
     Optionally pad CSV when timestamp_count < frame_count (see pad_csv / pad_to / pad_fill / pad_marker).
+    If csv_path_override is set, that file is used instead of resolve_csv_path(video_path).
     """
     if not os.path.exists(video_path):
         raise FileNotFoundError(f"Video not found: {video_path}")
 
-    csv_path = resolve_csv_path(video_path)
+    if csv_path_override:
+        csv_path = Path(os.path.abspath(os.path.expanduser(csv_path_override)))
+        if not csv_path.is_file():
+            raise FileNotFoundError(f"CSV not found: {csv_path}")
+    else:
+        csv_path = resolve_csv_path(video_path)
     timestamp_count = None
     if csv_path is None:
         csv_msg = "Video name format did not match expected pattern. No CSV checked."
@@ -433,19 +447,40 @@ def analyze_video(
 
 
 
+def _resolve_cli_input_path(raw: str) -> Path:
+    p = Path(os.path.abspath(os.path.expanduser(raw)))
+    if not p.exists():
+        raise FileNotFoundError(f"Path not found: {p}")
+    return p
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Analyze videos and CSV timestamp files.")
     parser.add_argument(
-        "base_root",
+        "path",
         nargs="?",
-        default=CONFIG["base_root"],
-        help="Root directory containing 01, 02, 03, ... camera folders (ignored if --video is set)",
-    )
-    parser.add_argument(
-        "--video",
         default=None,
         metavar="PATH",
-        help="Analyze this single .mp4 file (skips camera-folder scan). CSV is resolved next to VID folder if present.",
+        help=(
+            "Camera root (.../raw with 01/, 02/, …) or one video file. "
+            "If omitted, uses data_root from --synctest-config (default: synctest/config.yaml)."
+        ),
+    )
+    parser.add_argument(
+        "--synctest-config",
+        type=Path,
+        default=None,
+        metavar="YAML",
+        help=(
+            "Synctest YAML containing data_root; used when PATH is omitted. "
+            f"Default: {DEFAULT_SYNCTEST_CONFIG}"
+        ),
+    )
+    parser.add_argument(
+        "--csv",
+        default=None,
+        metavar="PATH",
+        help="When PATH is a video file: use this CSV instead of auto-resolving from the filename.",
     )
     parser.add_argument("--log_file", default=CONFIG["log_file"])
     parser.add_argument("--start_cam", type=int, default=CONFIG["start_cam"])
@@ -481,7 +516,16 @@ if __name__ == "__main__":
     parser.add_argument("--print_log", action="store_true", default=True)
     args = parser.parse_args()
 
-    base_root = Path(args.base_root)
+    try:
+        if args.path is None:
+            cfg_path = args.synctest_config or DEFAULT_SYNCTEST_CONFIG
+            input_path = session_paths.read_data_root_field(cfg_path)
+        else:
+            input_path = _resolve_cli_input_path(str(args.path))
+    except (FileNotFoundError, ValueError) as e:
+        print(str(e))
+        raise SystemExit(1) from e
+
     log_file = args.log_file
 
     ensure_file_exists(log_file)
@@ -489,8 +533,8 @@ if __name__ == "__main__":
     if args.clear_log:
         open(log_file, "w", encoding="utf-8").close()
 
-    if args.video:
-        video_path = os.path.abspath(os.path.expanduser(args.video))
+    if input_path.is_file():
+        video_path = str(input_path)
         print(f"--- Single video: {video_path} ---")
         try:
             analyze_video(
@@ -503,12 +547,17 @@ if __name__ == "__main__":
                 pad_fill=args.pad_fill,
                 pad_marker=args.pad_marker,
                 print_log=args.print_log,
+                csv_path_override=args.csv,
             )
             print(f"✓ Finished: {video_path}")
         except Exception as e:
             print(f"✗ Error: {e}")
             raise SystemExit(1) from e
         raise SystemExit(0)
+
+    base_root = input_path
+    if args.csv:
+        print("Note: --csv applies only to a single video file; ignoring --csv for directory scan.")
 
     cam_ids = get_camera_ids(base_root, args.start_cam, args.end_cam)
     if not cam_ids:

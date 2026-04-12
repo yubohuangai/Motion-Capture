@@ -120,6 +120,26 @@ def apply_data_root(config: dict[str, Any]) -> None:
         config[f"video_path_{i}"] = str(vp)
 
 
+def read_data_root_field(path: str | Path | None = None) -> Path:
+    """
+    Return ``data_root`` from synctest YAML without running ``apply_data_root``
+    (so ``video_path_*`` are left unchanged). Use this when only the session root path is needed.
+    """
+    cfg_path = resolve_config_path(path or DEFAULT_CONFIG_NAME)
+    if not cfg_path.exists():
+        raise FileNotFoundError(f"Configuration file not found: {cfg_path}")
+    with open(cfg_path, encoding="utf-8") as f:
+        config = yaml.safe_load(f)
+    if not config:
+        config = {}
+    root = config.get("data_root")
+    if root is None or not str(root).strip():
+        raise ValueError(
+            f"Set data_root in {cfg_path} (or pass the session root directory on the command line)."
+        )
+    return Path(str(root).strip()).expanduser().resolve()
+
+
 def load_config(path: str | Path | None = None) -> dict[str, Any]:
     """Load YAML from src/config.yaml (or given path), then apply data_root expansion."""
     cfg_path = resolve_config_path(path or DEFAULT_CONFIG_NAME)

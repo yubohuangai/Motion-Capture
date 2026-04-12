@@ -2,7 +2,7 @@ threshold: "16.4ms"  # human-readable format: ns, us, ms, s supported
 extract: true
 
 # Single session root: each subfolder is a camera with VID/VID_*.mp4 and sibling timestamp CSV.
-data_root: C:/Users/yuboh/GitHub/data/sync0403/raw
+data_root: C:/Users/yuboh/GitHub/data/0411/raw
 # Optional: only use these folders, in this order (default: all camera folders under data_root)
 # cameras: ["01", "02", "03"]
 
@@ -12,25 +12,25 @@ reference_camera_index: 10
 # crop_video.py — inclusive pixel edges from draw_grid (corners inside the crop).
 # Or use legacy: x, y, w, h / [x, y, w, h].
 crop_region:
-  x_left: 250
-  x_right: 2600
-  y_top: 400
-  y_bottom: 850
+  x_left: 950
+  x_right: 2574
+  y_top: 545
+  y_bottom: 910
 
 check_video_camera_index: -1
 
 # get_matched_images: output/exp/<session>_<threshold>>/matched.csv
 # match_mode: "full"  # options: "first_only" or "full"
+# stitch.py uses data_root below unless you set stitch_root to override.
 
-stitch_root: C:/Users/yuboh/GitHub/data/sync0403/raw
 # Frames per camera: either directly in 01/, 02/, … or in a subfolder (omit or "" = direct).
 stitch_images_subdir: images
 # Layout: stitch_columns 1 = one column (cameras stacked top-to-bottom); omit for auto square grid.
 stitch_columns: 1
 # # Frame range: either stitch_last_n (last N frames; overrides start/end) or stitch_start / stitch_end.
-# stitch_last_n: 50
+# stitch_last_n: 10
 stitch_start: 9000       # first frame index (0-based), ignored if stitch_last_n is set
-stitch_end: 9050       # last frame index (exclusive), ignored if stitch_last_n is set
+stitch_end: 9010       # last frame index (exclusive), ignored if stitch_last_n is set
 
 # Legacy: omit data_root and list explicit paths instead:
 # video_path_0: C:/path/to/cam/VID/VID_20260324_200321.mp4

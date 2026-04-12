@@ -20,18 +20,22 @@ def _list_frame_files(folder: Path) -> list[str]:
     return sorted(out)
 
 
-def _frame_dirs_for_cameras(camera_dirs: list[Path], images_subdir: str | None) -> list[Path]:
-    """Per-camera folder that contains frame files (e.g. .../01 or .../01/images)."""
+def _frame_dir_for_camera(cam_dir: Path, images_subdir: str | None) -> Path:
     if not images_subdir or not str(images_subdir).strip():
-        return camera_dirs
-    sub = Path(str(images_subdir).strip())
-    return [d / sub for d in camera_dirs]
+        return cam_dir
+    return cam_dir / str(images_subdir).strip()
 
 
 def stitch_images_grid(config, columns=None):
-    stitch_root = config.get("stitch_root")
-    if not stitch_root or not os.path.exists(stitch_root):
-        raise FileNotFoundError(f"Stitch root not found or not defined: {stitch_root}")
+    # Default to data_root so one path is enough in config.yaml
+    stitch_root = config.get("stitch_root") or config.get("data_root")
+    if not stitch_root or not str(stitch_root).strip():
+        raise FileNotFoundError(
+            "Set data_root (or optionally stitch_root) in config.yaml for stitch input."
+        )
+    stitch_root = str(stitch_root).strip()
+    if not os.path.exists(stitch_root):
+        raise FileNotFoundError(f"Stitch root not found: {stitch_root}")
     stitch_root = Path(stitch_root)
 
     stitch_start = config.get("stitch_start", None)
@@ -41,11 +45,37 @@ def stitch_images_grid(config, columns=None):
     stitch_columns_cfg = config.get("stitch_columns", None)
 
     # Only immediate subdirs with all-digit names (e.g. 01, 02).
-    subdirs = sorted([d for d in stitch_root.iterdir() if d.is_dir() and d.name.isdigit()],
-                     key=lambda x: int(x.name))
+    all_cam_dirs = sorted(
+        [d for d in stitch_root.iterdir() if d.is_dir() and d.name.isdigit()],
+        key=lambda x: int(x.name),
+    )
+    if not all_cam_dirs:
+        raise ValueError("No valid numbered subdirectories found in stitch_root.")
+
+    # Use only cameras that have a frame folder with at least one image (skip empty / missing).
+    subdirs: list[Path] = []
+    frame_dirs: list[Path] = []
+    for cam in all_cam_dirs:
+        fd = _frame_dir_for_camera(cam, stitch_images_subdir)
+        if not fd.is_dir():
+            print(
+                f"[stitch] Skip camera {cam.name}: missing folder {fd} "
+                "(set stitch_images_subdir to '' if frames are directly under …/<cam>/)."
+            )
+            continue
+        files = _list_frame_files(fd)
+        if not files:
+            print(f"[stitch] Skip camera {cam.name}: no images in {fd}")
+            continue
+        subdirs.append(cam)
+        frame_dirs.append(fd)
+
     num_videos = len(subdirs)
     if num_videos == 0:
-        raise ValueError("No valid numbered subdirectories found in stitch_root.")
+        raise ValueError(
+            f"No cameras with frame images under {stitch_root}. "
+            "Check stitch_images_subdir and that at least one …/<cam>/[images]/ has .jpg/.png."
+        )
 
     # Layout: stitch_columns in config (e.g. 1 = single column), else sqrt grid; override via columns= argument.
     if columns is None:
@@ -62,14 +92,6 @@ def stitch_images_grid(config, columns=None):
         font = ImageFont.truetype("arial.ttf", 32)
     except:
         font = ImageFont.load_default()
-
-    frame_dirs = _frame_dirs_for_cameras(subdirs, stitch_images_subdir)
-    for cam, fd in zip(subdirs, frame_dirs):
-        if not fd.is_dir():
-            raise FileNotFoundError(
-                f"Missing frame folder {fd} (camera {cam.name}). "
-                "Set stitch_images_subdir to '' if frames live directly under each camera folder."
-            )
 
     # Get sorted list of images per camera (.png / .jpg / .jpeg)
     subdir_files = [_list_frame_files(d) for d in frame_dirs]

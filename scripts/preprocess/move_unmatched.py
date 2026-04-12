@@ -1,16 +1,50 @@
 import os
+import sys
 import csv
 import pandas as pd
 from tqdm import tqdm
 import shutil
 from collections import defaultdict
 import re
+from pathlib import Path
 
 
 ALLOWED_EXTENSIONS = (".png", ".jpg", ".jpeg")
 
+# Repo root: scripts/preprocess/move_unmatched.py -> parent x3
+_REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+_PREP_DIR = Path(__file__).resolve().parent
+_SYNCTEST_DIR = _PREP_DIR / "synctest"
+if str(_SYNCTEST_DIR) not in sys.path:
+    sys.path.insert(0, str(_SYNCTEST_DIR))
+import session_paths  # noqa: E402
+
+DEFAULT_SYNCTEST_CONFIG = _SYNCTEST_DIR / "config.yaml"
+
 
 import argparse
+
+
+def raw_session_slug(data_root: str) -> str:
+    """
+    .../data/0411/raw -> 0411
+    .../my_dataset -> my_dataset
+    """
+    p = Path(data_root).resolve()
+    name = p.name
+    if name.lower() == "raw" and p.parent != p:
+        slug = p.parent.name
+    else:
+        slug = name
+    slug = re.sub(r"[^\w\-]+", "_", slug, flags=re.ASCII).strip("_") or "session"
+    return slug[:80]
+
+
+def default_matched_csv_path(raw_root: str, exp_threshold: str) -> Path:
+    """output/exp/<slug>_<threshold>/matched.csv under this repo (same convention as sync.py layout)."""
+    slug = raw_session_slug(raw_root)
+    return _REPO_ROOT / "output" / "exp" / f"{slug}_{exp_threshold}" / "matched.csv"
+
 
 def parse_args():
     parser = argparse.ArgumentParser(
@@ -18,12 +52,40 @@ def parse_args():
     )
     parser.add_argument(
         "root",
-        help="Root folder containing 01/, 02/, ..., 11/ subfolders"
+        nargs="?",
+        default=None,
+        help=(
+            "Session root (.../raw with 01/, 02/, …). If omitted, uses data_root from "
+            "--synctest-config (default: scripts/preprocess/synctest/config.yaml)."
+        ),
+    )
+    parser.add_argument(
+        "--synctest-config",
+        type=Path,
+        default=None,
+        metavar="YAML",
+        help=(
+            "Synctest YAML containing data_root; used when positional root is omitted. "
+            f"Default: {DEFAULT_SYNCTEST_CONFIG}"
+        ),
+    )
+    parser.add_argument(
+        "--exp-threshold",
+        default="16ms",
+        metavar="LABEL",
+        help=(
+            "Folder name segment after the session slug under output/exp/ when using "
+            "the default --csv (default: 16ms → .../exp/<slug>_16ms/matched.csv)."
+        ),
     )
     parser.add_argument(
         "--csv",
         default=None,
-        help="Path to sync output matched.csv (required unless --move-back)"
+        help=(
+            "Path to sync output matched.csv. If omitted (and not --move-back), defaults to "
+            "<repo>/output/exp/<slug>_<exp-threshold>/matched.csv where <slug> is the folder "
+            "above 'raw' (e.g. .../data/0411/raw → 0411)."
+        ),
     )
     parser.add_argument(
         "--move-back",
@@ -51,7 +113,15 @@ def parse_args():
         help="Alignment mode"
     )
 
-    return parser.parse_args()
+    args = parser.parse_args()
+    cfg_path = args.synctest_config or DEFAULT_SYNCTEST_CONFIG
+    if args.root is None:
+        args.root = str(session_paths.read_data_root_field(cfg_path))
+    else:
+        args.root = str(Path(args.root).expanduser().resolve())
+    if not args.move_back and args.csv is None:
+        args.csv = str(default_matched_csv_path(args.root, args.exp_threshold))
+    return args
 
 
 
@@ -248,6 +318,4 @@ if __name__ == "__main__":
     if args.move_back:
         move_back_unmatched(args.root)
     else:
-        if not args.csv:
-            raise SystemExit("error: --csv is required unless --move-back is set")
         move_unmatched_images(args)

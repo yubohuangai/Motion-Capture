@@ -1,5 +1,6 @@
 import multiprocessing
 import os
+import sys
 import cv2
 import glob
 import numpy as np
@@ -22,6 +23,13 @@ ALLOWED_EXTENSIONS = ['.jpg', '.jpeg', '.npy', '.png', '.pcd']
 
 # Repo root: scripts/preprocess/sync.py -> parent x3
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+_PREP_DIR = Path(__file__).resolve().parent
+_SYNCTEST_DIR = _PREP_DIR / "synctest"
+if str(_SYNCTEST_DIR) not in sys.path:
+    sys.path.insert(0, str(_SYNCTEST_DIR))
+import session_paths  # noqa: E402
+
+DEFAULT_SYNCTEST_CONFIG = _SYNCTEST_DIR / "config.yaml"
 
 
 import argparse
@@ -31,7 +39,22 @@ def parse_args():
 
     parser.add_argument(
         "root",
-        help="Root directory containing 01, 02, 03, ... camera folders"
+        nargs="?",
+        default=None,
+        help=(
+            "Session root (.../raw with 01/, 02/, …). If omitted, uses data_root from "
+            "--synctest-config (default: scripts/preprocess/synctest/config.yaml)."
+        ),
+    )
+    parser.add_argument(
+        "--synctest-config",
+        type=Path,
+        default=None,
+        metavar="YAML",
+        help=(
+            "Synctest YAML containing data_root; used when positional root is omitted. "
+            f"Default: {DEFAULT_SYNCTEST_CONFIG}"
+        ),
     )
 
     parser.add_argument(
@@ -500,6 +523,38 @@ def get_csv_path_from_video(video_path):
     return csv_path
 
 
+def count_csv_nonempty_timestamp_lines(csv_path: Path) -> int:
+    """Same rule as extract_frame_data: one timestamp per non-empty line."""
+    with csv_path.open(encoding="utf-8") as f:
+        return sum(1 for line in f if line.strip())
+
+
+def get_video_frame_count_opencv(video_path: str) -> int:
+    cap = cv2.VideoCapture(video_path)
+    n = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    cap.release()
+    return n
+
+
+def validate_extract_csv_vs_video(video_path: str) -> None:
+    """
+    FFmpeg will emit one image per frame; extract_frame_data renames using one CSV line per frame.
+    Fail before extraction if counts disagree.
+    """
+    csv_path = get_csv_path_from_video(video_path)
+    if not csv_path.is_file():
+        raise FileNotFoundError(f"[ERROR] Timestamp CSV not found: {csv_path}")
+    n_lines = count_csv_nonempty_timestamp_lines(csv_path)
+    n_frames = get_video_frame_count_opencv(video_path)
+    if n_lines != n_frames:
+        raise ValueError(
+            f"CSV vs video length mismatch for camera extracting from {video_path}:\n"
+            f"  OpenCV reports {n_frames} frames in the video\n"
+            f"  {csv_path} has {n_lines} non-empty lines\n"
+            f"Fix the CSV or re-export the clip before running --extract."
+        )
+
+
 def extract_frame_data(target_dir, video_path):
     """
     Renames extracted frames in `target_dir` using timestamps
@@ -537,7 +592,12 @@ def extract_frame_data(target_dir, video_path):
 def main():
     # --- Parse command-line arguments ---
     args = parse_args()
-    root = args.root
+    cfg_path = args.synctest_config or DEFAULT_SYNCTEST_CONFIG
+    if args.root is None:
+        root = str(session_paths.read_data_root_field(cfg_path))
+    else:
+        root = str(Path(args.root).expanduser().resolve())
+    args.root = root
     num_videos = args.cams
     threshold_str = args.threshold
     threshold_ns = parse_duration_ns(threshold_str)
@@ -574,7 +634,29 @@ def main():
     duration_0 = frame_count_0 / fps if fps > 0 else 0
     cap.release()
 
-    # --- Extract frames if requested ---
+    csv_paths = [get_csv_path_from_video(vp) for vp in video_paths]
+    csv_0 = csv_paths[0]
+    right_csvs = csv_paths[1:]
+
+    if args.skip_match and not extract_flag:
+        logging.warning(
+            "--skip-match without --extract: no matching and no extraction; nothing to do."
+        )
+        return
+
+    matched_csv_path = str(base_output / "matched.csv")
+    matched_csv_full_path = str(base_output / "matched_full.csv")
+
+    # --- Cross-camera match first (cheap); avoids heavy extract if matching fails ---
+    if not args.skip_match:
+        match_frames_from_csv_multi(csv_0, right_csvs, matched_csv_path, threshold_ns)
+        match_frames_full_from_csv_multi(
+            csv_0, right_csvs, matched_csv_full_path, threshold_ns, duration_0
+        )
+    else:
+        logging.info("Skipping multi-match (--skip-match).")
+
+    # --- Extract frames if requested (after match; validate CSV vs video length before ffmpeg) ---
     if extract_flag:
         logging.info(
             "Extracting frames (parallel CPU) for cameras without an existing .../<cam>/images/ folder."
@@ -594,37 +676,23 @@ def main():
         if not video_output_pairs:
             logging.info("No cameras need extraction (images/ already present for all).")
         else:
+            logging.info(
+                "Checking CSV line count vs video frame count for each camera before extraction."
+            )
+            for video_path, _ in video_output_pairs:
+                validate_extract_csv_vs_video(video_path)
+
             max_workers = min(len(video_output_pairs), multiprocessing.cpu_count())
             logging.info(
                 f"Extracting {len(video_output_pairs)} camera(s); using {max_workers} CPU worker(s)"
             )
 
-            # Parallel extraction
             with ProcessPoolExecutor(max_workers=max_workers) as executor:
                 for video_path in executor.map(extract_frames_cpu, video_output_pairs):
                     output_dir = Path(video_path).parent.parent / "images"
                     extract_frame_data(str(output_dir), video_path)
     else:
         logging.info("Frame extraction is disabled.")
-
-    # --- CSV paths ---
-    csv_paths = [get_csv_path_from_video(vp) for vp in video_paths]
-    csv_0 = csv_paths[0]
-    right_csvs = csv_paths[1:]
-
-    if args.skip_match:
-        if not extract_flag:
-            logging.warning("--skip-match without --extract: no matching and no extraction; nothing to do.")
-        else:
-            logging.info("Skipping multi-match (--skip-match).")
-        return
-
-    matched_csv_path = str(base_output / "matched.csv")
-    matched_csv_full_path = str(base_output / "matched_full.csv")
-
-    # --- Multi-match ---
-    match_frames_from_csv_multi(csv_0, right_csvs, matched_csv_path, threshold_ns)
-    match_frames_full_from_csv_multi(csv_0, right_csvs, matched_csv_full_path, threshold_ns, duration_0)
 
 
 if __name__ == "__main__":
