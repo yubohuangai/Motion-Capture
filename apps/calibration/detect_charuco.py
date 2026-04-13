@@ -16,6 +16,9 @@
     python3 apps/calibration/detect_charuco.py /path/to/data
     python3 apps/calibration/detect_charuco.py /path/to/data --preset 5x7_a4
 
+  Single image (writes chessboard/<name>.json next to the image, viz under <parent>/output/calibration/):
+    python3 apps/calibration/detect_charuco.py /path/to/one_image.jpg
+
   Print a matching board PNG:
     python3 apps/calibration/generate_charuco_board.py
 '''
@@ -47,6 +50,25 @@ from charuco_board_presets import (
     DEFAULT_CHARUCO_PRESET,
     get_aruco_dictionary,
 )
+
+# Script-level board profiles for easy switching without CLI flags.
+# Change ACTIVE_BOARD_PROFILE to swap defaults.
+BOARD_DEFAULT_PROFILES = {
+    # Previous default behavior in this script.
+    "legacy_default": {
+        "preset": DEFAULT_CHARUCO_PRESET,
+        "dictionary": None,  # None -> use preset dictionary
+        "grid_m": 0.033,
+    },
+    # New board: charuco_board_8x5_7x4_inner_DICT_4X4_50.json
+    # physical_meters.chessboard_square_side_m = 0.1
+    "board_8x5_7x4_dict4x4_50_36x24": {
+        "preset": "8x5_7x4_inner",
+        "dictionary": "DICT_4X4_50",
+        "grid_m": 0.1,
+    },
+}
+ACTIVE_BOARD_PROFILE = "board_8x5_7x4_dict4x4_50_36x24"
 
 
 def build_board(squares_xy: tuple[int, int], marker_ratio: float, dict_name: str):
@@ -189,16 +211,88 @@ def detect_charuco_batch(path: str, image_sub: str, out: str, args, board, detec
         t.join()
 
 
+def _normalize_single_image_arg(path_arg: str) -> tuple[str, str | None]:
+    """
+    If path_arg is an image file, return (parent directory as dataset root, absolute image path).
+    Otherwise return (path_arg unchanged, None).
+    """
+    ap = os.path.abspath(path_arg)
+    if os.path.isfile(ap) and ap.lower().endswith((".jpg", ".jpeg", ".png")):
+        return os.path.dirname(ap), ap
+    return path_arg, None
+
+
+def detect_charuco_one_file(
+    image_path: str,
+    data_root: str,
+    out: str,
+    args,
+    board,
+    detector,
+    n_corners: int,
+):
+    """Detect on one image; writes chessboard/<stem>.json under data_root and visualization under out."""
+    rel = os.path.basename(image_path)
+    annname = join(data_root, "chessboard", str(Path(rel).with_suffix(".json")))
+    keypoints3d = board_to_keypoints3d(board, args.grid)
+    pattern = ((args.squares[0] - 1), (args.squares[1] - 1))
+    sx, sy = pattern
+    template = {
+        "keypoints3d": keypoints3d.tolist(),
+        "keypoints2d": np.zeros((keypoints3d.shape[0], 3)).tolist(),
+        "pattern": [int(sx), int(sy)],
+        "grid_size": args.grid,
+        "visited": False,
+    }
+    if not os.path.exists(annname):
+        save_json(annname, template)
+    elif args.overwrite3d:
+        data = read_json(annname)
+        data["keypoints3d"] = template["keypoints3d"]
+        data["pattern"] = template["pattern"]
+        data["grid_size"] = template["grid_size"]
+        save_json(annname, data)
+
+    img = cv2.imread(image_path)
+    if img is None:
+        raise SystemExit(f"[detect_charuco] Cannot read {image_path}")
+    annots = read_json(annname)
+    annots["visited"] = True
+    show, k2d = detect_one_image(img, detector, board, n_corners)
+    annots["keypoints2d"] = k2d.tolist()
+    save_json(annname, annots)
+    if show is None:
+        if args.debug:
+            mywarn(f"[detect_charuco] No ChArUco in {image_path}")
+        print(f"[detect_charuco] No ChArUco detected; annotation saved: {annname}")
+        return
+    outname = join(out, rel)
+    os.makedirs(os.path.dirname(outname), exist_ok=True)
+    cv2.imwrite(outname, show)
+    print(f"[detect_charuco] wrote {outname}")
+
+
 def main():
+    if ACTIVE_BOARD_PROFILE not in BOARD_DEFAULT_PROFILES:
+        raise SystemExit(
+            f"Unknown ACTIVE_BOARD_PROFILE={ACTIVE_BOARD_PROFILE!r}; "
+            f"available: {sorted(BOARD_DEFAULT_PROFILES.keys())}"
+        )
+    profile = BOARD_DEFAULT_PROFILES[ACTIVE_BOARD_PROFILE]
+
     parser = argparse.ArgumentParser(description="Batch ChArUco detection (EasyMocap chessboard JSON layout)")
-    parser.add_argument("path", type=str, help="Dataset root (contains images/ and will use chessboard/)")
+    parser.add_argument(
+        "path",
+        type=str,
+        help="Dataset root (contains images/ and chessboard/) or a single .jpg/.png image path",
+    )
     parser.add_argument("--image", type=str, default="images", help="Subfolder of path with images")
     parser.add_argument("--out", type=str, default=None, help="Visualization output root")
     parser.add_argument("--ext", type=str, default=".jpg", choices=[".jpg", ".png"])
     parser.add_argument(
         "--preset",
         type=str,
-        default=DEFAULT_CHARUCO_PRESET,
+        default=profile["preset"],
         choices=sorted(BOARD_PRESETS.keys()),
     )
     parser.add_argument(
@@ -211,13 +305,13 @@ def main():
     parser.add_argument(
         "--dict",
         dest="dictionary",
-        default=None,
+        default=profile["dictionary"],
         help="cv2.aruco dictionary name, e.g. DICT_4X4_250 (overrides preset)",
     )
     parser.add_argument(
         "--grid",
         type=float,
-        default=0.033,
+        default=float(profile["grid_m"]),
         help="Physical square size in meters (scales keypoints3d for calibration)",
     )
     parser.add_argument("--mp", type=int, default=4, help="Thread count")
@@ -225,6 +319,11 @@ def main():
     parser.add_argument("--overwrite3d", action="store_true", help="Refresh keypoints3d in existing JSON")
 
     args = parser.parse_args()
+    data_root, single_image = _normalize_single_image_arg(args.path)
+    args.path = data_root
+    if single_image is not None:
+        args.ext = ".jpg" if single_image.lower().endswith((".jpg", ".jpeg")) else ".png"
+
     if args.out is None:
         args.out = join(args.path, "output", "calibration")
 
@@ -252,7 +351,13 @@ def main():
         f"dict={dict_name!r} marker_ratio={marker_ratio:.6f} n_corners={n_corners} grid_m={args.grid}"
     )
 
-    detect_charuco_batch(args.path, args.image, args.out, args, board, detector, n_corners)
+    if single_image is not None:
+        print(f"[detect_charuco] single image mode: {single_image}")
+        detect_charuco_one_file(
+            single_image, args.path, args.out, args, board, detector, n_corners
+        )
+    else:
+        detect_charuco_batch(args.path, args.image, args.out, args, board, detector, n_corners)
 
 
 if __name__ == "__main__":
