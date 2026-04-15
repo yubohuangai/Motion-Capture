@@ -753,6 +753,8 @@ def main():
                     logging.warning("No CUDA GPU decoder found; falling back to CPU extraction.")
                     use_gpu = False
 
+            extract_start = time.time()
+
             if use_gpu:
                 logging.info(
                     f"GPU extraction: {len(video_output_pairs)} camera(s) distributed across {gpu_count} GPU(s)"
@@ -777,6 +779,9 @@ def main():
                     for video_path in executor.map(extract_frames_cpu, tasks):
                         output_dir = Path(video_path).parent.parent / "images"
                         extract_frame_data(str(output_dir), video_path)
+
+            elapsed = time.time() - extract_start
+            logging.info(f"Extraction complete: {len(video_output_pairs)} camera(s) in {elapsed:.1f}s")
     else:
         logging.info("Frame extraction is disabled.")
 
