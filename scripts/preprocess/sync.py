@@ -1,5 +1,6 @@
 import multiprocessing
 import os
+import subprocess
 import sys
 import cv2
 import glob
@@ -11,11 +12,7 @@ import logging
 import matplotlib.pyplot as plt
 from matplotlib.ticker import FuncFormatter
 import shutil
-import os
-import re
-from pathlib import Path
 import time
-import re
 from concurrent.futures import ProcessPoolExecutor
 
 
@@ -96,6 +93,12 @@ def parse_args():
         ),
     )
 
+    parser.add_argument(
+        "--cpu",
+        action="store_true",
+        help="Force CPU-only frame extraction (default: use GPU if available).",
+    )
+
     return parser.parse_args()
 
 
@@ -148,12 +151,79 @@ def collect_video_paths(root, num_cams):
     return video_paths
 
 
+def detect_gpu_count():
+    """Return the number of available NVIDIA GPUs, or 0 if none/nvidia-smi missing."""
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0:
+            return len([l for l in result.stdout.strip().splitlines() if l.strip()])
+    except Exception:
+        pass
+    return 0
+
+
+def probe_gpu_decoder():
+    """Return True if h264_cuvid is listed in FFmpeg's decoders."""
+    try:
+        result = subprocess.run(
+            ["ffmpeg", "-decoders"], capture_output=True, text=True, timeout=5
+        )
+        return "h264_cuvid" in result.stdout or "hevc_cuvid" in result.stdout
+    except Exception:
+        return False
+
+
+def extract_frames_gpu(video_path_output):
+    """
+    Extract frames using CUDA GPU decoding. gpu_id is assigned cyclically across
+    available GPUs so 11 cameras spread over 3 GPUs automatically.
+    Falls back to CPU if the GPU command fails.
+    """
+    video_path, output_dir, gpu_id = video_path_output
+    video_path = str(video_path)
+    output_dir = str(output_dir)
+
+    if os.path.exists(output_dir):
+        shutil.rmtree(output_dir)
+    os.makedirs(output_dir, exist_ok=True)
+
+    output_pattern = os.path.join(output_dir, "%06d.jpg")
+    video_name = os.path.basename(video_path)
+
+    name_lower = video_name.lower()
+    if name_lower.endswith(".hevc") or name_lower.endswith(".h265") or "hevc" in name_lower:
+        decoder = "hevc_cuvid"
+    else:
+        decoder = "h264_cuvid"
+
+    cmd = (
+        f'ffmpeg -hwaccel cuda -hwaccel_device {gpu_id} -c:v {decoder} '
+        f'-vsync 0 -i "{video_path}" -q:v 1 "{output_pattern}" -loglevel error 2>/dev/null'
+    )
+    logging.info(f"[{video_name}] Starting FFmpeg GPU{gpu_id} extraction...")
+    ret = os.system(cmd)
+
+    if ret != 0:
+        logging.warning(f"[{video_name}] GPU extraction failed (exit {ret}), falling back to CPU...")
+        cpu_cmd = (
+            f'ffmpeg -threads 0 -vsync 0 -i "{video_path}" -q:v 1 "{output_pattern}" '
+            f'-loglevel error 2>/dev/null'
+        )
+        os.system(cpu_cmd)
+
+    logging.info(f"[{video_name}] Extraction complete → {output_dir}")
+    return video_path
+
+
 def extract_frames_cpu(video_path_output):
     """
     Extract frames from a video using CPU only (no GPU).
-    Each video runs in its own process using 1 CPU core.
+    Each video runs in its own process; threads_per_worker divides cores evenly across workers.
     """
-    video_path, output_dir = video_path_output
+    video_path, output_dir, threads_per_worker = video_path_output
     video_path = str(video_path)
     output_dir = str(output_dir)
 
@@ -165,8 +235,7 @@ def extract_frames_cpu(video_path_output):
     output_pattern = os.path.join(output_dir, "%06d.jpg")
     video_name = os.path.basename(video_path)
 
-    # CPU extraction, no multi-thread per process
-    cmd = f'ffmpeg -threads 1 -vsync 0 -i "{video_path}" -q:v 1 "{output_pattern}"'
+    cmd = f'ffmpeg -threads {threads_per_worker} -vsync 0 -i "{video_path}" -q:v 1 "{output_pattern}" -loglevel error 2>/dev/null'
     logging.info(f"[{video_name}] Starting FFmpeg extraction...")
     os.system(cmd)
 
@@ -658,18 +727,12 @@ def main():
 
     # --- Extract frames if requested (after match; validate CSV vs video length before ffmpeg) ---
     if extract_flag:
-        logging.info(
-            "Extracting frames (parallel CPU) for cameras without an existing .../<cam>/images/ folder."
-        )
-
         video_output_pairs = []
         for video_path in video_paths:
             video_dir = Path(video_path).parent
             output_dir = video_dir.parent / "images"
             if output_dir.is_dir():
-                logging.info(
-                    f"Skipping extraction: {output_dir} already exists"
-                )
+                logging.info(f"Skipping extraction: {output_dir} already exists")
                 continue
             video_output_pairs.append((video_path, str(output_dir)))
 
@@ -682,15 +745,38 @@ def main():
             for video_path, _ in video_output_pairs:
                 validate_extract_csv_vs_video(video_path)
 
-            max_workers = min(len(video_output_pairs), multiprocessing.cpu_count())
-            logging.info(
-                f"Extracting {len(video_output_pairs)} camera(s); using {max_workers} CPU worker(s)"
-            )
+            # --- Decide GPU vs CPU ---
+            use_gpu = not args.cpu
+            if use_gpu:
+                gpu_count = detect_gpu_count()
+                if gpu_count == 0 or not probe_gpu_decoder():
+                    logging.warning("No CUDA GPU decoder found; falling back to CPU extraction.")
+                    use_gpu = False
 
-            with ProcessPoolExecutor(max_workers=max_workers) as executor:
-                for video_path in executor.map(extract_frames_cpu, video_output_pairs):
-                    output_dir = Path(video_path).parent.parent / "images"
-                    extract_frame_data(str(output_dir), video_path)
+            if use_gpu:
+                logging.info(
+                    f"GPU extraction: {len(video_output_pairs)} camera(s) distributed across {gpu_count} GPU(s)"
+                )
+                tasks = [
+                    (vp, od, i % gpu_count)
+                    for i, (vp, od) in enumerate(video_output_pairs)
+                ]
+                with ProcessPoolExecutor(max_workers=len(tasks)) as executor:
+                    for video_path in executor.map(extract_frames_gpu, tasks):
+                        output_dir = Path(video_path).parent.parent / "images"
+                        extract_frame_data(str(output_dir), video_path)
+            else:
+                max_workers = min(len(video_output_pairs), multiprocessing.cpu_count())
+                threads_per_worker = max(1, multiprocessing.cpu_count() // max_workers)
+                logging.info(
+                    f"CPU extraction: {len(video_output_pairs)} camera(s), "
+                    f"{max_workers} worker(s) x {threads_per_worker} thread(s) each"
+                )
+                tasks = [(vp, od, threads_per_worker) for vp, od in video_output_pairs]
+                with ProcessPoolExecutor(max_workers=max_workers) as executor:
+                    for video_path in executor.map(extract_frames_cpu, tasks):
+                        output_dir = Path(video_path).parent.parent / "images"
+                        extract_frame_data(str(output_dir), video_path)
     else:
         logging.info("Frame extraction is disabled.")
 
