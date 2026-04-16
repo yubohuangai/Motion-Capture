@@ -1,0 +1,10 @@
+---
+description: Save tokens — skip Superpowers plugin skills unless the user asks for one by name
+alwaysApply: true
+---
+
+# Superpowers off by default (user preference)
+
+- Do **not** invoke, load, or follow workflows from the **Superpowers** Cursor plugin unless the user explicitly names a skill or asks for that workflow.
+- Do **not** treat "invoke a skill before every response" or similar plugin rules as mandatory here.
+- Prefer answering directly; only open a skill file or long rule when it clearly matches the task.
