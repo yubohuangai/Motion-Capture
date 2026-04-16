@@ -181,6 +181,37 @@ def put_label_top_left(
     cv2.putText(image_bgr, text, org, font, font_scale, (0, 255, 255), thickness, cv2.LINE_AA)
 
 
+def _ffmpeg_nvenc_works() -> bool:
+    """True if ffmpeg can open h264_nvenc (needs NVIDIA GPU + driver + FFmpeg NVENC build)."""
+    if not shutil.which("ffmpeg"):
+        return False
+    try:
+        r = subprocess.run(
+            [
+                "ffmpeg",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=black:s=64x64:d=0.04",
+                "-c:v",
+                "h264_nvenc",
+                "-f",
+                "null",
+                "-",
+            ],
+            capture_output=True,
+            timeout=30,
+            stdin=subprocess.DEVNULL,
+        )
+        return r.returncode == 0
+    except (subprocess.TimeoutExpired, OSError, FileNotFoundError):
+        return False
+
+
 class _FfmpegBgrPipe:
     """Stream raw BGR frames to ffmpeg (optionally NVENC)."""
 
@@ -239,14 +270,25 @@ class _FfmpegBgrPipe:
             raise ValueError("frame size mismatch for ffmpeg pipe")
         b = frame if frame.flags["C_CONTIGUOUS"] else np.ascontiguousarray(frame)
         assert self._p.stdin is not None
-        self._p.stdin.write(b.tobytes())
+        try:
+            self._p.stdin.write(b.tobytes())
+        except BrokenPipeError as e:
+            self._p.wait()
+            raise RuntimeError(
+                "ffmpeg stopped accepting frames (encoder failed). If you used --ffmpeg-nvenc, "
+                "this host may have no usable NVIDIA encoder; rerun without --ffmpeg-nvenc "
+                "to use CPU libx264, or use --encoder opencv."
+            ) from e
 
     def close(self) -> None:
         if self._p.stdin:
             self._p.stdin.close()
         self._p.wait()
         if self._p.returncode != 0:
-            raise RuntimeError(f"ffmpeg failed with exit code {self._p.returncode}")
+            raise RuntimeError(
+                f"ffmpeg exited with code {self._p.returncode}. "
+                "Try without --ffmpeg-nvenc if NVENC is not available on this machine."
+            )
 
 
 def format_frame_label(
@@ -331,7 +373,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--ffmpeg-nvenc",
         action="store_true",
-        help="With --encoder ffmpeg, use h264_nvenc (NVIDIA). Requires ffmpeg with NVENC support.",
+        help=(
+            "With --encoder ffmpeg, try h264_nvenc (NVIDIA GPU). If the encoder is unavailable "
+            "(common on CPU-only cluster nodes), the script falls back to libx264 automatically."
+        ),
     )
     p.add_argument(
         "--max-output-dim",
@@ -423,8 +468,15 @@ def main() -> None:
             f"[multiview_grid_video] Decoding images at 1/{args.read_scale} linear size "
             f"(IMREAD_REDUCED); use --read-scale 1 for full-resolution decode."
         )
-    if args.encoder == "ffmpeg" and args.ffmpeg_nvenc:
-        print("[multiview_grid_video] Using ffmpeg with h264_nvenc (GPU encode if driver supports it).")
+    use_nvenc = bool(args.ffmpeg_nvenc and args.encoder == "ffmpeg")
+    if use_nvenc and not _ffmpeg_nvenc_works():
+        print(
+            "[multiview_grid_video] h264_nvenc is not available on this host (no usable NVIDIA "
+            "encoder: wrong cluster node, no GPU, or driver). Using libx264 (CPU) instead."
+        )
+        use_nvenc = False
+    elif use_nvenc:
+        print("[multiview_grid_video] Using ffmpeg with h264_nvenc.")
     elif args.encoder == "ffmpeg":
         print("[multiview_grid_video] Using ffmpeg with libx264 (CPU).")
 
@@ -473,7 +525,7 @@ def main() -> None:
                 )
             if args.encoder == "ffmpeg":
                 ff_writer = _FfmpegBgrPipe(
-                    out_path, out_w, out_h, float(args.fps), args.ffmpeg_nvenc
+                    out_path, out_w, out_h, float(args.fps), use_nvenc
                 )
             else:
                 cv_writer = cv2.VideoWriter(
@@ -495,8 +547,10 @@ def main() -> None:
         cv_writer.release()
 
     enc = args.encoder
-    if args.encoder == "ffmpeg" and args.ffmpeg_nvenc:
+    if args.encoder == "ffmpeg" and use_nvenc:
         enc = "ffmpeg+nvenc"
+    elif args.encoder == "ffmpeg":
+        enc = "ffmpeg+x264"
     print(
         f"[multiview_grid_video] Wrote {out_path}  cameras={n_cams}  grid={rows}x{cols}  "
         f"frames={n_out} (indices {slice_start}..{slice_start + n_out - 1} of {full_total})  "
