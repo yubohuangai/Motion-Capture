@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor
 from glob import glob
 
 import cv2
@@ -93,19 +94,32 @@ def build_grid(
     pad_bgr: tuple[int, int, int],
     cell_w: int | None,
     cell_h: int | None,
+    *,
+    imread_flag: int = cv2.IMREAD_COLOR,
+    parallel_imread: bool = True,
 ) -> np.ndarray:
+    """
+    ``imread_flag``: pass ``cv2.IMREAD_REDUCED_COLOR_2`` (etc.) to decode smaller than full-res.
+    ``parallel_imread``: load paths in parallel (faster for many panels).
+    """
     slots = cols * rows
     if len(paths) > slots:
         raise ValueError(
             f"[concat_images_grid] {len(paths)} images but grid is only {cols}x{rows}={slots} slots"
         )
 
-    loaded: list[np.ndarray] = []
-    for p in paths:
-        im = cv2.imread(p, cv2.IMREAD_COLOR)
+    def _read_one(p: str) -> np.ndarray:
+        im = cv2.imread(p, imread_flag)
         if im is None:
             raise FileNotFoundError(f"failed to read image: {p}")
-        loaded.append(im)
+        return im
+
+    if parallel_imread and len(paths) > 1:
+        max_workers = min(32, len(paths))
+        with ThreadPoolExecutor(max_workers=max_workers) as ex:
+            loaded = list(ex.map(_read_one, paths))
+    else:
+        loaded = [_read_one(p) for p in paths]
 
     if not loaded:
         raise ValueError("no images to concatenate")

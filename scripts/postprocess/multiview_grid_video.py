@@ -20,6 +20,14 @@ Example::
 
     python scripts/postprocess/multiview_grid_video.py /path/to/cow_1_board/raw \\
         -o /path/to/multiview_11cams.mp4 --fps 30 --max-cell-side 720
+
+**Speed (typical bottlenecks: JPEG decode × 11 cams, then encode):**
+
+- ``--read-scale 2`` (or ``4``): decode at 1/2 or 1/4 resolution in ``imread`` (much faster for 4K sources when cells are small).
+- ``--encoder ffmpeg --ffmpeg-nvenc``: NVIDIA GPU H.264 encode (needs ``ffmpeg`` + driver); otherwise ``--encoder ffmpeg`` uses fast CPU x264.
+- Lower ``--max-cell-side`` (e.g. 540) and/or ``--fps``.
+
+OpenCV resize/letterboxing stays on **CPU**; GPU helps mainly via **NVENC** when you choose FFmpeg + NVENC.
 """
 
 from __future__ import annotations
@@ -28,6 +36,8 @@ import argparse
 import math
 import os
 import re
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -44,6 +54,14 @@ from concat_images_grid import build_grid, parse_pad_bgr  # noqa: E402
 ALLOWED_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff")
 
 MAX_OUTPUT_DIM = 4096
+
+# OpenCV: decode smaller than full resolution (big win for 4K → small cells).
+_READ_SCALE_TO_IMREAD: dict[int, int] = {
+    1: int(cv2.IMREAD_COLOR),
+    2: int(cv2.IMREAD_REDUCED_COLOR_2),
+    4: int(cv2.IMREAD_REDUCED_COLOR_4),
+    8: int(cv2.IMREAD_REDUCED_COLOR_8),
+}
 
 
 def natural_key_stem(stem: str):
@@ -163,6 +181,74 @@ def put_label_top_left(
     cv2.putText(image_bgr, text, org, font, font_scale, (0, 255, 255), thickness, cv2.LINE_AA)
 
 
+class _FfmpegBgrPipe:
+    """Stream raw BGR frames to ffmpeg (optionally NVENC)."""
+
+    def __init__(self, out_path: str, w: int, h: int, fps: float, nvenc: bool) -> None:
+        if not shutil.which("ffmpeg"):
+            raise RuntimeError(
+                "ffmpeg not found in PATH. Install ffmpeg or use --encoder opencv."
+            )
+        cmd: list[str] = [
+            "ffmpeg",
+            "-loglevel",
+            "error",
+            "-y",
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "bgr24",
+            "-s",
+            f"{w}x{h}",
+            "-r",
+            str(fps),
+            "-i",
+            "pipe:0",
+        ]
+        if nvenc:
+            cmd += [
+                "-c:v",
+                "h264_nvenc",
+                "-preset",
+                "p4",
+                "-tune",
+                "hq",
+                "-cq",
+                "28",
+                "-pix_fmt",
+                "yuv420p",
+            ]
+        else:
+            cmd += [
+                "-c:v",
+                "libx264",
+                "-preset",
+                "veryfast",
+                "-crf",
+                "23",
+                "-pix_fmt",
+                "yuv420p",
+            ]
+        cmd.append(out_path)
+        self._p = subprocess.Popen(cmd, stdin=subprocess.PIPE)
+        self.w = w
+        self.h = h
+
+    def write(self, frame: np.ndarray) -> None:
+        if frame.shape[0] != self.h or frame.shape[1] != self.w:
+            raise ValueError("frame size mismatch for ffmpeg pipe")
+        b = frame if frame.flags["C_CONTIGUOUS"] else np.ascontiguousarray(frame)
+        assert self._p.stdin is not None
+        self._p.stdin.write(b.tobytes())
+
+    def close(self) -> None:
+        if self._p.stdin:
+            self._p.stdin.close()
+        self._p.wait()
+        if self._p.returncode != 0:
+            raise RuntimeError(f"ffmpeg failed with exit code {self._p.returncode}")
+
+
 def format_frame_label(
     row_index: int,
     total: int,
@@ -217,6 +303,35 @@ def parse_args() -> argparse.Namespace:
             "Each view is letterboxed into a square cell of this side length (pixels) "
             "before tiling. Lower = smaller memory / faster (default: 720)."
         ),
+    )
+    p.add_argument(
+        "--read-scale",
+        type=int,
+        choices=(1, 2, 4, 8),
+        default=1,
+        help=(
+            "JPEG decode scale: 1=full res, 2=half, 4=quarter, 8=eighth (OpenCV IMREAD_REDUCED_*). "
+            "Use 2 or 4 with large inputs for much faster loads (default: 1)."
+        ),
+    )
+    p.add_argument(
+        "--no-parallel-load",
+        action="store_true",
+        help="Disable parallel image loading per frame (default: parallel on).",
+    )
+    p.add_argument(
+        "--encoder",
+        choices=("opencv", "ffmpeg"),
+        default="opencv",
+        help=(
+            "opencv: cv2.VideoWriter (simple). ffmpeg: pipe raw BGR to ffmpeg (often faster; "
+            "use with --ffmpeg-nvenc on NVIDIA)."
+        ),
+    )
+    p.add_argument(
+        "--ffmpeg-nvenc",
+        action="store_true",
+        help="With --encoder ffmpeg, use h264_nvenc (NVIDIA). Requires ffmpeg with NVENC support.",
     )
     p.add_argument(
         "--max-output-dim",
@@ -301,15 +416,27 @@ def main() -> None:
             out.append(pp)
         return out
 
+    imread_flag = _READ_SCALE_TO_IMREAD[args.read_scale]
+    parallel_load = not args.no_parallel_load
+    if args.read_scale != 1:
+        print(
+            f"[multiview_grid_video] Decoding images at 1/{args.read_scale} linear size "
+            f"(IMREAD_REDUCED); use --read-scale 1 for full-resolution decode."
+        )
+    if args.encoder == "ffmpeg" and args.ffmpeg_nvenc:
+        print("[multiview_grid_video] Using ffmpeg with h264_nvenc (GPU encode if driver supports it).")
+    elif args.encoder == "ffmpeg":
+        print("[multiview_grid_video] Using ffmpeg with libx264 (CPU).")
+
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-    writer: cv2.VideoWriter | None = None
+    cv_writer: cv2.VideoWriter | None = None
+    ff_writer: _FfmpegBgrPipe | None = None
     out_w = out_h = 0
 
-    def write_frame(grid: np.ndarray) -> None:
-        assert writer is not None
+    def resize_for_sink(grid: np.ndarray) -> np.ndarray:
         if grid.shape[1] != out_w or grid.shape[0] != out_h:
-            grid = cv2.resize(grid, (out_w, out_h), interpolation=cv2.INTER_AREA)
-        writer.write(grid)
+            return cv2.resize(grid, (out_w, out_h), interpolation=cv2.INTER_AREA)
+        return grid
 
     for i, stems in enumerate(tqdm(plans, desc="frames", unit="fr")):
         paths = paths_for_stems(stems)
@@ -320,6 +447,8 @@ def main() -> None:
             pad_bgr=pad_bgr,
             cell_w=cell_side,
             cell_h=cell_side,
+            imread_flag=imread_flag,
+            parallel_imread=parallel_load,
         )
         global_row = slice_start + i
         put_label_top_left(
@@ -334,7 +463,7 @@ def main() -> None:
             font_scale=args.font_scale,
         )
 
-        if writer is None:
+        if cv_writer is None and ff_writer is None:
             oh, ow = grid.shape[:2]
             out_w, out_h = _compute_output_size(ow, oh, args.max_output_dim)
             if (out_w, out_h) != (ow, oh):
@@ -342,18 +471,36 @@ def main() -> None:
                     f"[multiview_grid_video] Final resize for encoder: {ow}x{oh} -> {out_w}x{out_h} "
                     f"(max_output_dim={args.max_output_dim})"
                 )
-            writer = cv2.VideoWriter(out_path, fourcc, float(args.fps), (out_w, out_h))
-            if not writer.isOpened():
-                raise RuntimeError(f"Failed to open VideoWriter for {out_path}")
+            if args.encoder == "ffmpeg":
+                ff_writer = _FfmpegBgrPipe(
+                    out_path, out_w, out_h, float(args.fps), args.ffmpeg_nvenc
+                )
+            else:
+                cv_writer = cv2.VideoWriter(
+                    out_path, fourcc, float(args.fps), (out_w, out_h)
+                )
+                if not cv_writer.isOpened():
+                    raise RuntimeError(f"Failed to open VideoWriter for {out_path}")
 
-        write_frame(grid)
+        out = resize_for_sink(grid)
+        if ff_writer is not None:
+            ff_writer.write(out)
+        else:
+            assert cv_writer is not None
+            cv_writer.write(out)
 
-    assert writer is not None
-    writer.release()
+    if ff_writer is not None:
+        ff_writer.close()
+    elif cv_writer is not None:
+        cv_writer.release()
+
+    enc = args.encoder
+    if args.encoder == "ffmpeg" and args.ffmpeg_nvenc:
+        enc = "ffmpeg+nvenc"
     print(
         f"[multiview_grid_video] Wrote {out_path}  cameras={n_cams}  grid={rows}x{cols}  "
         f"frames={n_out} (indices {slice_start}..{slice_start + n_out - 1} of {full_total})  "
-        f"fps={args.fps}  cell={cell_side}px"
+        f"fps={args.fps}  cell={cell_side}px  read_scale={args.read_scale}  encoder={enc}"
     )
 
 
