@@ -199,20 +199,21 @@ def extract_frames_gpu(video_path_output):
     else:
         decoder = "h264_cuvid"
 
-    cmd = (
-        f'ffmpeg -hwaccel cuda -hwaccel_device {gpu_id} -c:v {decoder} '
-        f'-vsync 0 -i "{video_path}" -q:v 1 "{output_pattern}" -loglevel error 2>/dev/null'
-    )
+    gpu_cmd = [
+        "ffmpeg", "-hwaccel", "cuda", "-hwaccel_device", str(gpu_id),
+        "-c:v", decoder, "-vsync", "0", "-i", video_path,
+        "-q:v", "1", output_pattern, "-loglevel", "error",
+    ]
     logging.info(f"[{video_name}] Starting FFmpeg GPU{gpu_id} extraction...")
-    ret = os.system(cmd)
+    ret = subprocess.run(gpu_cmd, stdin=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode
 
     if ret != 0:
         logging.warning(f"[{video_name}] GPU extraction failed (exit {ret}), falling back to CPU...")
-        cpu_cmd = (
-            f'ffmpeg -threads 0 -vsync 0 -i "{video_path}" -q:v 1 "{output_pattern}" '
-            f'-loglevel error 2>/dev/null'
-        )
-        os.system(cpu_cmd)
+        cpu_cmd = [
+            "ffmpeg", "-threads", "0", "-vsync", "0", "-i", video_path,
+            "-q:v", "1", output_pattern, "-loglevel", "error",
+        ]
+        subprocess.run(cpu_cmd, stdin=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     logging.info(f"[{video_name}] Extraction complete → {output_dir}")
     return video_path
@@ -235,9 +236,12 @@ def extract_frames_cpu(video_path_output):
     output_pattern = os.path.join(output_dir, "%06d.jpg")
     video_name = os.path.basename(video_path)
 
-    cmd = f'ffmpeg -threads {threads_per_worker} -vsync 0 -i "{video_path}" -q:v 1 "{output_pattern}" -loglevel error 2>/dev/null'
+    cmd = [
+        "ffmpeg", "-threads", str(threads_per_worker), "-vsync", "0",
+        "-i", video_path, "-q:v", "1", output_pattern, "-loglevel", "error",
+    ]
     logging.info(f"[{video_name}] Starting FFmpeg extraction...")
-    os.system(cmd)
+    subprocess.run(cmd, stdin=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     logging.info(f"[{video_name}] Extraction complete → {output_dir}")
     return video_path
