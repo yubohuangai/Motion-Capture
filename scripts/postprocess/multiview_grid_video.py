@@ -3,12 +3,22 @@ Build a single preview video: all camera folders under a session ``raw/`` root a
 tiled into one grid per frame, with the frame id drawn at the top-left, then encoded
 to one MP4. Each view is downscaled before tiling to keep memory and encoder limits sane.
 
+**Alignment (important):** After ``sync.py --extract``, each ``NN/images/`` file is named
+from that phone's timestamp CSV, so **filenames differ across cameras**. The authoritative
+alignment is ``matched.csv`` from ``sync.py`` (one row = one synchronized moment; column
+``i`` = frame stem for camera ``i`` in folder order ``01``, ``02``, …). This script uses
+that CSV by default (same path convention as ``move_unmatched.py``).
+
 Typical layout (11 cameras): ``--rows 3 --cols 4`` (12 slots, one empty pad cell).
 
 Example::
 
     python scripts/postprocess/multiview_grid_video.py /path/to/cow_1_board/raw \\
         -o /path/to/cow_1_board/multiview_11cams.mp4 --fps 30 --max-cell-side 720
+
+If ``matched.csv`` is not under the repo ``output/exp/``, pass it explicitly::
+
+    python scripts/postprocess/multiview_grid_video.py /path/to/raw --csv /path/to/matched.csv
 """
 
 from __future__ import annotations
@@ -22,10 +32,12 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+import pandas as pd
 from tqdm import tqdm
 
 # Import grid helpers from sibling module (same directory as this file).
 _POST_DIR = Path(__file__).resolve().parent
+_REPO_ROOT = _POST_DIR.parent.parent
 if str(_POST_DIR) not in sys.path:
     sys.path.insert(0, str(_POST_DIR))
 
@@ -39,6 +51,27 @@ MAX_OUTPUT_DIM = 4096
 
 def natural_key_stem(stem: str):
     return [int(t) if t.isdigit() else t.lower() for t in re.split(r"(\d+)", stem)]
+
+
+def raw_session_slug(data_root: str) -> str:
+    """
+    Same slug as ``move_unmatched.py`` / ``sync.py`` output folder naming:
+    ``.../data/0411/raw`` → ``0411``; ``.../my_dataset`` (no ``raw``) → ``my_dataset``.
+    """
+    p = Path(data_root).resolve()
+    name = p.name
+    if name.lower() == "raw" and p.parent != p:
+        slug = p.parent.name
+    else:
+        slug = name
+    slug = re.sub(r"[^\w\-]+", "_", slug, flags=re.ASCII).strip("_") or "session"
+    return slug[:80]
+
+
+def default_matched_csv_path(raw_root: str, exp_threshold: str) -> Path:
+    """``<repo>/output/exp/<slug>_<threshold>/matched.csv`` (same as ``move_unmatched.py``)."""
+    slug = raw_session_slug(raw_root)
+    return _REPO_ROOT / "output" / "exp" / f"{slug}_{exp_threshold}" / "matched.csv"
 
 
 def find_camera_image_dirs(raw_root: str) -> list[str]:
@@ -87,6 +120,36 @@ def common_frame_stems_sorted(img_dirs: list[str]) -> list[str]:
     return sorted(common, key=natural_key_stem)
 
 
+def load_matched_frame_plans(csv_path: str, n_cams: int) -> list[list[str]]:
+    """
+    Load ``matched.csv`` from ``sync.py`` (no header; one row per sync; column ``i`` =
+    filename stem for camera ``i`` in ``01``, ``02``, … order). Values read as strings
+    to preserve long integer timestamps.
+    """
+    path = Path(csv_path).expanduser().resolve()
+    if not path.is_file():
+        raise FileNotFoundError(f"matched.csv not found: {path}")
+
+    df = pd.read_csv(path, header=None, dtype=str, keep_default_na=False, engine="python")
+    if df.shape[1] < n_cams:
+        raise ValueError(
+            f"{path.name} has {df.shape[1]} columns; need {n_cams} for {n_cams} cameras under raw."
+        )
+    if df.shape[1] > n_cams:
+        df = df.iloc[:, :n_cams]
+
+    plans: list[list[str]] = []
+    for _, row in df.iterrows():
+        stems = [str(row[j]).strip() for j in range(n_cams)]
+        if any(s == "" or s.lower() == "nan" for s in stems):
+            continue
+        plans.append(stems)
+
+    if not plans:
+        raise ValueError(f"No valid rows in {path}")
+    return plans
+
+
 def infer_rows_cols(
     n_views: int, rows: int | None, cols: int | None
 ) -> tuple[int, int]:
@@ -128,6 +191,13 @@ def _compute_output_size(width: int, height: int, max_dim: int) -> tuple[int, in
     return max(2, out_w), max(2, out_h)
 
 
+def truncate_stem(s: str, max_len: int = 32) -> str:
+    s = str(s)
+    if len(s) <= max_len:
+        return s
+    return s[: max(1, max_len - 1)] + "…"
+
+
 def put_label_top_left(
     image_bgr: np.ndarray,
     text: str,
@@ -154,6 +224,30 @@ def parse_args() -> argparse.Namespace:
         "raw_root",
         type=str,
         help="Session root containing 01/images, 02/images, … (e.g. .../cow_1_board/raw).",
+    )
+    p.add_argument(
+        "--align",
+        choices=("matched", "intersection"),
+        default="matched",
+        help=(
+            "How to pair frames across cameras. "
+            "'matched' uses sync.py matched.csv (required for timestamp-renamed frames). "
+            "'intersection' uses only filenames present in every camera (rare; for identical stems)."
+        ),
+    )
+    p.add_argument(
+        "--csv",
+        default=None,
+        help=(
+            "Path to matched.csv from sync.py. Default: <repo>/output/exp/<slug>_<exp-threshold>/matched.csv "
+            "(slug from parent of …/raw). Override when the file lives elsewhere."
+        ),
+    )
+    p.add_argument(
+        "--exp-threshold",
+        default="16ms",
+        metavar="LABEL",
+        help="Folder segment in output/exp/ when using the default --csv path (default: 16ms).",
     )
     p.add_argument(
         "-o",
@@ -199,8 +293,14 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--label-prefix",
         type=str,
-        default="frame ",
-        help="Text before the frame stem in the top-left label (default: 'frame ').",
+        default="",
+        help="Optional text prepended to the top-left label (default: empty).",
+    )
+    p.add_argument(
+        "--label-stem-column",
+        type=int,
+        default=0,
+        help="When using --align matched, which CSV column's stem to show in the label (0 = cam 01).",
     )
     p.add_argument(
         "--font-scale",
@@ -212,15 +312,70 @@ def parse_args() -> argparse.Namespace:
         "--start",
         type=int,
         default=None,
-        help="0-based index into the sorted common frame list (inclusive).",
+        help="0-based index into the frame list / matched rows (inclusive).",
     )
     p.add_argument(
         "--end",
         type=int,
         default=None,
-        help="0-based end index into the sorted common frame list (exclusive).",
+        help="0-based end index into the frame list / matched rows (exclusive).",
     )
     return p.parse_args()
+
+
+def build_frame_plans(
+    args: argparse.Namespace, raw_root: str, img_dirs: list[str], n_cams: int
+) -> tuple[list[list[str]], str]:
+    """
+    Returns (plans, align_mode) where each plan row is [stem_cam0, stem_cam1, …].
+    """
+    if args.align == "intersection":
+        stems = common_frame_stems_sorted(img_dirs)
+        if not stems:
+            raise SystemExit(
+                f"[multiview_grid_video] No identical filenames across all {n_cams} cameras under {raw_root}. "
+                f"After sync extraction, stems are per-camera timestamps — use default --align matched "
+                f"and a matched.csv from sync.py."
+            )
+        return [[s] * n_cams for s in stems], "intersection"
+
+    csv_path = args.csv
+    if not csv_path:
+        csv_path = str(default_matched_csv_path(raw_root, args.exp_threshold))
+    else:
+        csv_path = str(Path(csv_path).expanduser().resolve())
+
+    if not Path(csv_path).is_file():
+        raise SystemExit(
+            f"[multiview_grid_video] matched.csv not found:\n  {csv_path}\n"
+            f"Pass --csv explicitly, or run sync.py to generate output/exp/.../matched.csv "
+            f"(see --exp-threshold, default {args.exp_threshold!r})."
+        )
+
+    plans = load_matched_frame_plans(csv_path, n_cams)
+    print(f"[multiview_grid_video] Loaded {len(plans)} sync rows from:\n  {csv_path}")
+    return plans, "matched"
+
+
+def format_frame_label(
+    align: str,
+    row_index: int,
+    total: int,
+    stems: list[str],
+    label_prefix: str,
+    label_stem_column: int,
+) -> str:
+    col = max(0, min(label_stem_column, len(stems) - 1))
+    stem_show = truncate_stem(stems[col])
+    if align == "intersection":
+        t = f"{label_prefix}{stems[0]}".strip()
+        return t or str(stems[0])
+
+    # row_index: 0-based index into full matched.csv (before --start/--end slice)
+    body = f"#{row_index + 1:05d}/{total}  {stem_show}"
+    if label_prefix:
+        return f"{label_prefix} {body}".strip()
+    return body
 
 
 def main() -> None:
@@ -230,16 +385,15 @@ def main() -> None:
 
     img_dirs = find_camera_image_dirs(raw_root)
     n_cams = len(img_dirs)
-    stems = common_frame_stems_sorted(img_dirs)
-    if not stems:
-        raise SystemExit(
-            f"[multiview_grid_video] No common frame files across all {n_cams} cameras under {raw_root}"
-        )
+    plans_all, align_mode = build_frame_plans(args, raw_root, img_dirs, n_cams)
+    full_total = len(plans_all)
 
-    if args.start is not None or args.end is not None:
-        s = args.start or 0
-        e = args.end if args.end is not None else len(stems)
-        stems = stems[s:e]
+    slice_start = args.start or 0
+    slice_end = args.end if args.end is not None else full_total
+    plans = plans_all[slice_start:slice_end]
+    n_out = len(plans)
+    if n_out == 0:
+        raise SystemExit("[multiview_grid_video] No frames to encode after slicing (--start/--end).")
 
     rows, cols = infer_rows_cols(n_cams, args.rows, args.cols)
     cell_side = max(32, int(args.max_cell_side))
@@ -253,54 +407,27 @@ def main() -> None:
         if od:
             os.makedirs(od, exist_ok=True)
 
-    # First frame: determine video size after optional final downscale.
-    first_paths: list[str] = []
-    for d in img_dirs:
-        p0 = resolve_frame_path(d, stems[0])
-        if p0 is None:
-            raise FileNotFoundError(f"Missing frame {stems[0]!r} under {d}")
-        first_paths.append(p0)
-
-    grid0 = build_grid(
-        first_paths,
-        cols=cols,
-        rows=rows,
-        pad_bgr=pad_bgr,
-        cell_w=cell_side,
-        cell_h=cell_side,
-    )
-    put_label_top_left(
-        grid0,
-        f"{args.label_prefix}{stems[0]}",
-        font_scale=args.font_scale,
-    )
-    oh, ow = grid0.shape[:2]
-    out_w, out_h = _compute_output_size(ow, oh, args.max_output_dim)
-    if (out_w, out_h) != (ow, oh):
-        print(
-            f"[multiview_grid_video] Final resize for encoder: {ow}x{oh} -> {out_w}x{out_h} "
-            f"(max_output_dim={args.max_output_dim})"
-        )
+    def paths_for_stems(stems: list[str]) -> list[str]:
+        out: list[str] = []
+        for j, d in enumerate(img_dirs):
+            pp = resolve_frame_path(d, stems[j])
+            if pp is None:
+                raise FileNotFoundError(f"Missing image for stem {stems[j]!r} under {d}")
+            out.append(pp)
+        return out
 
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-    writer = cv2.VideoWriter(out_path, fourcc, float(args.fps), (out_w, out_h))
-    if not writer.isOpened():
-        raise RuntimeError(f"Failed to open VideoWriter for {out_path}")
+    writer: cv2.VideoWriter | None = None
+    out_w = out_h = 0
 
     def write_frame(grid: np.ndarray) -> None:
+        assert writer is not None
         if grid.shape[1] != out_w or grid.shape[0] != out_h:
             grid = cv2.resize(grid, (out_w, out_h), interpolation=cv2.INTER_AREA)
         writer.write(grid)
 
-    write_frame(grid0)
-
-    for stem in tqdm(stems[1:], desc="frames", unit="fr"):
-        paths = []
-        for d in img_dirs:
-            pp = resolve_frame_path(d, stem)
-            if pp is None:
-                raise FileNotFoundError(f"Missing frame {stem!r} under {d}")
-            paths.append(pp)
+    for i, stems in enumerate(tqdm(plans, desc="frames", unit="fr")):
+        paths = paths_for_stems(stems)
         grid = build_grid(
             paths,
             cols=cols,
@@ -309,17 +436,40 @@ def main() -> None:
             cell_w=cell_side,
             cell_h=cell_side,
         )
+        global_row = slice_start + i
         put_label_top_left(
             grid,
-            f"{args.label_prefix}{stem}",
+            format_frame_label(
+                align_mode,
+                global_row,
+                full_total,
+                stems,
+                args.label_prefix,
+                args.label_stem_column,
+            ),
             font_scale=args.font_scale,
         )
+
+        if writer is None:
+            oh, ow = grid.shape[:2]
+            out_w, out_h = _compute_output_size(ow, oh, args.max_output_dim)
+            if (out_w, out_h) != (ow, oh):
+                print(
+                    f"[multiview_grid_video] Final resize for encoder: {ow}x{oh} -> {out_w}x{out_h} "
+                    f"(max_output_dim={args.max_output_dim})"
+                )
+            writer = cv2.VideoWriter(out_path, fourcc, float(args.fps), (out_w, out_h))
+            if not writer.isOpened():
+                raise RuntimeError(f"Failed to open VideoWriter for {out_path}")
+
         write_frame(grid)
 
+    assert writer is not None
     writer.release()
     print(
-        f"[multiview_grid_video] Wrote {out_path}  cameras={n_cams}  grid={rows}x{cols}  "
-        f"frames={len(stems)}  fps={args.fps}  cell={cell_side}px"
+        f"[multiview_grid_video] Wrote {out_path}  align={align_mode}  cameras={n_cams}  "
+        f"grid={rows}x{cols}  frames={n_out} (rows {slice_start}..{slice_start + n_out - 1} of {full_total})  "
+        f"fps={args.fps}  cell={cell_side}px"
     )
 
 
