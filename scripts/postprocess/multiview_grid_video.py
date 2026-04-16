@@ -1,28 +1,25 @@
 """
-Build a single preview **video** from **images** only: every ``NN/images/`` folder under a
-session ``raw/`` root is tiled into one grid per time step, the frame label is drawn at the
-top-left, and the result is encoded to one MP4. Each view is downscaled before tiling.
+Tile every camera's ``images/`` into one grid per frame and encode a single MP4.
 
-**Pairing frames across cameras:** The script does not “do CSV work”. It only needs to know,
-for each output frame, which **image filename** to take from camera ``01``, ``02``, … If every
-camera uses the **same** stem (e.g. ``000001.jpg`` everywhere), use ``--align intersection``.
-After ``sync.py --extract``, stems are usually **different per camera** (timestamp names); then
-pairing comes from **sync’s output** — the same per-camera stem table that
-``move_unmatched.py`` reads (on disk it is named ``matched.csv`` under ``output/exp/...``).
-That file is just a table of stems; omit ``--sync-matched`` to use the default repo path.
+**Input layout** (session root is usually ``…/<dataset>/raw``)::
 
-Typical layout (11 cameras): ``--rows 3 --cols 4`` (12 slots, one empty pad cell).
+    raw/
+      01/images/<files>.jpg
+      02/images/<files>.jpg
+      …
+
+Camera folders are two-digit names ``01``, ``02``, … Each ``images/`` folder holds frames
+for that view. This script does **not** read timestamps, CSVs, or sync outputs: it sorts
+files in each ``images/`` (natural order on the filename stem) and pairs **by index** —
+frame ``i`` of the video uses the ``i``-th sorted file from each camera. The number of
+frames is ``min`` of per-camera counts (a warning is printed if counts differ).
+
+Typical grid for 11 cameras: ``--rows 3 --cols 4`` (12 slots, one empty pad cell).
 
 Example::
 
     python scripts/postprocess/multiview_grid_video.py /path/to/cow_1_board/raw \\
-        -o /path/to/cow_1_board/multiview_11cams.mp4 --fps 30 --max-cell-side 720
-
-If the pairing file is not under ``<repo>/output/exp/...``, pass it::
-
-    python scripts/postprocess/multiview_grid_video.py /path/to/raw \\
-        --sync-matched /path/to/matched.csv
-    # ``--csv`` is accepted as an alias for ``--sync-matched``.
+        -o /path/to/multiview_11cams.mp4 --fps 30 --max-cell-side 720
 """
 
 from __future__ import annotations
@@ -36,12 +33,9 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-import pandas as pd
 from tqdm import tqdm
 
-# Import grid helpers from sibling module (same directory as this file).
 _POST_DIR = Path(__file__).resolve().parent
-_REPO_ROOT = _POST_DIR.parent.parent
 if str(_POST_DIR) not in sys.path:
     sys.path.insert(0, str(_POST_DIR))
 
@@ -49,7 +43,6 @@ from concat_images_grid import build_grid, parse_pad_bgr  # noqa: E402
 
 ALLOWED_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff")
 
-# Match img2vid.py: keep frames within typical H.264 / OpenCV limits.
 MAX_OUTPUT_DIM = 4096
 
 
@@ -57,31 +50,8 @@ def natural_key_stem(stem: str):
     return [int(t) if t.isdigit() else t.lower() for t in re.split(r"(\d+)", stem)]
 
 
-def raw_session_slug(data_root: str) -> str:
-    """
-    Same slug as ``move_unmatched.py`` / ``sync.py`` output folder naming:
-    ``.../data/0411/raw`` → ``0411``; ``.../my_dataset`` (no ``raw``) → ``my_dataset``.
-    """
-    p = Path(data_root).resolve()
-    name = p.name
-    if name.lower() == "raw" and p.parent != p:
-        slug = p.parent.name
-    else:
-        slug = name
-    slug = re.sub(r"[^\w\-]+", "_", slug, flags=re.ASCII).strip("_") or "session"
-    return slug[:80]
-
-
-def default_matched_csv_path(raw_root: str, exp_threshold: str) -> Path:
-    """``<repo>/output/exp/<slug>_<threshold>/matched.csv`` (same as ``move_unmatched.py``)."""
-    slug = raw_session_slug(raw_root)
-    return _REPO_ROOT / "output" / "exp" / f"{slug}_{exp_threshold}" / "matched.csv"
-
-
 def find_camera_image_dirs(raw_root: str) -> list[str]:
-    """
-    ``raw_root/01/images``, ``02/images``, ... sorted by folder name.
-    """
+    """``raw_root/01/images``, ``02/images``, … sorted by folder name."""
     root = os.path.abspath(raw_root)
     if not os.path.isdir(root):
         raise FileNotFoundError(f"Not a directory: {root}")
@@ -100,12 +70,31 @@ def find_camera_image_dirs(raw_root: str) -> list[str]:
     return dirs
 
 
-def stems_in_dir(img_dir: str) -> set[str]:
-    out: set[str] = set()
+def sorted_stems_in_dir(img_dir: str) -> list[str]:
+    stems: list[str] = []
     for f in os.listdir(img_dir):
         if f.lower().endswith(ALLOWED_EXTENSIONS):
-            out.add(os.path.splitext(f)[0])
-    return out
+            stems.append(os.path.splitext(f)[0])
+    return sorted(stems, key=natural_key_stem)
+
+
+def build_frame_plans_by_index(img_dirs: list[str]) -> list[list[str]]:
+    """
+    One row per output frame: [stem_cam0, stem_cam1, …] using the i-th sorted stem per camera.
+    """
+    per_cam = [sorted_stems_in_dir(d) for d in img_dirs]
+    lengths = [len(x) for x in per_cam]
+    if not lengths or min(lengths) == 0:
+        raise SystemExit("[multiview_grid_video] At least one camera images/ folder has no images.")
+
+    n = min(lengths)
+    if max(lengths) != min(lengths):
+        print(
+            f"[multiview_grid_video] Warning: per-camera frame counts differ {lengths}; "
+            f"using first {n} frames only."
+        )
+
+    return [[per_cam[j][i] for j in range(len(img_dirs))] for i in range(n)]
 
 
 def resolve_frame_path(img_dir: str, stem: str) -> str | None:
@@ -116,51 +105,9 @@ def resolve_frame_path(img_dir: str, stem: str) -> str | None:
     return None
 
 
-def common_frame_stems_sorted(img_dirs: list[str]) -> list[str]:
-    sets = [stems_in_dir(d) for d in img_dirs]
-    if not sets:
-        return []
-    common = set.intersection(*sets)
-    return sorted(common, key=natural_key_stem)
-
-
-def load_matched_frame_plans(pairing_path: str, n_cams: int) -> list[list[str]]:
-    """
-    Load sync’s pairing table (no header; one row per sync; column ``i`` = filename stem for
-    camera ``i`` in ``01``, ``02``, … order). On disk this is often ``matched.csv``; values are
-    read as strings to preserve long integer timestamps.
-    """
-    path = Path(pairing_path).expanduser().resolve()
-    if not path.is_file():
-        raise FileNotFoundError(f"Pairing file not found: {path}")
-
-    df = pd.read_csv(path, header=None, dtype=str, keep_default_na=False, engine="python")
-    if df.shape[1] < n_cams:
-        raise ValueError(
-            f"{path.name} has {df.shape[1]} columns; need {n_cams} for {n_cams} cameras under raw."
-        )
-    if df.shape[1] > n_cams:
-        df = df.iloc[:, :n_cams]
-
-    plans: list[list[str]] = []
-    for _, row in df.iterrows():
-        stems = [str(row[j]).strip() for j in range(n_cams)]
-        if any(s == "" or s.lower() == "nan" for s in stems):
-            continue
-        plans.append(stems)
-
-    if not plans:
-        raise ValueError(f"No valid rows in {path}")
-    return plans
-
-
 def infer_rows_cols(
     n_views: int, rows: int | None, cols: int | None
 ) -> tuple[int, int]:
-    """
-    Choose a rows×cols grid that fits ``n_views`` panels. Prefer a slightly wide grid
-    (more columns than a square root) so phone footage reads left-to-right, top-to-bottom.
-    """
     if n_views < 1:
         raise ValueError("Need at least one camera images/ directory.")
 
@@ -209,7 +156,6 @@ def put_label_top_left(
     thickness: int = 2,
     margin: int = 12,
 ) -> None:
-    """In-place: dark outline + bright text for readability on varied frames."""
     font = cv2.FONT_HERSHEY_SIMPLEX
     outline = thickness + 2
     org = (margin, margin + int(28 * font_scale))
@@ -217,46 +163,31 @@ def put_label_top_left(
     cv2.putText(image_bgr, text, org, font, font_scale, (0, 255, 255), thickness, cv2.LINE_AA)
 
 
+def format_frame_label(
+    row_index: int,
+    total: int,
+    stems: list[str],
+    label_prefix: str,
+    label_cam_index: int,
+) -> str:
+    col = max(0, min(label_cam_index, len(stems) - 1))
+    stem_show = truncate_stem(stems[col])
+    body = f"#{row_index + 1:05d}/{total}  {stem_show}"
+    if label_prefix:
+        return f"{label_prefix} {body}".strip()
+    return body
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description=(
-            "From raw session images/: build one tiled grid per frame and encode a single MP4. "
-            "Uses sync’s pairing table when filenames differ per camera (see --align / --sync-matched)."
+            "From raw/NN/images/: build one tiled grid per frame (sorted order per camera) and encode one MP4."
         )
     )
     p.add_argument(
         "raw_root",
         type=str,
         help="Session root containing 01/images, 02/images, … (e.g. .../cow_1_board/raw).",
-    )
-    p.add_argument(
-        "--align",
-        choices=("matched", "intersection"),
-        default="matched",
-        help=(
-            "How to pair frames across cameras. "
-            "'matched' uses sync.py’s pairing table (default file: matched.csv under output/exp/…; "
-            "required when each camera uses different timestamp stems). "
-            "'intersection' pairs by identical stems in every images/ (only when names match)."
-        ),
-    )
-    p.add_argument(
-        "--sync-matched",
-        "--csv",
-        dest="sync_matched_path",
-        default=None,
-        metavar="PATH",
-        help=(
-            "Path to sync.py’s frame pairing table (same stems as move_unmatched.py; usually named "
-            "matched.csv). Not a separate CSV pipeline—only tells this script which image stem to "
-            "load per camera per row. Default: <repo>/output/exp/<slug>_<exp-threshold>/matched.csv."
-        ),
-    )
-    p.add_argument(
-        "--exp-threshold",
-        default="16ms",
-        metavar="LABEL",
-        help="Folder segment in output/exp/ when using the default --sync-matched path (default: 16ms).",
     )
     p.add_argument(
         "-o",
@@ -306,10 +237,10 @@ def parse_args() -> argparse.Namespace:
         help="Optional text prepended to the top-left label (default: empty).",
     )
     p.add_argument(
-        "--label-stem-column",
+        "--label-cam",
         type=int,
         default=0,
-        help="When using --align matched, which camera column’s stem to show in the label (0 = cam 01).",
+        help="Which camera’s stem to show in the label (0 = first camera folder, i.e. 01).",
     )
     p.add_argument(
         "--font-scale",
@@ -321,70 +252,15 @@ def parse_args() -> argparse.Namespace:
         "--start",
         type=int,
         default=None,
-        help="0-based index into the frame list / matched rows (inclusive).",
+        help="0-based frame index to start from (inclusive).",
     )
     p.add_argument(
         "--end",
         type=int,
         default=None,
-        help="0-based end index into the frame list / matched rows (exclusive).",
+        help="0-based end frame index (exclusive).",
     )
     return p.parse_args()
-
-
-def build_frame_plans(
-    args: argparse.Namespace, raw_root: str, img_dirs: list[str], n_cams: int
-) -> tuple[list[list[str]], str]:
-    """
-    Returns (plans, align_mode) where each plan row is [stem_cam0, stem_cam1, …].
-    """
-    if args.align == "intersection":
-        stems = common_frame_stems_sorted(img_dirs)
-        if not stems:
-            raise SystemExit(
-                f"[multiview_grid_video] No identical filenames across all {n_cams} cameras under {raw_root}. "
-                f"After sync extraction, stems are per-camera timestamps — use default --align matched "
-                f"and sync’s pairing file (matched.csv) from sync.py."
-            )
-        return [[s] * n_cams for s in stems], "intersection"
-
-    pairing_path = args.sync_matched_path
-    if not pairing_path:
-        pairing_path = str(default_matched_csv_path(raw_root, args.exp_threshold))
-    else:
-        pairing_path = str(Path(pairing_path).expanduser().resolve())
-
-    if not Path(pairing_path).is_file():
-        raise SystemExit(
-            f"[multiview_grid_video] Sync pairing file not found:\n  {pairing_path}\n"
-            f"Run sync.py so output/exp/.../matched.csv exists, or pass --sync-matched PATH "
-            f"(alias: --csv). See --exp-threshold (default {args.exp_threshold!r}) for the default folder name."
-        )
-
-    plans = load_matched_frame_plans(pairing_path, n_cams)
-    print(f"[multiview_grid_video] Loaded {len(plans)} paired rows from:\n  {pairing_path}")
-    return plans, "matched"
-
-
-def format_frame_label(
-    align: str,
-    row_index: int,
-    total: int,
-    stems: list[str],
-    label_prefix: str,
-    label_stem_column: int,
-) -> str:
-    col = max(0, min(label_stem_column, len(stems) - 1))
-    stem_show = truncate_stem(stems[col])
-    if align == "intersection":
-        t = f"{label_prefix}{stems[0]}".strip()
-        return t or str(stems[0])
-
-    # row_index: 0-based index into full pairing table (before --start/--end slice)
-    body = f"#{row_index + 1:05d}/{total}  {stem_show}"
-    if label_prefix:
-        return f"{label_prefix} {body}".strip()
-    return body
 
 
 def main() -> None:
@@ -394,7 +270,7 @@ def main() -> None:
 
     img_dirs = find_camera_image_dirs(raw_root)
     n_cams = len(img_dirs)
-    plans_all, align_mode = build_frame_plans(args, raw_root, img_dirs, n_cams)
+    plans_all = build_frame_plans_by_index(img_dirs)
     full_total = len(plans_all)
 
     slice_start = args.start or 0
@@ -449,12 +325,11 @@ def main() -> None:
         put_label_top_left(
             grid,
             format_frame_label(
-                align_mode,
                 global_row,
                 full_total,
                 stems,
                 args.label_prefix,
-                args.label_stem_column,
+                args.label_cam,
             ),
             font_scale=args.font_scale,
         )
@@ -476,8 +351,8 @@ def main() -> None:
     assert writer is not None
     writer.release()
     print(
-        f"[multiview_grid_video] Wrote {out_path}  align={align_mode}  cameras={n_cams}  "
-        f"grid={rows}x{cols}  frames={n_out} (rows {slice_start}..{slice_start + n_out - 1} of {full_total})  "
+        f"[multiview_grid_video] Wrote {out_path}  cameras={n_cams}  grid={rows}x{cols}  "
+        f"frames={n_out} (indices {slice_start}..{slice_start + n_out - 1} of {full_total})  "
         f"fps={args.fps}  cell={cell_side}px"
     )
 
