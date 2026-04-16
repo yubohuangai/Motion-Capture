@@ -1,13 +1,15 @@
 """
-Build a single preview video: all camera folders under a session ``raw/`` root are
-tiled into one grid per frame, with the frame id drawn at the top-left, then encoded
-to one MP4. Each view is downscaled before tiling to keep memory and encoder limits sane.
+Build a single preview **video** from **images** only: every ``NN/images/`` folder under a
+session ``raw/`` root is tiled into one grid per time step, the frame label is drawn at the
+top-left, and the result is encoded to one MP4. Each view is downscaled before tiling.
 
-**Alignment (important):** After ``sync.py --extract``, each ``NN/images/`` file is named
-from that phone's timestamp CSV, so **filenames differ across cameras**. The authoritative
-alignment is ``matched.csv`` from ``sync.py`` (one row = one synchronized moment; column
-``i`` = frame stem for camera ``i`` in folder order ``01``, ``02``, …). This script uses
-that CSV by default (same path convention as ``move_unmatched.py``).
+**Pairing frames across cameras:** The script does not “do CSV work”. It only needs to know,
+for each output frame, which **image filename** to take from camera ``01``, ``02``, … If every
+camera uses the **same** stem (e.g. ``000001.jpg`` everywhere), use ``--align intersection``.
+After ``sync.py --extract``, stems are usually **different per camera** (timestamp names); then
+pairing comes from **sync’s output** — the same per-camera stem table that
+``move_unmatched.py`` reads (on disk it is named ``matched.csv`` under ``output/exp/...``).
+That file is just a table of stems; omit ``--sync-matched`` to use the default repo path.
 
 Typical layout (11 cameras): ``--rows 3 --cols 4`` (12 slots, one empty pad cell).
 
@@ -16,9 +18,11 @@ Example::
     python scripts/postprocess/multiview_grid_video.py /path/to/cow_1_board/raw \\
         -o /path/to/cow_1_board/multiview_11cams.mp4 --fps 30 --max-cell-side 720
 
-If ``matched.csv`` is not under the repo ``output/exp/``, pass it explicitly::
+If the pairing file is not under ``<repo>/output/exp/...``, pass it::
 
-    python scripts/postprocess/multiview_grid_video.py /path/to/raw --csv /path/to/matched.csv
+    python scripts/postprocess/multiview_grid_video.py /path/to/raw \\
+        --sync-matched /path/to/matched.csv
+    # ``--csv`` is accepted as an alias for ``--sync-matched``.
 """
 
 from __future__ import annotations
@@ -120,15 +124,15 @@ def common_frame_stems_sorted(img_dirs: list[str]) -> list[str]:
     return sorted(common, key=natural_key_stem)
 
 
-def load_matched_frame_plans(csv_path: str, n_cams: int) -> list[list[str]]:
+def load_matched_frame_plans(pairing_path: str, n_cams: int) -> list[list[str]]:
     """
-    Load ``matched.csv`` from ``sync.py`` (no header; one row per sync; column ``i`` =
-    filename stem for camera ``i`` in ``01``, ``02``, … order). Values read as strings
-    to preserve long integer timestamps.
+    Load sync’s pairing table (no header; one row per sync; column ``i`` = filename stem for
+    camera ``i`` in ``01``, ``02``, … order). On disk this is often ``matched.csv``; values are
+    read as strings to preserve long integer timestamps.
     """
-    path = Path(csv_path).expanduser().resolve()
+    path = Path(pairing_path).expanduser().resolve()
     if not path.is_file():
-        raise FileNotFoundError(f"matched.csv not found: {path}")
+        raise FileNotFoundError(f"Pairing file not found: {path}")
 
     df = pd.read_csv(path, header=None, dtype=str, keep_default_na=False, engine="python")
     if df.shape[1] < n_cams:
@@ -216,8 +220,8 @@ def put_label_top_left(
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description=(
-            "Concatenate all cameras under a raw session into a grid per frame, "
-            "label frame id, and write one MP4."
+            "From raw session images/: build one tiled grid per frame and encode a single MP4. "
+            "Uses sync’s pairing table when filenames differ per camera (see --align / --sync-matched)."
         )
     )
     p.add_argument(
@@ -231,23 +235,28 @@ def parse_args() -> argparse.Namespace:
         default="matched",
         help=(
             "How to pair frames across cameras. "
-            "'matched' uses sync.py matched.csv (required for timestamp-renamed frames). "
-            "'intersection' uses only filenames present in every camera (rare; for identical stems)."
+            "'matched' uses sync.py’s pairing table (default file: matched.csv under output/exp/…; "
+            "required when each camera uses different timestamp stems). "
+            "'intersection' pairs by identical stems in every images/ (only when names match)."
         ),
     )
     p.add_argument(
+        "--sync-matched",
         "--csv",
+        dest="sync_matched_path",
         default=None,
+        metavar="PATH",
         help=(
-            "Path to matched.csv from sync.py. Default: <repo>/output/exp/<slug>_<exp-threshold>/matched.csv "
-            "(slug from parent of …/raw). Override when the file lives elsewhere."
+            "Path to sync.py’s frame pairing table (same stems as move_unmatched.py; usually named "
+            "matched.csv). Not a separate CSV pipeline—only tells this script which image stem to "
+            "load per camera per row. Default: <repo>/output/exp/<slug>_<exp-threshold>/matched.csv."
         ),
     )
     p.add_argument(
         "--exp-threshold",
         default="16ms",
         metavar="LABEL",
-        help="Folder segment in output/exp/ when using the default --csv path (default: 16ms).",
+        help="Folder segment in output/exp/ when using the default --sync-matched path (default: 16ms).",
     )
     p.add_argument(
         "-o",
@@ -300,7 +309,7 @@ def parse_args() -> argparse.Namespace:
         "--label-stem-column",
         type=int,
         default=0,
-        help="When using --align matched, which CSV column's stem to show in the label (0 = cam 01).",
+        help="When using --align matched, which camera column’s stem to show in the label (0 = cam 01).",
     )
     p.add_argument(
         "--font-scale",
@@ -335,25 +344,25 @@ def build_frame_plans(
             raise SystemExit(
                 f"[multiview_grid_video] No identical filenames across all {n_cams} cameras under {raw_root}. "
                 f"After sync extraction, stems are per-camera timestamps — use default --align matched "
-                f"and a matched.csv from sync.py."
+                f"and sync’s pairing file (matched.csv) from sync.py."
             )
         return [[s] * n_cams for s in stems], "intersection"
 
-    csv_path = args.csv
-    if not csv_path:
-        csv_path = str(default_matched_csv_path(raw_root, args.exp_threshold))
+    pairing_path = args.sync_matched_path
+    if not pairing_path:
+        pairing_path = str(default_matched_csv_path(raw_root, args.exp_threshold))
     else:
-        csv_path = str(Path(csv_path).expanduser().resolve())
+        pairing_path = str(Path(pairing_path).expanduser().resolve())
 
-    if not Path(csv_path).is_file():
+    if not Path(pairing_path).is_file():
         raise SystemExit(
-            f"[multiview_grid_video] matched.csv not found:\n  {csv_path}\n"
-            f"Pass --csv explicitly, or run sync.py to generate output/exp/.../matched.csv "
-            f"(see --exp-threshold, default {args.exp_threshold!r})."
+            f"[multiview_grid_video] Sync pairing file not found:\n  {pairing_path}\n"
+            f"Run sync.py so output/exp/.../matched.csv exists, or pass --sync-matched PATH "
+            f"(alias: --csv). See --exp-threshold (default {args.exp_threshold!r}) for the default folder name."
         )
 
-    plans = load_matched_frame_plans(csv_path, n_cams)
-    print(f"[multiview_grid_video] Loaded {len(plans)} sync rows from:\n  {csv_path}")
+    plans = load_matched_frame_plans(pairing_path, n_cams)
+    print(f"[multiview_grid_video] Loaded {len(plans)} paired rows from:\n  {pairing_path}")
     return plans, "matched"
 
 
@@ -371,7 +380,7 @@ def format_frame_label(
         t = f"{label_prefix}{stems[0]}".strip()
         return t or str(stems[0])
 
-    # row_index: 0-based index into full matched.csv (before --start/--end slice)
+    # row_index: 0-based index into full pairing table (before --start/--end slice)
     body = f"#{row_index + 1:05d}/{total}  {stem_show}"
     if label_prefix:
         return f"{label_prefix} {body}".strip()

@@ -50,7 +50,7 @@ cow_1_board/                          # session / dataset name (arbitrary)
 | **`<stem>.csv`** | Text file with **one timestamp per line**, in order, **one line per frame** in the paired `VID_*.mp4`. The filename stem matches the video: e.g. `VID_20260414_141256.mp4` ↔ `20260414_141256.csv` in the **parent** of `VID/` (same folder as `images/`). Used when extracting frames and renaming them to timestamp-based filenames. |
 | **`images/`** | Extracted frames. After `scripts/preprocess/sync.py --extract`, each file is usually **renamed to its timestamp** from the CSV (so **filenames are not identical across cameras** for the same instant). |
 
-**Cross-camera alignment** is **not** “same filename in every `images/`”. Sync uses the CSVs to build **`matched.csv`** under this repo: **`output/exp/<session_slug>_<threshold>/matched.csv`** (see `scripts/preprocess/sync.py`). Each row is one synchronized moment; column `i` is the image **stem** for camera `i` in order `01`, `02`, ….
+**Cross-camera alignment** is **not** “same filename in every `images/`”. Sync uses the per-phone timestamp lists to build a **pairing table** (saved as **`matched.csv`**) under this repo: **`output/exp/<session_slug>_<threshold>/matched.csv`** (see `scripts/preprocess/sync.py`). Each row is one synchronized moment; column `i` is the image **stem** for camera `i` in order `01`, `02`, …. Downstream tools (e.g. `move_unmatched.py`, `multiview_grid_video.py`) read that table only to know **which image file to open** per camera—they are not doing a separate “CSV workflow.”
 
 **Session slug** for `output/exp/…` is usually the folder **above** `raw` (e.g. `.../cow_1_board/raw` → `cow_1_board`), unless overridden when running sync.
 
