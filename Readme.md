@@ -21,6 +21,41 @@ The pipeline consists of four main stages: (1) Camera calibration → (2) 2D pos
 
 ---
 
+## Multi-camera capture session layout (`raw`)
+
+Phone (or other) captures are organized as one **session folder** (often named after the subject or shoot), with a **`raw`** subfolder that holds **one directory per camera**. Folders use **two-digit ids**: `01`, `02`, …, `11`.
+
+Example (eleven cameras):
+
+```
+cow_1_board/                          # session / dataset name (arbitrary)
+└── raw/                              # session root passed to sync.py, move_unmatched.py, etc.
+    ├── 01/
+    │   ├── VID/
+    │   │   └── VID_20260414_141256.mp4
+    │   ├── 20260414_141256.csv       # per-frame timestamps for this camera’s clip
+    │   └── images/                   # extracted frames (filled by sync --extract)
+    ├── 02/
+    │   ├── VID/
+    │   ├── <stem>.csv
+    │   └── images/
+    └── ...
+```
+
+**Per camera (`NN/`, e.g. `01/`):**
+
+| Path | Role |
+|------|------|
+| **`VID/`** | Recorded video(s). The main clip is typically `VID_<dateparts>.mp4`. Backups such as `*_ori.mp4` are ignored by discovery. |
+| **`<stem>.csv`** | Text file with **one timestamp per line**, in order, **one line per frame** in the paired `VID_*.mp4`. The filename stem matches the video: e.g. `VID_20260414_141256.mp4` ↔ `20260414_141256.csv` in the **parent** of `VID/` (same folder as `images/`). Used when extracting frames and renaming them to timestamp-based filenames. |
+| **`images/`** | Extracted frames. After `scripts/preprocess/sync.py --extract`, each file is usually **renamed to its timestamp** from the CSV (so **filenames are not identical across cameras** for the same instant). |
+
+**Cross-camera alignment** is **not** “same filename in every `images/`”. Sync uses the CSVs to build **`matched.csv`** under this repo: **`output/exp/<session_slug>_<threshold>/matched.csv`** (see `scripts/preprocess/sync.py`). Each row is one synchronized moment; column `i` is the image **stem** for camera `i` in order `01`, `02`, ….
+
+**Session slug** for `output/exp/…` is usually the folder **above** `raw` (e.g. `.../cow_1_board/raw` → `cow_1_board`), unless overridden when running sync.
+
+---
+
 ## Stage 1: Camera Calibration
 
 Camera calibration produces intrinsic (`intri.yml`) and extrinsic (`extri.yml`) parameters. These define each camera’s lens model and pose in a shared world coordinate system.
