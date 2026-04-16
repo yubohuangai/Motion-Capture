@@ -97,11 +97,19 @@ def build_grid(
     *,
     imread_flag: int = cv2.IMREAD_COLOR,
     parallel_imread: bool = True,
+    fit: str = "letterbox",
 ) -> np.ndarray:
     """
     ``imread_flag``: pass ``cv2.IMREAD_REDUCED_COLOR_2`` (etc.) to decode smaller than full-res.
     ``parallel_imread``: load paths in parallel (faster for many panels).
+    ``fit``:
+      - ``letterbox``: preserve aspect, pad to cell_w×cell_h (default).
+      - ``uniform``: preserve aspect, scale so max(w,h) equals max(cell_w, cell_h); no padding
+        (all panels share the same WxH; best when every source has the same resolution).
+      - ``stretch``: resize exactly to cell_w×cell_h (may distort if aspect differs).
     """
+    if fit not in ("letterbox", "uniform", "stretch"):
+        raise ValueError(f"fit must be letterbox|uniform|stretch, got {fit!r}")
     slots = cols * rows
     if len(paths) > slots:
         raise ValueError(
@@ -124,17 +132,32 @@ def build_grid(
     if not loaded:
         raise ValueError("no images to concatenate")
 
-    if cell_w is None or cell_h is None:
-        max_w = max(im.shape[1] for im in loaded)
-        max_h = max(im.shape[0] for im in loaded)
-        cell_w = cell_w or max_w
-        cell_h = cell_h or max_h
+    if fit == "letterbox":
+        if cell_w is None or cell_h is None:
+            max_w = max(im.shape[1] for im in loaded)
+            max_h = max(im.shape[0] for im in loaded)
+            cell_w = cell_w or max_w
+            cell_h = cell_h or max_h
+        cells = [letterbox_to_cell(im, int(cell_w), int(cell_h), pad_bgr) for im in loaded]
+        tw, th = int(cell_w), int(cell_h)
+    elif fit == "uniform":
+        if cell_w is None or cell_h is None:
+            raise ValueError("uniform fit requires cell_w and cell_h (use max side for both)")
+        cap = max(int(cell_w), int(cell_h))
+        im0 = loaded[0]
+        h0, w0 = im0.shape[:2]
+        scale = cap / max(w0, h0)
+        tw = max(1, int(round(w0 * scale)))
+        th = max(1, int(round(h0 * scale)))
+        cells = [cv2.resize(im, (tw, th), interpolation=cv2.INTER_AREA) for im in loaded]
+    else:
+        if cell_w is None or cell_h is None:
+            raise ValueError("stretch fit requires cell_w and cell_h")
+        tw, th = int(cell_w), int(cell_h)
+        cells = [cv2.resize(im, (tw, th), interpolation=cv2.INTER_AREA) for im in loaded]
 
-    cells: list[np.ndarray] = [
-        letterbox_to_cell(im, cell_w, cell_h, pad_bgr) for im in loaded
-    ]
     n_pad = slots - len(cells)
-    blank = np.full((cell_h, cell_w, 3), pad_bgr, dtype=np.uint8)
+    blank = np.full((th, tw, 3), pad_bgr, dtype=np.uint8)
     cells.extend([blank.copy() for _ in range(n_pad)])
 
     row_tiles = []

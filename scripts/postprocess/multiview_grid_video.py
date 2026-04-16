@@ -16,6 +16,10 @@ frames is ``min`` of per-camera counts (a warning is printed if counts differ).
 
 Typical grid for 11 cameras: ``--rows 3 --cols 4`` (12 slots, one empty pad cell).
 
+By default each view is scaled **uniformly** (same aspect as your 4K frames) so the **longer**
+edge matches ``--max-cell-side`` — no letterboxing or black bars. Use ``--fit letterbox`` only
+if you need padded square cells.
+
 Example::
 
     python scripts/postprocess/multiview_grid_video.py /path/to/cow_1_board/raw \\
@@ -342,8 +346,19 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=720,
         help=(
-            "Each view is letterboxed into a square cell of this side length (pixels) "
-            "before tiling. Lower = smaller memory / faster (default: 720)."
+            "Target max width/height of each panel after downscale (pixels). With the default "
+            "--fit uniform, the longer edge of every view matches this (aspect preserved; no bars). "
+            "Lower = faster / smaller output (default: 720)."
+        ),
+    )
+    p.add_argument(
+        "--fit",
+        choices=("uniform", "letterbox", "stretch"),
+        default="uniform",
+        help=(
+            "uniform: scale each view proportionally so max(w,h) equals --max-cell-side (default; "
+            "best for identical 4K aspect). letterbox: pad to a square cell. stretch: force exact "
+            "square cell (can distort)."
         ),
     )
     p.add_argument(
@@ -501,6 +516,7 @@ def main() -> None:
             cell_h=cell_side,
             imread_flag=imread_flag,
             parallel_imread=parallel_load,
+            fit=args.fit,
         )
         global_row = slice_start + i
         put_label_top_left(
@@ -554,7 +570,7 @@ def main() -> None:
     print(
         f"[multiview_grid_video] Wrote {out_path}  cameras={n_cams}  grid={rows}x{cols}  "
         f"frames={n_out} (indices {slice_start}..{slice_start + n_out - 1} of {full_total})  "
-        f"fps={args.fps}  cell={cell_side}px  read_scale={args.read_scale}  encoder={enc}"
+        f"fps={args.fps}  cell_max={cell_side}px  fit={args.fit}  read_scale={args.read_scale}  encoder={enc}"
     )
 
 
