@@ -246,7 +246,6 @@ def main() -> None:
 
     out_path = args.output
     if not out_path:
-        slug = os.path.basename(raw_root.rstrip(os.sep)) or "session"
         out_path = os.path.join(raw_root, f"multiview_grid_{n_cams}cams.mp4")
     else:
         out_path = os.path.abspath(out_path)
