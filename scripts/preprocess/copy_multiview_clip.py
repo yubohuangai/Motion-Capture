@@ -25,6 +25,7 @@ import argparse
 import os
 import re
 import shutil
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from tqdm import tqdm
 
@@ -72,7 +73,22 @@ def index_from_filename(img_dir, filename):
     return files.index(filename) + 1  # 1-based
 
 
-def copy_range(src_dir, dst_dir, start_1based: int, end_slice_exclusive: int):
+def _copy_file(src_path: str, dst_path: str, mode: str) -> None:
+    if mode == "copy2":
+        shutil.copy2(src_path, dst_path)
+    else:
+        shutil.copyfile(src_path, dst_path)
+
+
+def copy_range(
+    src_dir,
+    dst_dir,
+    start_1based: int,
+    end_slice_exclusive: int,
+    *,
+    copy_mode: str = "copyfile",
+    show_progress: bool = True,
+):
     """
     Copy ``files[start_1based - 1 : end_slice_exclusive]`` (Python slice).
 
@@ -90,11 +106,14 @@ def copy_range(src_dir, dst_dir, start_1based: int, end_slice_exclusive: int):
             f"end slice {end_slice_exclusive} invalid with start {start_1based} (need {start_1based}..{n})"
         )
     selected = files[start_1based - 1 : end_slice_exclusive]
+    iterator = selected
+    if show_progress:
+        iterator = tqdm(selected, desc=f"Copying {os.path.basename(src_dir)}")
     next_idx = 0
-    for f in tqdm(selected, desc=f"Copying {os.path.basename(src_dir)}"):
+    for f in iterator:
         ext = os.path.splitext(f)[1]
         new_name = f"{next_idx:06d}{ext}"
-        shutil.copy2(os.path.join(src_dir, f), os.path.join(dst_dir, new_name))
+        _copy_file(os.path.join(src_dir, f), os.path.join(dst_dir, new_name), copy_mode)
         next_idx += 1
 
 
@@ -137,7 +156,16 @@ def run_task(base_root, task):
         copy_range(str(src_dir), str(dst_dir), start_idx, end_idx)
 
 
-def run_cli_clip(base_root: str, output_root: str, frame_start: int, frame_end: int) -> None:
+def run_cli_clip(
+    base_root: str,
+    output_root: str,
+    frame_start: int,
+    frame_end: int,
+    *,
+    camera_workers: int = 1,
+    copy_mode: str = "copyfile",
+    progress: str = "camera",
+) -> None:
     """
     Copy inclusive 1-based frame indices ``frame_start``..``frame_end`` for every camera.
 
@@ -176,6 +204,7 @@ def run_cli_clip(base_root: str, output_root: str, frame_start: int, frame_end: 
         f"({frame_end - frame_start + 1} per camera); ref count cam01={n_ref}"
     )
 
+    tasks: list[tuple[str, str, int, int]] = []
     for cam_id in cam_ids:
         src_dir = Path(base_root) / f"{cam_id:02d}" / "images"
         dst_dir = Path(output_root) / "images" / f"{cam_id:02d}"
@@ -186,7 +215,46 @@ def run_cli_clip(base_root: str, output_root: str, frame_start: int, frame_end: 
             raise SystemExit(
                 f"Camera {cam_id:02d} has only {nf} images; --frame-end {frame_end} is too large."
             )
-        copy_range(str(src_dir), str(dst_dir), frame_start, end_slice)
+        tasks.append((str(src_dir), str(dst_dir), frame_start, end_slice))
+
+    if camera_workers < 1:
+        raise SystemExit("--camera-workers must be >= 1")
+    camera_workers = min(camera_workers, len(tasks))
+    show_per_camera = progress == "camera"
+    show_summary = progress in ("camera", "overall")
+
+    if show_summary:
+        print(
+            f"[copy_multiview_clip] copy_mode={copy_mode}  camera_workers={camera_workers}  "
+            f"progress={progress}"
+        )
+
+    if camera_workers == 1:
+        for src_dir, dst_dir, s, e in tasks:
+            copy_range(
+                src_dir, dst_dir, s, e, copy_mode=copy_mode, show_progress=show_per_camera
+            )
+        return
+
+    with ThreadPoolExecutor(max_workers=camera_workers) as ex:
+        futures = [
+            ex.submit(
+                copy_range,
+                src_dir,
+                dst_dir,
+                s,
+                e,
+                copy_mode=copy_mode,
+                show_progress=False,
+            )
+            for (src_dir, dst_dir, s, e) in tasks
+        ]
+        if show_summary:
+            for _ in tqdm(futures, desc="Copying cameras", unit="cam"):
+                _.result()
+        else:
+            for f in futures:
+                f.result()
 
 
 def parse_args():
@@ -227,6 +295,30 @@ def parse_args():
         help="Last frame index (1-based, inclusive).",
     )
     parser.add_argument(
+        "--camera-workers",
+        type=int,
+        default=1,
+        help=(
+            "Number of cameras copied in parallel. 1 = sequential. "
+            "Try 4-8 on shared storage (default: 1)."
+        ),
+    )
+    parser.add_argument(
+        "--copy-mode",
+        choices=("copyfile", "copy2"),
+        default="copyfile",
+        help=(
+            "copyfile: faster data-only copy (default). "
+            "copy2: preserve metadata but usually slower."
+        ),
+    )
+    parser.add_argument(
+        "--progress",
+        choices=("camera", "overall", "none"),
+        default="camera",
+        help="camera: per-camera bars, overall: one bar in parallel mode, none: silent.",
+    )
+    parser.add_argument(
         "--legacy-config",
         action="store_true",
         help="Run legacy CONFIG tasks below (default: off).",
@@ -249,7 +341,15 @@ if __name__ == "__main__":
             print(f"=== Task: {task['name']} → {task['dst']} ===")
             run_task(base, task)
     elif args.input and args.output and args.frame_start is not None and args.frame_end is not None:
-        run_cli_clip(args.input, args.output, args.frame_start, args.frame_end)
+        run_cli_clip(
+            args.input,
+            args.output,
+            args.frame_start,
+            args.frame_end,
+            camera_workers=args.camera_workers,
+            copy_mode=args.copy_mode,
+            progress=args.progress,
+        )
     else:
         raise SystemExit(
             "Usage:\n"
