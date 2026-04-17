@@ -208,7 +208,12 @@ def parse_args() -> argparse.Namespace:
         help="x264 preset (slower = better compression).",
     )
     p.add_argument("--max-width", type=int, default=1280, help="Max output width (default: 1280).")
-    p.add_argument("--fps", type=int, default=24, help="Output FPS cap (default: 24).")
+    p.add_argument(
+        "--fps",
+        type=int,
+        default=None,
+        help="Optional output FPS cap (default: keep original FPS).",
+    )
     p.add_argument("--audio-kbps", type=int, default=96, help="AAC audio bitrate kbps (default: 96).")
     return p.parse_args()
 
