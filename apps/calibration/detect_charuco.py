@@ -21,13 +21,20 @@
 
   Print a matching board PNG:
     python3 apps/calibration/generate_charuco_board.py
+
+  Speed:
+    ChArUco detection in standard pip OpenCV is CPU-only (no practical GPU path for
+    CharucoDetector). Use --workers 0 (default) for a multi-process pool on Linux, or
+    --workers 1 --mp N for N threads in one process.
 '''
 from __future__ import annotations
 
 import argparse
+import multiprocessing as mp
 import os
 import sys
 import threading
+import time
 from os.path import join
 from pathlib import Path
 
@@ -73,6 +80,19 @@ BOARD_DEFAULT_PROFILES = {
     },
 }
 ACTIVE_BOARD_PROFILE = "board_8x5_7x4_dict4x4_50_36x24"
+
+# Populated in each process by _mp_pool_init (multiprocessing).
+_MP_BOARD = None
+_MP_DETECTOR = None
+_MP_N_CORNERS = 0
+
+
+def _effective_cpu_count() -> int:
+    """CPUs visible to this process (respects Slurm cgroup on Linux when available)."""
+    try:
+        return len(os.sched_getaffinity(0))
+    except Exception:
+        return os.cpu_count() or 4
 
 
 def build_board(squares_xy: tuple[int, int], marker_ratio: float, dict_name: str):
@@ -167,7 +187,19 @@ def _rel_under_image_root(imgname: str, path: str, image_sub: str) -> str:
     return rel
 
 
-def _detect_charuco_worker(datas, path: str, image_sub: str, out: str, args, detector, board, n_corners: int):
+def _detect_charuco_worker(
+    datas,
+    path: str,
+    image_sub: str,
+    out: str,
+    args,
+    detector,
+    board,
+    n_corners: int,
+    thread_idx: int,
+    per_thread_detected: list[int],
+):
+    detected = 0
     for imgname, annotname in datas:
         img = cv2.imread(imgname)
         if img is None:
@@ -182,13 +214,198 @@ def _detect_charuco_worker(datas, path: str, image_sub: str, out: str, args, det
             if args.debug:
                 mywarn(f"[detect_charuco] No ChArUco in {imgname}")
             continue
+        detected += 1
         rel = _rel_under_image_root(imgname, path, image_sub)
         outname = join(out, rel)
         os.makedirs(os.path.dirname(outname), exist_ok=True)
         cv2.imwrite(outname, show)
+    per_thread_detected[thread_idx] = detected
+
+
+def _discover_views(path: str, image_sub: str, ext: str) -> list[str | None]:
+    """Return ordered camera/view folder names, or [None] for a flat images/ tree."""
+    root = join(path, image_sub)
+    if not os.path.isdir(root):
+        return [None]
+    rels = getFileList(root, ext=ext)
+    if not rels:
+        return [None]
+    views: set[str | None] = set()
+    for rel in rels:
+        p = Path(rel)
+        if len(p.parts) == 1:
+            views.add(None)
+        else:
+            views.add(p.parts[0])
+    ordered: list[str | None] = [v for v in sorted(v for v in views if v is not None)]
+    if None in views:
+        ordered.append(None)
+    return ordered if ordered else [None]
+
+
+def _view_label(view: str | None) -> str:
+    return "flat" if view is None else str(view)
+
+
+def _run_detection_threads(
+    dataset: ImageFolder,
+    path: str,
+    image_sub: str,
+    out: str,
+    args,
+    detector,
+    board,
+    n_corners: int,
+) -> tuple[int, int]:
+    """Returns (frames_processed, frames_with_detection)."""
+    dataset.isTmp = False
+    n = len(dataset)
+    if n == 0:
+        return 0, 0
+    trange = list(range(n))
+    per_thread_detected = [0] * args.mp
+    threads = []
+    for i in range(args.mp):
+        ranges = trange[i :: args.mp]
+        datas = [dataset[t] for t in ranges]
+        t = threading.Thread(
+            target=_detect_charuco_worker,
+            args=(
+                datas,
+                path,
+                image_sub,
+                out,
+                args,
+                detector,
+                board,
+                n_corners,
+                i,
+                per_thread_detected,
+            ),
+        )
+        t.start()
+        threads.append(t)
+    for t in threads:
+        t.join()
+    return n, int(sum(per_thread_detected))
+
+
+def _mp_pool_init(squares_xy: tuple[int, int], marker_ratio: float, dict_name: str, n_corners: int):
+    global _MP_BOARD, _MP_DETECTOR, _MP_N_CORNERS
+    # One OpenCV thread per process avoids oversubscription when running many workers.
+    try:
+        cv2.setNumThreads(1)
+    except Exception:
+        pass
+    _MP_BOARD, _MP_DETECTOR = build_board(squares_xy, marker_ratio, dict_name)
+    _MP_N_CORNERS = int(n_corners)
+
+
+def _mp_process_chunk(
+    payload: tuple[str, str, str, bool, list[tuple[str, str]]],
+) -> tuple[int, int]:
+    """
+    Process a chunk of (imgname, annotname) pairs in a worker process.
+    Returns (detected_count, frame_count).
+    """
+    path, image_sub, out, debug, chunk = payload
+    board = _MP_BOARD
+    detector = _MP_DETECTOR
+    n_corners = _MP_N_CORNERS
+    detected = 0
+    for imgname, annotname in chunk:
+        img = cv2.imread(imgname)
+        if img is None:
+            mywarn(f"[detect_charuco] Cannot read {imgname}")
+            continue
+        annots = read_json(annotname)
+        annots["visited"] = True
+        show, k2d = detect_one_image(img, detector, board, n_corners)
+        annots["keypoints2d"] = k2d.tolist()
+        save_json(annotname, annots)
+        if show is None:
+            if debug:
+                mywarn(f"[detect_charuco] No ChArUco in {imgname}")
+            continue
+        detected += 1
+        rel = _rel_under_image_root(imgname, path, image_sub)
+        outname = join(out, rel)
+        os.makedirs(os.path.dirname(outname), exist_ok=True)
+        cv2.imwrite(outname, show)
+    return detected, len(chunk)
+
+
+def _split_exactly_n_chunks(pairs: list[tuple[str, str]], n_chunks: int) -> list[list[tuple[str, str]]]:
+    """Split pairs into exactly n_chunks non-empty lists (as even as possible)."""
+    if not pairs:
+        return []
+    n_chunks = max(1, min(n_chunks, len(pairs)))
+    k, m = divmod(len(pairs), n_chunks)
+    out: list[list[tuple[str, str]]] = []
+    start = 0
+    for i in range(n_chunks):
+        end = start + k + (1 if i < m else 0)
+        if start < end:
+            out.append(pairs[start:end])
+        start = end
+    return out
+
+
+def _mp_context():
+    """Prefer fork on Linux/HPC (fast, inherits imports). Fall back to spawn if fork is unavailable."""
+    if sys.platform == "win32":
+        return mp.get_context("spawn")
+    try:
+        return mp.get_context("fork")
+    except ValueError:
+        return mp.get_context("spawn")
+
+
+def _run_detection_processes(
+    dataset: ImageFolder,
+    path: str,
+    image_sub: str,
+    out: str,
+    args,
+    n_workers: int,
+    squares_xy: tuple[int, int],
+    marker_ratio: float,
+    dict_name: str,
+    n_corners: int,
+    view_label: str,
+) -> tuple[int, int]:
+    """Returns (frames_processed, frames_with_detection)."""
+    dataset.isTmp = False
+    n = len(dataset)
+    if n == 0:
+        return 0, 0
+    pairs: list[tuple[str, str]] = [dataset[i] for i in range(n)]
+    n_workers = max(1, min(n_workers, n, _effective_cpu_count()))
+    chunks = _split_exactly_n_chunks(pairs, n_workers)
+    payloads = [(path, image_sub, out, args.debug, ch) for ch in chunks]
+    ctx = _mp_context()
+    initargs = (squares_xy, marker_ratio, dict_name, n_corners)
+    n_procs = len(payloads)
+    detected_total = 0
+    with ctx.Pool(processes=n_procs, initializer=_mp_pool_init, initargs=initargs) as pool:
+        for det, _n in tqdm(
+            pool.imap_unordered(_mp_process_chunk, payloads, chunksize=1),
+            total=len(payloads),
+            desc=f"detect charuco [{view_label}]",
+            leave=True,
+        ):
+            detected_total += det
+    return n, int(detected_total)
+
+
+def _resolve_worker_count(workers_flag: int) -> int:
+    if workers_flag <= 0:
+        return max(1, min(8, _effective_cpu_count()))
+    return workers_flag
 
 
 def detect_charuco_batch(path: str, image_sub: str, out: str, args, board, detector, n_corners: int):
+    t_batch0 = time.perf_counter()
     create_charuco_templates(
         path,
         image_sub,
@@ -198,21 +415,65 @@ def detect_charuco_batch(path: str, image_sub: str, out: str, args, board, detec
         ext=args.ext,
         overwrite=args.overwrite3d,
     )
-    dataset = ImageFolder(path, image=image_sub, annot="chessboard", ext=args.ext)
-    dataset.isTmp = False
-    trange = list(range(len(dataset)))
-    threads = []
-    for i in range(args.mp):
-        ranges = trange[i :: args.mp]
-        datas = [dataset[t] for t in ranges]
-        t = threading.Thread(
-            target=_detect_charuco_worker,
-            args=(datas, path, image_sub, out, args, detector, board, n_corners),
+    t_after_templates = time.perf_counter()
+    views = _discover_views(path, image_sub, args.ext)
+    labels = ", ".join(_view_label(v) for v in views)
+    if args.workers == 1:
+        par_info = f"threads={args.mp} (single process)"
+    else:
+        n_proc_hint = _resolve_worker_count(args.workers)
+        par_info = (
+            f"processes<={n_proc_hint} per view (fork pool; "
+            f"--workers 1 --mp N for thread-only on macOS/spawn)"
         )
-        t.start()
-        threads.append(t)
-    for t in threads:
-        t.join()
+    print(
+        f"[detect_charuco] detection pass: {len(views)} view(s) [{labels}] "
+        f"(templates {t_after_templates - t_batch0:.1f}s; {par_info})",
+        flush=True,
+    )
+    per_view: list[tuple[str, int, int, float]] = []
+    for vi, view in enumerate(views):
+        label = _view_label(view)
+        t0 = time.perf_counter()
+        print(
+            f"[detect_charuco] view {vi + 1}/{len(views)} '{label}': start "
+            f"(elapsed since batch start {t0 - t_batch0:.1f}s)",
+            flush=True,
+        )
+        if view is None:
+            dataset = ImageFolder(path, image=image_sub, annot="chessboard", ext=args.ext)
+        else:
+            dataset = ImageFolder(path, view, image=image_sub, annot="chessboard", ext=args.ext)
+        if args.workers == 1:
+            n_frames, n_detected = _run_detection_threads(
+                dataset, path, image_sub, out, args, detector, board, n_corners
+            )
+        else:
+            n_proc = _resolve_worker_count(args.workers)
+            n_frames, n_detected = _run_detection_processes(
+                dataset,
+                path,
+                image_sub,
+                out,
+                args,
+                n_proc,
+                tuple(args.squares),
+                float(args.marker_ratio),
+                str(args.dict_name),
+                n_corners,
+                label,
+            )
+        dt = time.perf_counter() - t0
+        per_view.append((label, n_frames, n_detected, dt))
+        print(
+            f"[detect_charuco] view {vi + 1}/{len(views)} '{label}': done "
+            f"ChArUco detected in {n_detected}/{n_frames} frames in {dt:.1f}s",
+            flush=True,
+        )
+    t_total = time.perf_counter() - t_batch0
+    print(f"[detect_charuco] all views done in {t_total:.1f}s wall time (including template creation)", flush=True)
+    for label, n_frames, n_detected, dt in per_view:
+        print(f"  - view {label!r}: {n_detected}/{n_frames} frames with board, detection pass {dt:.1f}s", flush=True)
 
 
 def _normalize_single_image_arg(path_arg: str) -> tuple[str, str | None]:
@@ -318,7 +579,18 @@ def main():
         default=float(profile["grid_m"]),
         help="Physical square size in meters (scales keypoints3d for calibration)",
     )
-    parser.add_argument("--mp", type=int, default=4, help="Thread count")
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=0,
+        help="0=auto process count (min(8, visible CPUs)); 1=single process + --mp threads; N=N parallel processes (Linux/HPC uses fork)",
+    )
+    parser.add_argument(
+        "--mp",
+        type=int,
+        default=4,
+        help="Thread count when --workers 1 (ignored for multi-process mode)",
+    )
     parser.add_argument("--debug", action="store_true")
     parser.add_argument("--overwrite3d", action="store_true", help="Refresh keypoints3d in existing JSON")
 
@@ -346,6 +618,9 @@ def main():
 
     if min(args.squares) <= 0 or not (0.0 < marker_ratio < 1.0):
         raise SystemExit("Invalid squares or marker_ratio")
+
+    args.marker_ratio = float(marker_ratio)
+    args.dict_name = str(dict_name)
 
     board, detector = build_board(args.squares, marker_ratio, dict_name)
     n_corners = int(np.asarray(board.getChessboardCorners(), dtype=np.float32).reshape(-1, 3).shape[0])

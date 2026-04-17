@@ -13,6 +13,13 @@ import numpy as np
 import cv2
 from easymocap.mytools import read_intri, write_extri, read_json
 from easymocap.mytools.debug_utils import mywarn
+from pathlib import Path
+
+# Repo-root default intrinsics (Google Pixel 7 @ 4K); resolved from this file so cwd does not matter.
+_DEFAULT_INTRI = str(
+    Path(__file__).resolve().parent.parent.parent / "config/calibration/google_pixel_7_4k/intri.yml"
+)
+
 
 def init_intri(path, image):
     camnames = sorted(os.listdir(join(path, image)))
@@ -402,8 +409,11 @@ if __name__ == "__main__":
     parser.add_argument(
         '--intri',
         type=str,
-        default=None,
-        help='Path to intri YAML. If omitted, uses <path>/intri.yml when present, else init_intri heuristic.',
+        default=_DEFAULT_INTRI,
+        help=(
+            'Path to intri YAML. Default: bundled config/calibration/google_pixel_7_4k/intri.yml. '
+            'If that file is missing, falls back to <path>/intri.yml or init_intri heuristic.'
+        ),
     )
     parser.add_argument('--ext', type=str, default='.jpg')
     parser.add_argument('--step', type=int, default=6)
@@ -411,7 +421,13 @@ if __name__ == "__main__":
     parser.add_argument('--tryfocal', action='store_true')
     parser.add_argument('--tryextri', action='store_true')
     parser.add_argument('--image_id', type=int, default=0, help='Image id used for extrinsic calibration')
-    parser.add_argument('--stereo', action='store_true', help='Use stereo calibration for adjacent cameras')
+    parser.set_defaults(stereo=True)
+    parser.add_argument(
+        '--no-stereo',
+        action='store_false',
+        dest='stereo',
+        help='Use single-frame extrinsic calibration instead of adjacent-camera stereo (default: stereo on).',
+    )
     parser.add_argument(
         '--undis',
         action='store_true',
@@ -431,6 +447,14 @@ if __name__ == "__main__":
     )
 
     args = parser.parse_args()
+    if args.intri == _DEFAULT_INTRI and not os.path.isfile(_DEFAULT_INTRI):
+        mywarn(
+            'Default intri not found at {}; using <path>/intri.yml or init_intri heuristic.'.format(
+                _DEFAULT_INTRI
+            )
+        )
+        args.intri = None
+
     if args.stereo:
         calib_extri_stereo(
             args.path,
