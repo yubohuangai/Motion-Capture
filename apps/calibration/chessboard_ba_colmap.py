@@ -37,6 +37,10 @@ from os.path import basename, join
 import cv2
 import numpy as np
 
+from _bootstrap import ensure_repo_root_on_path
+
+ensure_repo_root_on_path()
+
 from easymocap.mytools import read_json
 from easymocap.mytools.camera_utils import read_camera, write_extri, write_intri
 from easymocap.mytools.colmap_structure import (

@@ -8,6 +8,10 @@
 # This script calibrate each intrinsic parameters
 import shutil
 import random
+from _bootstrap import ensure_repo_root_on_path
+
+ensure_repo_root_on_path()
+
 from easymocap.mytools.debug_utils import log, mywarn
 from easymocap.mytools.vis_base import plot_points2d
 from easymocap.mytools import write_intri, read_json, Timer

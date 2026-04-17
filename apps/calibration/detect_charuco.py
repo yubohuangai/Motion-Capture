@@ -40,6 +40,10 @@ import cv2.aruco as aruco
 import numpy as np
 from tqdm import tqdm
 
+from _bootstrap import ensure_repo_root_on_path
+
+ensure_repo_root_on_path()
+
 from easymocap.annotator import ImageFolder
 from easymocap.annotator.file_utils import getFileList, read_json, save_json
 from easymocap.mytools.debug_utils import mywarn

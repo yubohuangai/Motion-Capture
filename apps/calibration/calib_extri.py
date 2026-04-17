@@ -1,6 +1,10 @@
 """
 File: apps/calibration/calib_extri.py
 """
+from _bootstrap import ensure_repo_root_on_path
+
+ensure_repo_root_on_path()
+
 from easymocap.mytools.camera_utils import write_intri
 import os
 from glob import glob

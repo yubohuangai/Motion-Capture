@@ -6,6 +6,10 @@
   @ FilePath: /EasyMocapPublic/apps/calibration/detect_chessboard.py
 '''
 # detect the corner of chessboard
+from _bootstrap import ensure_repo_root_on_path
+
+ensure_repo_root_on_path()
+
 from easymocap.annotator.file_utils import getFileList, read_json, save_json
 from easymocap.mytools.debug_utils import mywarn
 from tqdm import tqdm
