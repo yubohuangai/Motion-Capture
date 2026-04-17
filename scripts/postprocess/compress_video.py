@@ -4,10 +4,14 @@ Compress a video for easier sharing/upload (e.g. Slack/Canvas).
 
 Requires ffmpeg in PATH.
 
+Default: target output size ≈ **input size ÷ --target-ratio** (default **10**), using 2-pass
+x264 — so a ~1.6 GB file aims for ~160 MB unless you override.
+
 Examples:
   python scripts/postprocess/compress_video.py /path/in.mp4
-  python scripts/postprocess/compress_video.py /path/in.mp4 --target-mb 40
-  python scripts/postprocess/compress_video.py /path/in.mp4 --max-width 1280 --crf 30
+  python scripts/postprocess/compress_video.py /path/in.mp4 --target-ratio 5
+  python scripts/postprocess/compress_video.py /path/in.mp4 --target-mb 200
+  python scripts/postprocess/compress_video.py /path/in.mp4 --crf-mode --crf 23 --max-width 1920
 """
 from __future__ import annotations
 
@@ -193,13 +197,28 @@ def parse_args() -> argparse.Namespace:
         "--target-mb",
         type=float,
         default=None,
-        help="Target output size in MB (uses 2-pass bitrate mode).",
+        help="Target output size in MB (2-pass). Overrides --target-ratio when set.",
+    )
+    p.add_argument(
+        "--target-ratio",
+        type=float,
+        default=10.0,
+        metavar="N",
+        help=(
+            "When --target-mb is omitted: aim for output ≈ input_size/N MB (default: 10 ≈ 10× smaller). "
+            "Ignored when --crf-mode is used."
+        ),
+    )
+    p.add_argument(
+        "--crf-mode",
+        action="store_true",
+        help="Use CRF quality mode instead of targeting output size (old behavior).",
     )
     p.add_argument(
         "--crf",
         type=int,
-        default=28,
-        help="Quality mode CRF when --target-mb is not set (lower=better quality, larger file).",
+        default=23,
+        help="With --crf-mode: quality (lower=better, larger file). Default: 23.",
     )
     p.add_argument(
         "--preset",
@@ -207,7 +226,12 @@ def parse_args() -> argparse.Namespace:
         choices=["ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow", "slower"],
         help="x264 preset (slower = better compression).",
     )
-    p.add_argument("--max-width", type=int, default=1280, help="Max output width (default: 1280).")
+    p.add_argument(
+        "--max-width",
+        type=int,
+        default=1920,
+        help="Max output width (default: 1920). No upscale if already smaller.",
+    )
     p.add_argument(
         "--fps",
         type=int,
@@ -228,19 +252,9 @@ def main() -> None:
     output_path = _derive_output_path(input_path, args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    if args.target_mb is not None:
-        if args.target_mb <= 0:
-            raise SystemExit("--target-mb must be > 0")
-        compress_target_size(
-            input_path,
-            output_path,
-            target_mb=args.target_mb,
-            preset=args.preset,
-            max_width=args.max_width,
-            fps=args.fps,
-            audio_bitrate_k=args.audio_kbps,
-        )
-    else:
+    in_mb = input_path.stat().st_size / (1024 * 1024)
+
+    if args.crf_mode:
         compress_crf(
             input_path,
             output_path,
@@ -250,8 +264,31 @@ def main() -> None:
             fps=args.fps,
             audio_bitrate_k=args.audio_kbps,
         )
+    else:
+        if args.target_mb is not None:
+            if args.target_mb <= 0:
+                raise SystemExit("--target-mb must be > 0")
+            target_mb = args.target_mb
+        else:
+            if args.target_ratio <= 0:
+                raise SystemExit("--target-ratio must be > 0")
+            target_mb = in_mb / args.target_ratio
+            target_mb = max(target_mb, 1.0)
+            print(
+                f"[compress_video] target size ≈ input/{args.target_ratio:g} "
+                f"→ {target_mb:.1f} MB (2-pass)"
+            )
 
-    in_mb = input_path.stat().st_size / (1024 * 1024)
+        compress_target_size(
+            input_path,
+            output_path,
+            target_mb=target_mb,
+            preset=args.preset,
+            max_width=args.max_width,
+            fps=args.fps,
+            audio_bitrate_k=args.audio_kbps,
+        )
+
     out_mb = output_path.stat().st_size / (1024 * 1024)
     ratio = out_mb / in_mb if in_mb > 0 else math.nan
     print(f"[compress_video] input : {input_path} ({in_mb:.1f} MB)")
