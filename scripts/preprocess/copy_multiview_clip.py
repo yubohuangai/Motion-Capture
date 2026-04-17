@@ -50,6 +50,18 @@ def natural_key_filename(filename: str):
     return [int(t) if t.isdigit() else t.lower() for t in re.split(r"(\d+)", stem)]
 
 
+def pick_default_camera_workers(max_cams: int) -> int:
+    """
+    Auto worker ladder requested by user:
+      prefer 8, else 4, else 2, else 1 (bounded by available CPUs and camera count).
+    """
+    cpu = max(1, os.cpu_count() or 1)
+    for cand in (8, 4, 2, 1):
+        if cand <= cpu and cand <= max_cams:
+            return cand
+    return 1
+
+
 def get_camera_ids(root):
     root_path = Path(root)
     if not root_path.exists():
@@ -162,7 +174,7 @@ def run_cli_clip(
     frame_start: int,
     frame_end: int,
     *,
-    camera_workers: int = 1,
+    camera_workers: int = 0,
     copy_mode: str = "copyfile",
     progress: str = "camera",
 ) -> None:
@@ -217,16 +229,24 @@ def run_cli_clip(
             )
         tasks.append((str(src_dir), str(dst_dir), frame_start, end_slice))
 
+    if camera_workers == 0:
+        camera_workers = pick_default_camera_workers(len(tasks))
     if camera_workers < 1:
-        raise SystemExit("--camera-workers must be >= 1")
+        raise SystemExit("--camera-workers must be >= 1 (or 0 for auto)")
     camera_workers = min(camera_workers, len(tasks))
-    show_per_camera = progress == "camera"
-    show_summary = progress in ("camera", "overall")
+
+    if progress == "auto":
+        progress_mode = "overall" if camera_workers > 1 else "camera"
+    else:
+        progress_mode = progress
+
+    show_per_camera = progress_mode == "camera"
+    show_summary = progress_mode in ("camera", "overall")
 
     if show_summary:
         print(
             f"[copy_multiview_clip] copy_mode={copy_mode}  camera_workers={camera_workers}  "
-            f"progress={progress}"
+            f"progress={progress_mode}"
         )
 
     if camera_workers == 1:
@@ -297,10 +317,10 @@ def parse_args():
     parser.add_argument(
         "--camera-workers",
         type=int,
-        default=1,
+        default=0,
         help=(
-            "Number of cameras copied in parallel. 1 = sequential. "
-            "Try 4-8 on shared storage (default: 1)."
+            "Number of cameras copied in parallel. 0 = auto (prefer 8, else 4, else 2, else 1). "
+            "Use 1 for sequential."
         ),
     )
     parser.add_argument(
@@ -314,9 +334,12 @@ def parse_args():
     )
     parser.add_argument(
         "--progress",
-        choices=("camera", "overall", "none"),
-        default="camera",
-        help="camera: per-camera bars, overall: one bar in parallel mode, none: silent.",
+        choices=("auto", "camera", "overall", "none"),
+        default="auto",
+        help=(
+            "auto: overall in parallel, camera in sequential (default); "
+            "camera: per-camera bars; overall: one summary bar; none: silent."
+        ),
     )
     parser.add_argument(
         "--legacy-config",
