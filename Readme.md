@@ -169,9 +169,15 @@ python apps/calibration/calib_extri.py <extri_data> --stereo --intri <intri_data
 Refine intrinsics and extrinsics with COLMAP’s bundle adjuster:
 
 ```bash
-python apps/calibration/chessboard_ba_colmap.py <path> \
-  --intri intri.yml --extri extri.yml \
-  --out_intri intri_colmap_ba.yml --out_extri extri_colmap_ba.yml
+python apps/calibration/chessboard_ba_colmap.py <path>
+```
+
+`<path>` is the dataset root that already contains `intri.yml`, `extri.yml`, and `chessboard/<cam>/*.json`. The flags `--intri intri.yml --extri extri.yml --out_intri intri_colmap_ba.yml --out_extri extri_colmap_ba.yml` match the script defaults—omit them unless you use different filenames.
+
+Example:
+
+```bash
+python apps/calibration/chessboard_ba_colmap.py /home/yubo/scratch/cow_1_board/board
 ```
 
 - Injects chessboard corners into a COLMAP sparse model and runs `colmap bundle_adjuster`
