@@ -227,7 +227,7 @@ if __name__ == "__main__":
         type=str,
         default=ACTIVE_CHESSBOARD_PROFILE,
         choices=sorted(CHESSBOARD_BOARD_PROFILES.keys()),
-        help='Preset inner-corner pattern and square size. Ignored for --pattern/--grid you pass explicitly.',
+        help='Preset inner-corner pattern and square size. Fills any of --pattern / --grid that you omit.',
     )
     parser.add_argument(
         '--pattern',
