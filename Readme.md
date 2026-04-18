@@ -181,6 +181,7 @@ python apps/calibration/chessboard_ba_colmap.py /home/yubo/scratch/cow_1_board/b
 ```
 
 - Injects chessboard corners into a COLMAP sparse model and runs `colmap bundle_adjuster`
+- **Requires** the `colmap` CLI on `PATH` (or pass `--colmap /full/path/to/colmap`). On clusters, load a module first, e.g. `module load colmap`.
 - Output: `intri_colmap_ba.yml`, `extri_colmap_ba.yml`, and optimized 3D points
 
 **Note**: Use the BA-refined yml files as the final calibration for the motion capture stage. Copy `intri_colmap_ba.yml` → `intri.yml` and `extri_colmap_ba.yml` → `extri.yml` into the mocap data path (or symlink them).

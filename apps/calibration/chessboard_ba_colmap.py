@@ -24,11 +24,14 @@ Outputs:
   - refined intri / extri yaml (intri_colmap_ba.yml, extri_colmap_ba.yml)
   - optimized 3D points npz (output/points_chess_colmap_ba.npz, key 'xyz')
     compatible with: python apps/calibration/vis_chess_sfm_ba.py <path>
+
+Requires COLMAP installed: the `colmap` binary must be on PATH, or pass --colmap /path/to/colmap.
 """
 
 import bisect
 import os
 import shutil
+import subprocess
 import tempfile
 from collections import defaultdict
 from glob import glob
@@ -55,9 +58,6 @@ from easymocap.mytools.colmap_structure import (
     write_images_binary,
     write_points3d_binary,
 )
-from easymocap.mytools.debug_utils import run_cmd
-
-
 def sample_list(lst, step):
     if step <= 1:
         return lst
@@ -68,6 +68,25 @@ def resolve_path(root, path_or_name):
     if os.path.isabs(path_or_name):
         return path_or_name
     return join(root, path_or_name)
+
+
+def _resolve_colmap_binary(colmap_arg: str) -> str:
+    """Return absolute path to the colmap executable, or exit with a clear message."""
+    if os.path.isabs(colmap_arg) or os.sep in colmap_arg:
+        if not os.path.isfile(colmap_arg):
+            raise SystemExit(
+                f"[colmap-BA] --colmap is not a file: {colmap_arg}"
+            )
+        return colmap_arg
+    found = shutil.which(colmap_arg)
+    if found is None:
+        raise SystemExit(
+            "[colmap-BA] COLMAP executable not found on PATH.\n"
+            f"  Tried to run: {colmap_arg!r}\n"
+            "  Install COLMAP, load it on your cluster (e.g. `module load colmap`), "
+            "or pass the full path: --colmap /path/to/colmap"
+        )
+    return found
 
 
 def parse_keypoints2d(data):
@@ -648,6 +667,7 @@ def align_world_to_camera(cams, points3d, origin_cam):
 # ---------------------------------------------------------------------------
 
 def main(args):
+    colmap_bin = _resolve_colmap_binary(args.colmap)
     root = args.path
     intri_path = resolve_path(root, args.intri)
     extri_path = resolve_path(root, args.extri)
@@ -893,13 +913,28 @@ def main(args):
     ba_flags.append(f"--BundleAdjustment.function_tolerance {args.func_tol}")
 
     ba_cmd = (
-        f"{args.colmap} bundle_adjuster"
+        f'"{colmap_bin}" bundle_adjuster'
         f" --input_path {sparse_in}"
         f" --output_path {sparse_out}"
         f" {' '.join(ba_flags)}"
     )
     print(f"[colmap-BA] running: {ba_cmd}")
-    run_cmd(ba_cmd)
+    try:
+        subprocess.run(ba_cmd, shell=True, check=True)
+    except subprocess.CalledProcessError as e:
+        raise SystemExit(
+            f"[colmap-BA] colmap bundle_adjuster failed (exit {e.returncode}). "
+            "If you saw `colmap: command not found`, install COLMAP or use "
+            "`module load colmap` / `--colmap /path/to/colmap`. "
+            f"Temp workspace (use --keep_work_dir to retain): {work_dir}"
+        ) from None
+
+    cam_out = join(sparse_out, "cameras.bin")
+    if not os.path.isfile(cam_out):
+        raise SystemExit(
+            f"[colmap-BA] bundle_adjuster produced no output at {sparse_out} "
+            f"(missing {cam_out}). Check COLMAP errors above. work_dir={work_dir}"
+        )
 
     # ------------------------------------------------------------------
     # Read back results
