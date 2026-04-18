@@ -83,6 +83,10 @@ CHESSBOARD_BOARD_PROFILES = {
 }
 ACTIVE_CHESSBOARD_PROFILE = "inner_7x4_0p1"
 
+# Populated in each process by _mp_pool_init_chessboard (multiprocessing).
+_MP_CHESS_PATTERN = None
+_MP_CHESS_FIX_ORIENTATION = False
+
 
 def _parse_pattern_opt(s):
     if s is None:
@@ -174,9 +178,14 @@ def detect_chessboard_batch(path, image, out, pattern, gridSize, args):
     t_after_templates = time.perf_counter()
     views = _discover_views(path, image, args.ext)
     labels = ", ".join(_view_label(v) for v in views)
+    if args.workers == 1:
+        par_info = f"threads={args.mp} (single process)"
+    else:
+        n_proc_hint = _resolve_worker_count(args.workers)
+        par_info = f"processes<={n_proc_hint} per view (fork pool; --workers 1 for threads)"
     print(
         f"[detect_chessboard] detection pass: {len(views)} view(s) [{labels}] "
-        f"(templates {t_after_templates - t_batch0:.1f}s; threads={args.mp})",
+        f"(templates {t_after_templates - t_batch0:.1f}s; {par_info})",
         flush=True,
     )
 
@@ -204,22 +213,34 @@ def detect_chessboard_batch(path, image, out, pattern, gridSize, args):
             )
             continue
 
-        trange = list(range(n))
-        per_thread_detected = [0] * args.mp
-        threads = []
-        for ti in range(args.mp):
-            ranges = trange[ti :: args.mp]
-            datas = [dataset[t] for t in ranges]
-            thread = threading.Thread(
-                target=_detect_chessboard_worker,
-                args=(datas, path, image, out, pattern, args, ti, per_thread_detected),
+        if args.workers == 1:
+            trange = list(range(n))
+            per_thread_detected = [0] * args.mp
+            threads = []
+            for ti in range(args.mp):
+                ranges = trange[ti :: args.mp]
+                datas = [dataset[t] for t in ranges]
+                thread = threading.Thread(
+                    target=_detect_chessboard_worker,
+                    args=(datas, path, image, out, pattern, args, ti, per_thread_detected),
+                )
+                thread.start()
+                threads.append(thread)
+            for thread in threads:
+                thread.join()
+            n_detected = int(sum(per_thread_detected))
+        else:
+            n_proc = _resolve_worker_count(args.workers)
+            n_detected = _run_detection_processes_chessboard(
+                dataset,
+                path,
+                image,
+                out,
+                args,
+                n_proc,
+                pattern,
+                label,
             )
-            thread.start()
-            threads.append(thread)
-        for thread in threads:
-            thread.join()
-
-        n_detected = int(sum(per_thread_detected))
         dt = time.perf_counter() - t0
         per_view.append((label, n, n_detected, dt))
         print(
@@ -238,6 +259,87 @@ def detect_chessboard_batch(path, image, out, pattern, gridSize, args):
             f"  - view {label!r}: {n_detected}/{n_frames} frames with board, detection pass {dt:.1f}s",
             flush=True,
         )
+
+
+def _mp_pool_init_chessboard(pattern: tuple[int, int], fix_orientation: bool):
+    global _MP_CHESS_PATTERN, _MP_CHESS_FIX_ORIENTATION
+    try:
+        cv2.setNumThreads(1)
+    except Exception:
+        pass
+    _MP_CHESS_PATTERN = tuple(pattern)
+    _MP_CHESS_FIX_ORIENTATION = bool(fix_orientation)
+
+
+def _mp_process_chunk_chessboard(
+    payload: tuple[str, str, str, bool, list[tuple[str, str]]],
+) -> tuple[int, int]:
+    """
+    Process a chunk of (imgname, annotname) pairs in a worker process.
+    Returns (detected_count, frame_count).
+    """
+    path, image_sub, out, debug, chunk = payload
+    pattern = _MP_CHESS_PATTERN
+    fix_orientation = _MP_CHESS_FIX_ORIENTATION
+    detected = 0
+    for imgname, annotname in chunk:
+        img = cv2.imread(imgname)
+        if img is None:
+            mywarn(f"[detect_chessboard] Cannot read {imgname}")
+            continue
+        annots = read_json(annotname)
+        try:
+            show = findChessboardCorners(img, annots, pattern, fix_orientation=fix_orientation)
+        except func_timeout.exceptions.FunctionTimedOut:
+            show = None
+        save_json(annotname, annots)
+        if show is None:
+            if debug:
+                mywarn(f"[detect_chessboard] No chessboard in {imgname}")
+            continue
+        detected += 1
+        outname = join(out, imgname.replace(path + "/{}/".format(image_sub), ""))
+        os.makedirs(os.path.dirname(outname), exist_ok=True)
+        if isinstance(show, np.ndarray):
+            cv2.imwrite(outname, show)
+    return detected, len(chunk)
+
+
+def _run_detection_processes_chessboard(
+    dataset: ImageFolder,
+    path: str,
+    image_sub: str,
+    out: str,
+    args,
+    n_workers: int,
+    pattern: tuple[int, int],
+    view_label: str,
+) -> int:
+    """
+    Run chessboard detection in a multi-process pool for one view.
+    Returns detected_count.
+    """
+    dataset.isTmp = False
+    n = len(dataset)
+    if n == 0:
+        return 0
+    pairs: list[tuple[str, str]] = [dataset[i] for i in range(n)]
+    n_workers = max(1, min(n_workers, n, _effective_cpu_count()))
+    chunks = _split_exactly_n_chunks(pairs, n_workers)
+    payloads = [(path, image_sub, out, args.debug, ch) for ch in chunks]
+    ctx = _mp_context()
+    initargs = (tuple(pattern), bool(args.fix_orientation))
+    n_procs = len(payloads)
+    detected_total = 0
+    with ctx.Pool(processes=n_procs, initializer=_mp_pool_init_chessboard, initargs=initargs) as pool:
+        for det, _n in tqdm(
+            pool.imap_unordered(_mp_process_chunk_chessboard, payloads, chunksize=1),
+            total=len(payloads),
+            desc=f"detect chessboard [{view_label}]",
+            leave=True,
+        ):
+            detected_total += det
+    return int(detected_total)
 
 
 def _detect_by_search(path, image, out, pattern, sub, args):
