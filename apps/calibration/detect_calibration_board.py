@@ -133,9 +133,13 @@ def create_chessboard_templates_classic(
             save_json(annname, template)
 
 
-def _detect_chessboard_worker(datas, path, image, out, pattern, args):
+def _detect_chessboard_worker(datas, path, image, out, pattern, args, thread_idx, per_thread_detected):
+    detected = 0
     for imgname, annotname in datas:
         img = cv2.imread(imgname)
+        if img is None:
+            mywarn(f"[detect_chessboard] Cannot read {imgname}")
+            continue
         annots = read_json(annotname)
         try:
             show = findChessboardCorners(
@@ -148,31 +152,92 @@ def _detect_chessboard_worker(datas, path, image, out, pattern, args):
             if args.debug:
                 mywarn("[Info] Cannot find chessboard in {}".format(imgname))
             continue
+        detected += 1
         outname = join(out, imgname.replace(path + "/{}/".format(image), ""))
         os.makedirs(os.path.dirname(outname), exist_ok=True)
         if isinstance(show, np.ndarray):
             cv2.imwrite(outname, show)
+    per_thread_detected[thread_idx] = detected
 
 
 def detect_chessboard_batch(path, image, out, pattern, gridSize, args):
+    t_batch0 = time.perf_counter()
     create_chessboard_templates_classic(
-        path, image, pattern, gridSize, ext=args.ext, overwrite=args.overwrite3d, axis=args.axis
+        path,
+        image,
+        pattern,
+        gridSize,
+        ext=args.ext,
+        overwrite=args.overwrite3d,
+        axis=args.axis,
     )
-    dataset = ImageFolder(path, image=image, annot="chessboard", ext=args.ext)
-    dataset.isTmp = False
-    trange = list(range(len(dataset)))
-    threads = []
-    for i in range(args.mp):
-        ranges = trange[i :: args.mp]
-        datas = [dataset[t] for t in ranges]
-        thread = threading.Thread(
-            target=_detect_chessboard_worker,
-            args=(datas, path, image, out, pattern, args),
+    t_after_templates = time.perf_counter()
+    views = _discover_views(path, image, args.ext)
+    labels = ", ".join(_view_label(v) for v in views)
+    print(
+        f"[detect_chessboard] detection pass: {len(views)} view(s) [{labels}] "
+        f"(templates {t_after_templates - t_batch0:.1f}s; threads={args.mp})",
+        flush=True,
+    )
+
+    per_view: list[tuple[str, int, int, float]] = []
+    for vi, view in enumerate(views):
+        label = _view_label(view)
+        t0 = time.perf_counter()
+        print(
+            f"[detect_chessboard] view {vi + 1}/{len(views)} '{label}': start "
+            f"(elapsed since batch start {t0 - t_batch0:.1f}s)",
+            flush=True,
         )
-        thread.start()
-        threads.append(thread)
-    for thread in threads:
-        thread.join()
+        if view is None:
+            dataset = ImageFolder(path, image=image, annot="chessboard", ext=args.ext)
+        else:
+            dataset = ImageFolder(path, view, image=image, annot="chessboard", ext=args.ext)
+        dataset.isTmp = False
+        n = len(dataset)
+        if n == 0:
+            per_view.append((label, 0, 0, 0.0))
+            print(
+                f"[detect_chessboard] view {vi + 1}/{len(views)} '{label}': done "
+                f"Chessboard detected in 0/0 frames in 0.0s",
+                flush=True,
+            )
+            continue
+
+        trange = list(range(n))
+        per_thread_detected = [0] * args.mp
+        threads = []
+        for ti in range(args.mp):
+            ranges = trange[ti :: args.mp]
+            datas = [dataset[t] for t in ranges]
+            thread = threading.Thread(
+                target=_detect_chessboard_worker,
+                args=(datas, path, image, out, pattern, args, ti, per_thread_detected),
+            )
+            thread.start()
+            threads.append(thread)
+        for thread in threads:
+            thread.join()
+
+        n_detected = int(sum(per_thread_detected))
+        dt = time.perf_counter() - t0
+        per_view.append((label, n, n_detected, dt))
+        print(
+            f"[detect_chessboard] view {vi + 1}/{len(views)} '{label}': done "
+            f"Chessboard detected in {n_detected}/{n} frames in {dt:.1f}s",
+            flush=True,
+        )
+
+    t_total = time.perf_counter() - t_batch0
+    print(
+        f"[detect_chessboard] all views done in {t_total:.1f}s wall time (including template creation)",
+        flush=True,
+    )
+    for label, n_frames, n_detected, dt in per_view:
+        print(
+            f"  - view {label!r}: {n_detected}/{n_frames} frames with board, detection pass {dt:.1f}s",
+            flush=True,
+        )
 
 
 def _detect_by_search(path, image, out, pattern, sub, args):
@@ -234,8 +299,21 @@ def _detect_by_search(path, image, out, pattern, sub, args):
 
 
 def detect_chessboard_sequence(path, image, out, pattern, gridSize, args):
+    t0 = time.perf_counter()
     create_chessboard_templates_classic(
-        path, image, pattern, gridSize, ext=args.ext, overwrite=args.overwrite3d, axis=args.axis
+        path,
+        image,
+        pattern,
+        gridSize,
+        ext=args.ext,
+        overwrite=args.overwrite3d,
+        axis=args.axis,
+    )
+    t_after_templates = time.perf_counter()
+    print(
+        f"[detect_chessboard] seq mode: templates {t_after_templates - t0:.1f}s; "
+        f"max_step={args.max_step} min_step={args.min_step}",
+        flush=True,
     )
     subs = sorted(os.listdir(join(path, image)))
     subs = [s for s in subs if os.path.isdir(join(path, image, s))]
@@ -250,6 +328,7 @@ def detect_chessboard_sequence(path, image, out, pattern, gridSize, args):
         tasks.append(task)
     for task in tasks:
         task.join()
+    t_after_search = time.perf_counter()
     for sub in subs:
         dataset = ImageFolder(path, sub=sub, annot="chessboard", ext=args.ext)
         dataset.isTmp = False
@@ -261,7 +340,14 @@ def detect_chessboard_sequence(path, image, out, pattern, gridSize, args):
                 visited += 1
             if annots["keypoints2d"][0][-1] > 0.01:
                 count += 1
-        log("{}: found {:4d}/{:4d} frames".format(sub, count, visited))
+        label = _view_label(sub)
+        log(f"[detect_chessboard] view {label!r}: found {count:4d}/{visited:4d} visited frames")
+    t_total = time.perf_counter() - t0
+    print(
+        f"[detect_chessboard] seq mode done in {t_total:.1f}s wall time "
+        f"(search phase {time.perf_counter() - t_after_templates:.1f}s)",
+        flush=True,
+    )
 
 
 def check_chessboard_views(path, out, image_sub="images"):
