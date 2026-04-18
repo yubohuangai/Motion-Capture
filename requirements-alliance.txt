@@ -1,0 +1,4 @@
+pyyaml==6.0.3+computecanada
+tabulate==0.10.0+computecanada
+termcolor==3.3.0+computecanada
+tqdm==4.67.3+computecanada

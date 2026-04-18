@@ -124,6 +124,9 @@ apps/calibration/generated_charuco_boards/*
 !apps/calibration/generated_charuco_boards/.gitkeep
 !apps/calibration/generated_charuco_boards/*.json
 tmp/
+.tmp_review_frames/
+charuco_board_8x5_7x4_inner_DICT_4X4_50.png
+logo.png
 res/
 docs/
 

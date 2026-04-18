@@ -80,6 +80,31 @@ python scripts/preprocess/copy_multiview_clip.py \
 
 **Optional:** `--camera-workers N` (default `0` = auto: prefer 8 / 4 / 2 / 1 parallel cameras), `--copy-mode copyfile` (default, faster) or `copy2`, `--progress auto|camera|overall|none`.
 
+### Working session layout (`board`) after clip copy
+
+`copy_multiview_clip.py` writes a calibration-ready working directory with a clean `images/` tree. This is typically the path you pass to calibration scripts (`detect_calibration_board.py`, `calib_extri.py`, etc.).
+
+Example (`--output /home/yubo/scratch/cow_1_board/board`):
+
+```
+/home/yubo/scratch/cow_1_board/board/
+└── images/
+    ├── 01/
+    │   ├── 000000.jpg
+    │   ├── 000001.jpg
+    │   └── ...
+    ├── 02/
+    │   ├── 000000.jpg
+    │   └── ...
+    └── ...
+```
+
+As you run calibration, additional folders/files are created under this same working root:
+
+- `chessboard/<cam>/*.json` from board detection
+- `output/calibration/` for debug visualizations
+- `intri.yml`, `extri.yml` (and optional BA-refined camera files)
+
 ---
 
 ## Stage 1: Camera Calibration
