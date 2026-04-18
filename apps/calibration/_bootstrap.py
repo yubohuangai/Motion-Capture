@@ -10,7 +10,7 @@ def ensure_repo_root_on_path() -> Path:
     Add repository root to sys.path so local imports like ``easymocap`` work
     when scripts are executed by file path, e.g.:
 
-      python apps/calibration/detect_charuco.py ...
+      python apps/calibration/detect_calibration_board.py ...
     """
     calib_dir = Path(__file__).resolve().parent
     repo_root = calib_dir.parent.parent

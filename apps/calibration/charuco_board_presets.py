@@ -1,5 +1,5 @@
 """
-Shared ChArUco board definitions for detect_charuco.py and generate_charuco_board.py.
+Shared ChArUco board definitions for detect_calibration_board.py (charuco mode) and generate_charuco_board.py.
 
 Detection fields (required): squares, marker_ratio, dictionary.
 Generator fields: square_length, image_size (W, H), border_px OR margin_width_px + margin_height_px, output.

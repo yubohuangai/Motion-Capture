@@ -1,5 +1,5 @@
 """
-Generate a printable ChArUco board PNG aligned with apps/calibration/detect_charuco.py presets.
+Generate a printable ChArUco board PNG aligned with apps/calibration/detect_calibration_board.py (charuco) presets.
 
 Default preset `8x5_7x4_inner`: DICT_4X4_50, (8,5) squares / (7,4) inner corners, marker/square 0.7.
 PNG matches the full sheet (PRINT_PAGE_INCHES_WH at PRINT_DPI); the ChArUco pattern is scaled to
@@ -109,7 +109,7 @@ def show_preview(gray: np.ndarray, title: str = "ChArUco board") -> None:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Generate one ChArUco board PNG (matches detect_charuco presets).")
+    parser = argparse.ArgumentParser(description="Generate one ChArUco board PNG (matches detect_calibration_board charuco presets).")
     parser.add_argument(
         "--preset",
         default=DEFAULT_PRESET,
@@ -219,7 +219,7 @@ def main():
                 int(preset["image_size"][1]) + top + bottom,
             ],
             "detect_charuco_hint": (
-                f"python3 apps/calibration/detect_charuco.py <data> --preset {args.preset}"
+                f"python3 apps/calibration/detect_calibration_board.py <data> --preset {args.preset}"
                 + (f" --dict {dict_name}" if args.dictionary else "")
             ),
         }

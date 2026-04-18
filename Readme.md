@@ -84,8 +84,10 @@ Expected layout:
 Detect and store chessboard corners for all calibration images:
 
 ```bash
-python apps/calibration/detect_chessboard.py <path> --pattern 9,6 --grid 0.111
+python apps/calibration/detect_calibration_board.py --mode chessboard <path> --pattern 9,6 --grid 0.111
 ```
+
+(`detect_chessboard.py` is a thin shim that sets `--mode chessboard`.)
 
 - `--pattern 9,6`: Inner corners (columns × rows)
 - `--grid 0.111`: Grid size in meters
@@ -279,9 +281,9 @@ ns-export poisson --load-config outputs/.../config.yml --output-dir meshes/
 
 ```bash
 # 1. Camera calibration
-python apps/calibration/detect_chessboard.py <intri_path> --pattern 9,6 --grid 0.111
+python apps/calibration/detect_calibration_board.py --mode chessboard <intri_path> --pattern 9,6 --grid 0.111
 python apps/calibration/calib_intri.py <intri_path>
-python apps/calibration/detect_chessboard.py <extri_path> --pattern 9,6 --grid 0.111
+python apps/calibration/detect_calibration_board.py --mode chessboard <extri_path> --pattern 9,6 --grid 0.111
 python apps/calibration/calib_extri.py <extri_path> --stereo --intri <intri_path>/output/intri.yml
 python apps/calibration/chessboard_ba_colmap.py <extri_path>
 
@@ -305,7 +307,9 @@ python apps/reconstruction/run_3dgs.py <data_path> --frame 0 --output <recon> --
 Motion-Capture/
 ├── apps/
 │   ├── calibration/           # Stage 1
-│   │   ├── detect_chessboard.py
+│   │   ├── detect_calibration_board.py
+│   │   ├── detect_chessboard.py   # shim → detect_calibration_board --mode chessboard
+│   │   ├── detect_charuco.py      # shim → detect_calibration_board --mode charuco
 │   │   ├── calib_intri.py
 │   │   ├── calib_extri.py
 │   │   ├── chessboard_ba_colmap.py

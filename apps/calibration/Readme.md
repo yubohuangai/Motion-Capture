@@ -63,7 +63,7 @@ For both intrinsic parameters and extrinsic parameters, we need detect the corne
 # extract 2d
 python3 scripts/preprocess/extract_video.py ${data} --no2d
 # detect chessboard
-python3 apps/calibration/detect_chessboard.py ${data} --out ${data}/output/calibration --pattern 9,6 --grid 0.1
+python3 apps/calibration/detect_calibration_board.py --mode chessboard ${data} --out ${data}/output/calibration --pattern 9,6 --grid 0.1
 ```
 The results will be saved in `${data}/chessboard`, the visualization will be saved in `${data}/output/calibration`.
 
