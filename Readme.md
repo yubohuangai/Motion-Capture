@@ -56,6 +56,30 @@ Preview utilities such as **`scripts/postprocess/multiview_grid_video.py`** only
 
 **Session slug** for `output/exp/…` is usually the folder **above** `raw` (e.g. `.../cow_1_board/raw` → `cow_1_board`), unless overridden when running sync.
 
+### Copy a multi-view clip (`scripts/preprocess/copy_multiview_clip.py`)
+
+Copies a **contiguous** frame range from every `raw/NN/images/` folder into a new dataset root. Output frames are **renumbered** from `000000` under `<output>/images/NN/`. Indices follow **natural sort** of filenames in `01/images/` (same idea as `multiview_grid_video.py`).
+
+**Required:** `--input` (session `raw` root), `--output` (destination root), `--frame-start`, `--frame-end`. Both frame bounds are **1-based and inclusive**.
+
+```bash
+python scripts/preprocess/copy_multiview_clip.py \
+  --input /home/yubo/scratch/cow_1_board/raw/ \
+  --output /home/yubo/scratch/cow_1_board/board \
+  --frame-start 686 --frame-end 2653
+```
+
+Short flags:
+
+```bash
+python scripts/preprocess/copy_multiview_clip.py \
+  -i ~/scratch/cow_2_board/raw \
+  -o ~/scratch/cow_2_board/board \
+  --frame-start 1525 --frame-end 3361
+```
+
+**Optional:** `--camera-workers N` (default `0` = auto: prefer 8 / 4 / 2 / 1 parallel cameras), `--copy-mode copyfile` (default, faster) or `copy2`, `--progress auto|camera|overall|none`.
+
 ---
 
 ## Stage 1: Camera Calibration
