@@ -4,6 +4,9 @@
   @ LastEditors: Qing Shuai
   @ LastEditTime: 2022-05-11 20:41:10
   @ FilePath: /EasyMocapPublic/apps/calibration/detect_chessboard.py
+
+  Board presets (--board-profile): inner corner counts (W,H) and square size in meters.
+  Default matches the Charuco 8x5 / 7x4 inner grid at 0.1 m; use legacy_9x6_0p111 for the old default.
 '''
 # detect the corner of chessboard
 from _bootstrap import ensure_repo_root_on_path
@@ -22,6 +25,20 @@ import os
 import func_timeout
 import threading
 from easymocap.mytools.debug_utils import log
+
+# (inner_corners_w, inner_corners_h), grid = square side length in meters (OpenCV chessboard convention).
+CHESSBOARD_BOARD_PROFILES = {
+    "legacy_9x6_0p111": {
+        "pattern": (9, 6),
+        "grid_m": 0.111,
+    },
+    "inner_7x4_0p1": {
+        "pattern": (7, 4),
+        "grid_m": 0.1,
+    },
+}
+ACTIVE_CHESSBOARD_PROFILE = "inner_7x4_0p1"
+
 
 def getChessboard3d(pattern, gridSize, axis='yx'):
     # 注意：这里为了让标定板z轴朝上，设定了短边是x，长边是y
@@ -190,6 +207,13 @@ def check_chessboard(path, out):
     mywarn(f'python3 apps/annotation/annot_calib.py {path} --mode chessboard --annot chessboard --sub {" ".join(subs_notvalid)}')
 
 
+def _parse_pattern_opt(s):
+    if s is None:
+        return None
+    a, b = s.split(',')
+    return (int(a.strip()), int(b.strip()))
+
+
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
@@ -198,10 +222,25 @@ if __name__ == "__main__":
     parser.add_argument('--image', type=str, default='images')
     parser.add_argument('--out', type=str, default=None)
     parser.add_argument('--ext', type=str, default='.jpg', choices=['.jpg', '.png'])
-    parser.add_argument('--pattern', type=lambda x: (int(x.split(',')[0]), int(x.split(',')[1])),
-        help='The pattern of the chessboard', default=(9, 6))
-    parser.add_argument('--grid', type=float, default=0.111,
-        help='The length of the grid size (unit: meter)')
+    parser.add_argument(
+        '--board-profile',
+        type=str,
+        default=ACTIVE_CHESSBOARD_PROFILE,
+        choices=sorted(CHESSBOARD_BOARD_PROFILES.keys()),
+        help='Preset inner-corner pattern and square size. Ignored for --pattern/--grid you pass explicitly.',
+    )
+    parser.add_argument(
+        '--pattern',
+        type=_parse_pattern_opt,
+        default=None,
+        help='Inner corners as W,H (e.g. 7,4). Default: from --board-profile.',
+    )
+    parser.add_argument(
+        '--grid',
+        type=float,
+        default=None,
+        help='Square size in meters. Default: from --board-profile.',
+    )
     parser.add_argument('--max_step', type=int, default=50)
     parser.add_argument('--min_step', type=int, default=0)
     parser.add_argument('--mp', type=int, default=4)
@@ -215,6 +254,16 @@ if __name__ == "__main__":
     parser.add_argument('--check', action='store_true')
 
     args = parser.parse_args()
+    prof = CHESSBOARD_BOARD_PROFILES[args.board_profile]
+    if args.pattern is None:
+        args.pattern = prof['pattern']
+    if args.grid is None:
+        args.grid = prof['grid_m']
+    print(
+        '[detect_chessboard] board_profile={!r} pattern={} grid_m={}'.format(
+            args.board_profile, args.pattern, args.grid
+        )
+    )
     if args.out is None:
         args.out = os.path.join(args.path, "output", "calibration")
     if args.seq:
