@@ -1,0 +1,15 @@
+# Half-circle rig: cameras along one arc only (not closed).
+# - World / chain start = first line (camera 02).
+# - Chain end = last line (camera 11); no stereo pair links 11 back to 02.
+# - Camera 01 sits physically between 06 and 07 along the arc.
+02
+03
+04
+05
+06
+01
+07
+08
+09
+10
+11

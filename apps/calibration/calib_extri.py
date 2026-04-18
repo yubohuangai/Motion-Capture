@@ -190,8 +190,12 @@ def resolve_stereo_camera_order(
 ) -> list[str]:
     """
     Return camera names in **physical** order for stereo (consecutive = adjacent on the rig).
-    Default is sorted folder names (lexicographic), which matches a 01..11 ring only if
-    folders are named that way and physical layout matches string order.
+
+    The stereo pass is a **linear** chain: only (cam[i], cam[i+1]) pairs are used. There is
+    **no** wrap from the last camera back to the first—so on a half-circle, put cameras
+    along the arc from world/start to end (e.g. 02 ... 11); endpoints need not share a view.
+
+    Default is sorted folder names (lexicographic).
     """
     disk = _disk_camera_names(path, image)
     if not disk:
@@ -529,11 +533,10 @@ if __name__ == "__main__":
         metavar='CAM',
         default=None,
         help=(
-            'Stereo only: physical order of cameras around the rig (folder names). '
-            'Consecutive pairs are used for stereo; first camera = world frame. '
-            'Default: sorted folder names (01,02,...,10,11). '
-            'Example with cam 01 between 06 and 07: '
-            '--camera-order 06 01 07 08 09 10 11 02 03 04 05'
+            'Stereo only: physical order along the arc (folder names). '
+            'Consecutive pairs only—no wrap last→first. First = world frame. '
+            'Half-circle example (start 02, end 11, 01 between 06 and 07): '
+            '--camera-order 02 03 04 05 06 01 07 08 09 10 11'
         ),
     )
     parser.add_argument(
@@ -542,7 +545,8 @@ if __name__ == "__main__":
         default=None,
         help=(
             'Stereo only: path to a text file (one camera id per line; # comments ok). '
-            'Alternative to --camera-order. See config/calibration/camera_order_templates/'
+            'Alternative to --camera-order. '
+            'Example: config/calibration/camera_order_templates/half_circle_02_to_11_01_between_6_7.txt'
         ),
     )
 

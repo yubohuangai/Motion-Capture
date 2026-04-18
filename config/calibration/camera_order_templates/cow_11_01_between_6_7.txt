@@ -1,8 +1,9 @@
-# Stereo chain: list cameras in physical order around the rig so each consecutive
-# pair sees the board from neighboring viewpoints. First camera = world frame.
-#
-# Example: cam 01 sits between 06 and 07 on the circle → ... 06, 01, 07 ...
-# World origin = first line (here 06). Adjust the cut / rotation to taste.
+# Same layout as half_circle_02_to_11_01_between_6_7.txt (kept for older references).
+# Half arc: start 02, end 11; 01 between 06 and 07; no wrap 11->02.
+02
+03
+04
+05
 06
 01
 07
@@ -10,7 +11,3 @@
 09
 10
 11
-02
-03
-04
-05
