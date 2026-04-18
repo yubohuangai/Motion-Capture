@@ -19,6 +19,10 @@ from pathlib import Path
 _DEFAULT_INTRI = str(
     Path(__file__).resolve().parent.parent.parent / "config/calibration/google_pixel_7_4k/intri.yml"
 )
+_DEFAULT_CAMERA_ORDER_FILE = str(
+    Path(__file__).resolve().parent.parent.parent
+    / "config/calibration/camera_order_templates/half_circle_02_to_11_01_between_6_7.txt"
+)
 
 
 def init_intri(path, image):
@@ -205,16 +209,28 @@ def resolve_stereo_camera_order(
         raise RuntimeError("Use only one of --camera-order or --camera-order-file")
 
     raw: list[str] | None = None
-    if camera_order_file:
-        raw = _read_camera_order_file(camera_order_file)
-    elif camera_order:
+    if camera_order:
+        print("[Stereo] camera order: from --camera-order (not using a camera order file)")
         raw = list(camera_order)
+    elif camera_order_file:
+        abs_order = os.path.abspath(camera_order_file)
+        print("[Stereo] camera order file: {}".format(abs_order))
+        if os.path.isfile(camera_order_file):
+            raw = _read_camera_order_file(camera_order_file)
+        else:
+            mywarn(
+                "Camera order file missing at {}; using sorted folder names under {}/{}.".format(
+                    abs_order, path, image
+                )
+            )
 
     if raw is None:
         ordered = disk
+        if camera_order_file is None and camera_order is None:
+            print("[Stereo] camera order: sorted folder names (no order file)")
     else:
         if len(raw) != len(set(raw)):
-            raise RuntimeError("--camera-order has duplicate camera ids")
+            raise RuntimeError("Camera order has duplicate camera ids")
         if set(raw) != set(disk):
             raise RuntimeError(
                 "Camera order must list exactly the folders under {} (each once). "
@@ -544,13 +560,15 @@ if __name__ == "__main__":
         type=str,
         default=None,
         help=(
-            'Stereo only: path to a text file (one camera id per line; # comments ok). '
-            'Alternative to --camera-order. '
-            'Example: config/calibration/camera_order_templates/half_circle_02_to_11_01_between_6_7.txt'
+            'Stereo only: text file (one camera id per line; # comments ok). '
+            'Default when omitted: bundled half_circle_02_to_11_01_between_6_7.txt in this repo. '
+            'Ignored if --camera-order is set.'
         ),
     )
 
     args = parser.parse_args()
+    if args.stereo and args.camera_order is None and args.camera_order_file is None:
+        args.camera_order_file = _DEFAULT_CAMERA_ORDER_FILE
     if args.intri == _DEFAULT_INTRI and not os.path.isfile(_DEFAULT_INTRI):
         mywarn(
             'Default intri not found at {}; using <path>/intri.yml or init_intri heuristic.'.format(
@@ -560,11 +578,13 @@ if __name__ == "__main__":
         args.intri = None
 
     if args.stereo:
+        # --camera-order wins; do not pass a file path so we do not print/use the default file.
+        order_file = None if args.camera_order else args.camera_order_file
         stereo_order = resolve_stereo_camera_order(
             args.path,
             args.image,
             args.camera_order,
-            args.camera_order_file,
+            order_file,
             args.cameras,
         )
         calib_extri_stereo(
