@@ -159,6 +159,78 @@ def sample_list(lst, step):
     return lst[::step]
 
 
+def _disk_camera_names(path: str, image: str) -> list[str]:
+    root = join(path, image)
+    if not os.path.isdir(root):
+        return []
+    return sorted(
+        c for c in os.listdir(root) if os.path.isdir(join(root, c)) and not c.startswith(".")
+    )
+
+
+def _read_camera_order_file(order_path: str) -> list[str]:
+    out: list[str] = []
+    with open(order_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.split("#", 1)[0].strip()
+            if not line:
+                continue
+            out.extend(line.split())
+    if not out:
+        raise ValueError(f"Empty or invalid camera order file: {order_path}")
+    return out
+
+
+def resolve_stereo_camera_order(
+    path: str,
+    image: str,
+    camera_order: list[str] | None,
+    camera_order_file: str | None,
+    cameras_filter: list[str] | None,
+) -> list[str]:
+    """
+    Return camera names in **physical** order for stereo (consecutive = adjacent on the rig).
+    Default is sorted folder names (lexicographic), which matches a 01..11 ring only if
+    folders are named that way and physical layout matches string order.
+    """
+    disk = _disk_camera_names(path, image)
+    if not disk:
+        raise RuntimeError(f"No camera subfolders under {join(path, image)}")
+
+    if camera_order_file and camera_order:
+        raise RuntimeError("Use only one of --camera-order or --camera-order-file")
+
+    raw: list[str] | None = None
+    if camera_order_file:
+        raw = _read_camera_order_file(camera_order_file)
+    elif camera_order:
+        raw = list(camera_order)
+
+    if raw is None:
+        ordered = disk
+    else:
+        if len(raw) != len(set(raw)):
+            raise RuntimeError("--camera-order has duplicate camera ids")
+        if set(raw) != set(disk):
+            raise RuntimeError(
+                "Camera order must list exactly the folders under {} (each once). "
+                "On disk: {}, in order: {}".format(join(path, image), disk, raw)
+            )
+        ordered = raw
+
+    if cameras_filter:
+        filt = set(cameras_filter)
+        unknown = filt - set(disk)
+        if unknown:
+            raise RuntimeError("--cameras {} not found under {}/{}".format(unknown, path, image))
+        ordered = [c for c in ordered if c in filt]
+        if not ordered:
+            raise RuntimeError("After --cameras filter, stereo order is empty")
+
+    print("[Stereo] camera chain (world = first): {}".format(" -> ".join(ordered)))
+    return ordered
+
+
 def _points_are_collinear(pts, tol=1e-6):
     """Check if a set of 2D or 3D points are (nearly) collinear.
     Uses SVD on the centered point cloud: if the second singular value
@@ -186,13 +258,20 @@ def _stereo_per_frame_errors(objectPoints, imagePoints_prev, imagePoints_curr,
 
 
 def calib_extri_stereo(path, image, intri_arg, step=6, use_distortion=False,
-                       cameras_filter=None, debug=False, err_threshold=50.0):
-    camnames = sorted(os.listdir(join(path, image)))
-    camnames = [c for c in camnames if os.path.isdir(join(path, image, c))]
+                       cameras_filter=None, debug=False, err_threshold=50.0,
+                       stereo_cam_order=None):
+    """
+    stereo_cam_order: explicit physical order for the stereo chain (world = first).
+        If None, uses sorted folder names (optionally filtered by cameras_filter).
+    """
+    if stereo_cam_order is not None:
+        camnames = list(stereo_cam_order)
+    else:
+        camnames = _disk_camera_names(path, image)
+        if cameras_filter:
+            camnames = [c for c in camnames if c in cameras_filter]
+            print(f"[Stereo] Using camera subset: {camnames}")
     intri = load_intri(path, image, camnames, intri_arg)
-    if cameras_filter:
-        camnames = [c for c in camnames if c in cameras_filter]
-        print(f'[Stereo] Using camera subset: {camnames}')
     apply_intri_distortion_mode(intri, use_distortion)
     extri = {}
 
@@ -329,16 +408,15 @@ def calib_extri_stereo(path, image, intri_arg, step=6, use_distortion=False,
     write_extri(join(path, 'extri.yml'), extri)
 
 
-def calib_extri(path, image, intri_arg, image_id, use_distortion=False):
-    camnames = sorted(os.listdir(join(path, image)))
-    camnames = [c for c in camnames if os.path.isdir(join(path, image, c))]
+def calib_extri(path, image, intri_arg, image_id, use_distortion=False, ext=".jpg", tryfocal=False):
+    camnames = _disk_camera_names(path, image)
     intri = load_intri(path, image, camnames, intri_arg)
     apply_intri_distortion_mode(intri, use_distortion)
     extri = {}
     # methods = [cv2.SOLVEPNP_ITERATIVE, cv2.SOLVEPNP_P3P, cv2.SOLVEPNP_AP3P, cv2.SOLVEPNP_EPNP, cv2.SOLVEPNP_DLS, cv2.SOLVEPNP_IPPE, cv2.SOLVEPNP_SQPNP]
     methods = [cv2.SOLVEPNP_ITERATIVE]
     for ic, cam in enumerate(camnames):
-        imagenames = sorted(glob(join(path, image, cam, '*{}'.format(args.ext))))
+        imagenames = sorted(glob(join(path, image, cam, '*{}'.format(ext))))
         chessnames = sorted(glob(join(path, 'chessboard', cam, '*.json')))
         # chessname = chessnames[0]
         assert len(chessnames) > 0, cam
@@ -366,7 +444,7 @@ def calib_extri(path, image, intri_arg, image_id, use_distortion=False):
             continue
         k3d = k3d[valididx]
         k2d = k2d[valididx]
-        if args.tryfocal:
+        if tryfocal:
             infos = []
             for focal in range(500, 5000, 10):
                 dist = intri[cam]['dist']
@@ -445,6 +523,28 @@ if __name__ == "__main__":
         default=50.0,
         help='Per-frame mean reprojection error threshold (px) for outlier rejection in stereo mode.',
     )
+    parser.add_argument(
+        '--camera-order',
+        nargs='+',
+        metavar='CAM',
+        default=None,
+        help=(
+            'Stereo only: physical order of cameras around the rig (folder names). '
+            'Consecutive pairs are used for stereo; first camera = world frame. '
+            'Default: sorted folder names (01,02,...,10,11). '
+            'Example with cam 01 between 06 and 07: '
+            '--camera-order 06 01 07 08 09 10 11 02 03 04 05'
+        ),
+    )
+    parser.add_argument(
+        '--camera-order-file',
+        type=str,
+        default=None,
+        help=(
+            'Stereo only: path to a text file (one camera id per line; # comments ok). '
+            'Alternative to --camera-order. See config/calibration/camera_order_templates/'
+        ),
+    )
 
     args = parser.parse_args()
     if args.intri == _DEFAULT_INTRI and not os.path.isfile(_DEFAULT_INTRI):
@@ -456,6 +556,13 @@ if __name__ == "__main__":
         args.intri = None
 
     if args.stereo:
+        stereo_order = resolve_stereo_camera_order(
+            args.path,
+            args.image,
+            args.camera_order,
+            args.camera_order_file,
+            args.cameras,
+        )
         calib_extri_stereo(
             args.path,
             args.image,
@@ -465,6 +572,7 @@ if __name__ == "__main__":
             cameras_filter=args.cameras,
             debug=args.debug,
             err_threshold=args.err_threshold,
+            stereo_cam_order=stereo_order,
         )
     else:
         calib_extri(
@@ -473,4 +581,6 @@ if __name__ == "__main__":
             intri_arg=args.intri,
             image_id=args.image_id,
             use_distortion=args.undis,
+            ext=args.ext,
+            tryfocal=args.tryfocal,
         )

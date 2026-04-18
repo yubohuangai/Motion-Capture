@@ -1,0 +1,16 @@
+# Stereo chain: list cameras in physical order around the rig so each consecutive
+# pair sees the board from neighboring viewpoints. First camera = world frame.
+#
+# Example: cam 01 sits between 06 and 07 on the circle → ... 06, 01, 07 ...
+# World origin = first line (here 06). Adjust the cut / rotation to taste.
+06
+01
+07
+08
+09
+10
+11
+02
+03
+04
+05
