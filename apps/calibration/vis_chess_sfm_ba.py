@@ -83,12 +83,16 @@ def resolve_path(root, path_or_name):
 
 
 def opencv_to_opengl(pts):
-    """Transform OpenCV (Y-down) to Open3D/OpenGL (Y-up). Flips Y axis."""
+    """Transform OpenCV (X right, Y down, Z forward) to Open3D/OpenGL
+    (X right, Y up, Z backward). This is a 180 deg rotation about X:
+    flip BOTH Y and Z. Flipping only Y would invert handedness and
+    produce a mirrored scene (rotations cannot undo that)."""
     pts = np.asarray(pts, dtype=np.float64)
     if pts.ndim == 1:
         pts = pts.reshape(1, -1)
     out = pts.copy()
     out[:, 1] = -out[:, 1]
+    out[:, 2] = -out[:, 2]
     return out.squeeze()
 
 
@@ -420,7 +424,7 @@ if __name__ == "__main__":
     parser.add_argument("path", type=str, help="dataset root")
     parser.add_argument("--intri", type=str, default="intri_colmap_ba.yml")
     parser.add_argument("--extri", type=str, default="extri_colmap_ba.yml")
-    parser.add_argument("--points", type=str, default="points_chess_colmap_ba.npz")
+    parser.add_argument("--points", type=str, default="output/points_chess_colmap_ba.npz")
     parser.add_argument("--camera_info", type=str, default="output/camera_info.json")
     parser.add_argument(
         "--dist_pairs",
