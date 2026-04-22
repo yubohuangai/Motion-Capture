@@ -4,7 +4,6 @@ Usage
 -----
     python apps/reconstruction_classical/run_stage_a.py <data_root> \
         --output output/reconstruction_classical/<scene> \
-        --downscale 0.25 \
         --n_depths 128 \
         --max_sources 4
 
@@ -85,13 +84,13 @@ def _save_depth_preview(dm: DepthMap, out_path: Path) -> None:
 def main() -> None:
     p = argparse.ArgumentParser(description="Stage A classical MVS reconstruction")
     p.add_argument("data_root", type=str)
-    p.add_argument("--output", type=str, required=True,
-                   help="output directory")
+    p.add_argument("--output", type=str, default=None,
+                   help="output directory (default: <data_root>_output)")
     p.add_argument("--frame", type=int, default=0)
-    p.add_argument("--downscale", type=float, default=0.25,
+    p.add_argument("--downscale", type=float, default=1.0,
                    help="image downsample factor for MVS (1.0 = native)")
-    p.add_argument("--sparse_downscale", type=float, default=0.5,
-                   help="image downsample factor for SIFT matching")
+    p.add_argument("--sparse_downscale", type=float, default=1.0,
+                   help="image downsample factor for SIFT matching (1.0 = native)")
     p.add_argument("--n_depths", type=int, default=128)
     p.add_argument("--max_sources", type=int, default=4)
     p.add_argument("--ncc_ksize", type=int, default=7)
@@ -119,10 +118,13 @@ def main() -> None:
     p.add_argument("--skip_sparse", action="store_true")
     p.add_argument("--skip_mvs", action="store_true")
     p.add_argument("--skip_mesh", action="store_true")
+    p.add_argument("--only_sparse", action="store_true",
+                   help="run sparse step only; skip MVS, fusion, mesh")
     args = p.parse_args()
 
     data_root = Path(args.data_root)
-    out_dir = ensure_dir(args.output)
+    output_dir = Path(args.output) if args.output else Path(f"{str(data_root)}_output")
+    out_dir = ensure_dir(output_dir)
     intri = data_root / "intri.yml"
     extri = data_root / "extri.yml"
     assert intri.exists() and extri.exists(), f"missing calibration in {data_root}"
@@ -152,6 +154,22 @@ def main() -> None:
         write_ply_points(sparse_ply, pts, col)
         sparse_points = pts
         print(f"[sparse] wrote {sparse_ply} ({pts.shape[0]} pts)")
+
+    # -------- Sparse-only short-circuit -------------------------------------
+    if args.only_sparse:
+        summary = {
+            "data_root": str(data_root),
+            "frame": args.frame,
+            "downscale_sparse": args.sparse_downscale,
+            "n_sparse_points": int(sparse_points.shape[0]),
+            "cameras": list(cams.keys()),
+            "mode": "sparse_only",
+            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        with open(out_dir / "config.json", "w") as f:
+            json.dump({"args": vars(args), "summary": summary}, f, indent=2, default=str)
+        print(f"[done] sparse-only run; artifacts in {out_dir}")
+        return
 
     # -------- Dense MVS -----------------------------------------------------
     if args.skip_mvs:
