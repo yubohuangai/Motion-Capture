@@ -100,8 +100,11 @@ in order to know which depth values to test.
    want the older fast-but-less-accurate behavior.
 
    On `cow_1/10465` at native resolution this yields **130k–260k
-   keypoints per image** (e.g. cam 02 = 132k, cam 09 = 261k). The middle
-   cameras (07–10) get the most because they have the most cow visible.
+   keypoints per image** (e.g. cam 02 = 132k, cam 09 = 261k). Cameras
+   near the middle of the half-circle arc (07–10) get the most because
+   they look at the cow head-on and see the largest projected area;
+   cameras at the ends (02, 11) see it more obliquely and pick up
+   fewer features.
 
 2. **Pairwise matching with Lowe's ratio test.** For every pair of cameras
    `(i, j)`, find each keypoint in `i`'s nearest two descriptors in `j`.
@@ -122,7 +125,7 @@ in order to know which depth values to test.
 
    | pair | raw → kept | what it tells you |
    |---|---|---|
-   | `07-08` | 9 734 → **8 694** | adjacent middle-arc cams: huge overlap |
+   | `07-08` | 9 734 → **8 694** | adjacent cams near the middle of the half-circle: huge overlap |
    | `03-04` | 8 154 → 4 768 | adjacent on the left side: also rich |
    | `01-07` | 6 184 → 5 457 | cam 01 sees the same surface as 07 |
    | `02-07` | 110 → **0** | opposite ends of the half-circle: no shared content |
