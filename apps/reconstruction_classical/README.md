@@ -18,6 +18,318 @@ The pipeline has two stages:
 Stage B uses Stage A only for a scene-bounding sphere; the networks see no
 reconstructed geometry as supervision.
 
+---
+
+## Stage A explained — from pixels to point cloud
+
+This section is a step-by-step walkthrough of how Stage A turns
+`N` calibrated RGB images into a dense colored point cloud. Mesh
+generation (Poisson) is described separately and is optional.
+
+### What Stage A is given, what it produces
+
+| Given | Produced |
+|---|---|
+| `intri.yml`, `extri.yml` — known camera intrinsics `K`, distortion `dist`, world-to-camera rotation `R`, translation `T` for every camera | `sparse.ply` — high-precision seed points (~thousands) |
+| `images/<cam>/000000.jpg` — one RGB image per camera | `depth/<cam>.npz` — per-view depth + confidence maps |
+| | `fused.ply` — dense oriented colored point cloud (millions of points) |
+
+**Crucially: no depth sensor.** Depth is *computed* from the multi-view
+RGB images using geometry. This is the central problem Stage A solves.
+
+### The pipeline at a glance
+
+```
+RGB images + known camera poses
+        │
+        ▼
+┌────────────────────────────────────────────┐
+│ STEP 1 — SPARSE                            │
+│   detect SIFT keypoints in each view       │
+│   match features across image pairs        │
+│   build multi-view tracks                  │
+│   triangulate -> 3D points (sparse.ply)    │
+└────────────────────────────────────────────┘
+        │     (used to estimate depth ranges)
+        ▼
+┌────────────────────────────────────────────┐
+│ STEP 2 — DENSE MVS (plane-sweep)           │
+│   for every reference view:                │
+│     pick neighboring source views          │
+│     for each candidate depth plane:        │
+│       warp source views onto reference     │
+│       measure photometric similarity (NCC) │
+│     pick the depth that matches best       │
+│   -> per-view depth + confidence maps      │
+└────────────────────────────────────────────┘
+        │
+        ▼
+┌────────────────────────────────────────────┐
+│ STEP 3 — FUSION                            │
+│   back-project every depth pixel to 3D     │
+│   keep only points confirmed by ≥K views   │
+│   -> raw colored point cloud               │
+└────────────────────────────────────────────┘
+        │
+        ▼
+┌────────────────────────────────────────────┐
+│ STEP 4 — CLEANUP                           │
+│   voxel downsample (uniform spacing)       │
+│   statistical outlier removal              │
+│   -> fused.ply                             │
+└────────────────────────────────────────────┘
+```
+
+---
+
+### Step 1 — Sparse reconstruction (SIFT tracks → 3D points)
+
+**Goal:** produce a small but very reliable set of 3D points. These are
+needed because Step 2 has to know roughly *where* the object is in depth
+in order to know which depth values to test.
+
+1. **SIFT detection.** Each image is downscaled (`--sparse_downscale 0.5`)
+   and run through OpenCV's SIFT detector. Each image yields tens of
+   thousands of (`x`, `y`, 128-d descriptor) keypoints. SIFT is chosen
+   because its descriptors are scale- and rotation-invariant, so they
+   match well even between cameras with very different viewpoints.
+
+2. **Pairwise matching with Lowe's ratio test.** For every pair of cameras
+   `(i, j)`, find each keypoint in `i`'s nearest two descriptors in `j`.
+   Keep the match only if the best is significantly better than the
+   second-best (`ratio = 0.75`). This eliminates ambiguous matches in
+   repetitive textures.
+
+3. **Epipolar filter (uses known calibration).** Because we already know
+   the camera poses, we know that any true match must lie on a specific
+   line in the other image (the *epipolar line*). We compute the
+   fundamental matrix `F_ij` between each pair from `K`, `R`, `T`, and
+   reject any match whose distance from its epipolar line exceeds 2 px.
+   This typically kills 30–50% of matches that survived the ratio test.
+
+4. **Track building.** A keypoint that appears in views 1, 4, 7 should be
+   merged into one *track*. Using union-find, we connect all pairwise
+   matches into multi-view tracks. Tracks shorter than 3 views are
+   discarded.
+
+5. **Multi-view triangulation (DLT).** Each track of `m` 2D observations
+   is triangulated to one 3D point by stacking projection equations and
+   solving via SVD. Points that reproject with error > 2.5 px in any
+   view, or that lie behind any camera, are dropped.
+
+**Output:** `sparse.ply`, typically 1k–5k points. In your `cow_1/10465`
+run: 3 633 points with median reprojection error 1.09 px.
+
+---
+
+### Step 2 — Dense MVS via plane-sweep stereo
+
+This is the heart of the pipeline and where depth is actually estimated
+from RGB. The algorithm dates back to **Collins, CVPR 1996** (*"A
+Space-Sweep Approach to True Multi-Image Matching"*).
+
+**Setup.** For each *reference* view we want a depth map. We pick a small
+set of *source* views (other cameras) that look at roughly the same part
+of the scene. The depth map records, for each pixel, the distance from
+the camera at which the scene surface lies.
+
+#### 2a. Pick source views
+
+For each reference camera, we score every other camera by:
+
+* **Baseline angle** between the optical axes — must be between **5°** and
+  **45°**. Too small ⇒ no depth signal. Too large ⇒ surfaces self-occlude
+  and the photometric match fails.
+* **Forward-axis similarity** — cameras pointing the same way see the
+  same surfaces.
+
+Up to `--max_sources` (default 4) best-scoring sources are kept. In your
+half-circle rig, end-of-arc cameras (cam 11) might only get 3 sources
+instead of 4 because there are no cameras "to the right" of them.
+
+#### 2b. Estimate the depth search range
+
+For the reference view, we project the sparse cloud (Step 1) into it and
+take the 2nd–98th percentile of those depths, then pad slightly. This
+gives e.g. depth range `[3.60 m, 6.60 m]` for cam 01 in your run. We
+discretize this range into `--n_depths` (default 128) candidate depth
+*planes*, **uniformly in inverse depth `1/d`**. (Inverse depth is the
+right parameterization because errors in pixel triangulation grow with
+depth, so we want finer sampling near the camera and coarser sampling
+far away.)
+
+#### 2c. The plane-sweep loop (this is the key step)
+
+For each candidate depth `d`:
+
+1. **Hypothesize a fronto-parallel plane** at distance `d` in front of
+   the reference camera.
+2. **Compute the homography** `H_ref→src` that maps the reference image
+   to each source image *under the assumption that all reference pixels
+   sit on this plane*.
+   
+   $$H = K_{src} \big( R_{src} R_{ref}^T - \tfrac{1}{d} (R_{src} R_{ref}^T \, c_{ref} - c_{src}) \, n^T \big) K_{ref}^{-1}$$
+   
+   where `c` is the camera center and `n` is the plane normal.
+3. **Warp each source image** through `H` so it is now in the reference
+   coordinate frame *as if the world were the plane at depth `d`*.
+4. **Compare warped source patches to the reference patch** using
+   **Zero-mean Normalized Cross-Correlation (ZNCC)** over a 7×7 window
+   (`--ncc_ksize 7`). ZNCC is invariant to additive brightness and
+   multiplicative contrast changes, so it tolerates exposure
+   differences between cameras.
+5. **Aggregate across source views** — `--aggregate top2` averages the 2
+   best ZNCC scores per pixel (robust to occluded sources). `mean`
+   averages all sources.
+6. **Cost** for this depth = `1 − ZNCC`.
+
+After sweeping all 128 planes, each pixel has a 1×128 cost curve. The
+**best depth** is the plane with the lowest cost.
+
+#### 2d. Confidence and rejection
+
+A depth is only trustworthy if its cost curve is **peaky** (one clear
+winner). We compute confidence as
+
+```
+confidence = (mean_cost − best_cost) / mean_cost
+```
+
+Pixels are rejected if:
+
+* Confidence < `--min_conf` (default 0.25) — the cost curve is flat,
+  the algorithm couldn't decide.
+* Reference patch variance < `--texture_var_thr` (default 2.0) — a
+  blank wall has no information to match.
+
+Surviving depths are smoothed with a **median filter** (kills isolated
+spikes) and a **joint bilateral filter** that uses the RGB image as a
+guide, so depth edges align with image edges.
+
+**Why this works at all.** If your camera poses and intrinsics are
+correct, then a 3D point on the true surface reprojects to consistent
+locations in all source views — so warped patches *agree*. A wrong depth
+hypothesis warps source pixels from non-corresponding scene points, which
+look different, so ZNCC is low.
+
+**Output:** for each camera, `depth/<cam>.npz` containing a depth map
+(meters) and a confidence map ([0,1]). E.g. cam 03 in your run produced
+85.6% valid depth pixels with mean confidence 0.565.
+
+---
+
+### Step 3 — Fusion via cross-view consistency
+
+A single depth map has plenty of errors (textureless regions, occluded
+patches, soft shadows). Fusion uses **multiple depth maps to vote**.
+
+For each pixel `(u, v)` in each camera with valid depth `d`:
+
+1. **Back-project** `(u, v, d)` to a 3D world point `X`.
+2. **For every other camera `j`**, project `X` into its image. If the
+   projection lands inside camera `j`'s depth map and the depth there
+   agrees with the depth implied by `X` (within `--rel_tol 0.02`, i.e.
+   2% relative), this is a *consistent observation*.
+3. **Keep the point** only if it has at least `--min_consistent` (default
+   2) consistent observations in other cameras.
+
+The 3D point is colored from the reference image and gets a normal
+estimated from local depth gradients.
+
+This is the single most important filter in Stage A. A real surface point
+agrees across views; an MVS hallucination does not.
+
+**Output:** raw fused cloud, e.g. 2.66 M points in your run.
+
+---
+
+### Step 4 — Cleanup
+
+Two cheap operations remove redundancy and noise:
+
+1. **Voxel downsample** at `--voxel_size 0.01` m (1 cm). Multiple points
+   inside one voxel are merged into a single averaged point. This keeps
+   density uniform and the file size manageable. (2.66 M → 2.08 M in
+   your run.)
+2. **Statistical outlier removal.** For each point, find the 16 nearest
+   neighbors and compute the mean distance. Points whose mean distance is
+   more than 2 standard deviations above the population mean are
+   isolated outliers and get dropped. (2.08 M → 2.00 M in your run.)
+
+**Final output:** `fused.ply`, an oriented colored point cloud in the
+world frame defined by `extri.yml`.
+
+---
+
+## Is depth-from-pixels reliable? (classical vs learning-based)
+
+You asked whether estimating depth from pixels alone is trustworthy, and
+whether learning-based depth would be more accurate. Honest answer:
+
+### What classical MVS (our pipeline) is good at
+
+* **Pixel-accurate when textures and viewpoints are favorable.** On
+  textured surfaces seen by 3+ cameras with good baselines, ZNCC plane-
+  sweep delivers depth accurate to a fraction of a pixel — often better
+  than learning-based methods because it uses *exact geometry* (the
+  homography), not a learned prior.
+* **No training data needed.** Works on any scene out of the box.
+* **Failure modes are predictable:** textureless regions, repetitive
+  patterns, specular highlights, occluded boundaries. The confidence
+  map tells you *where* it failed.
+* **Self-consistent with calibration.** If your poses are good, the
+  geometry just works. If your poses are bad, no algorithm rescues you.
+
+### Where learning-based depth wins
+
+* **Textureless surfaces.** A painted white wall has *zero* photometric
+  signal across views, so plane-sweep can't tell 2 m from 5 m. A
+  learned monocular depth network like **Depth Anything**, **MiDaS**,
+  or **Marigold** uses *semantic* cues (perspective, shading, object
+  shape priors) and produces something plausible.
+* **Single-view robustness.** Monocular depth needs only one image; MVS
+  needs ≥ 2 with sufficient baseline.
+* **Speed at scale.** A trained network is one forward pass per image;
+  plane-sweep is `O(N · D · H · W)` per reference.
+
+### Where learning-based depth loses
+
+* **Scale ambiguity.** Monocular depth is up to an unknown scale + shift
+  per image. To use it for 3D reconstruction across multiple cameras,
+  you must align depths to your *known* metric scale, which itself
+  needs MVS or sparse triangulation as anchors.
+* **Geometric inconsistency.** Different views of the same surface can
+  predict slightly different depths because the network has no
+  cross-view constraint. Fusing them naively produces fuzzy clouds.
+* **Texture biases.** Networks trained on indoor/outdoor benchmarks may
+  not generalize to your domain (e.g. cattle in a barn).
+* **Black-box failure.** When it's wrong, you don't know why.
+
+### State-of-the-art combines both
+
+Modern systems like **MVSFormer**, **GeoMVS**, or **DUSt3R** use a
+neural network to *initialize and regularize* depth, then enforce
+multi-view photometric and geometric constraints (essentially a
+learned plane-sweep). They are more accurate than either pure approach
+on hard data — but require GPU, training data, and become opaque.
+
+### Practical guidance for your cow scene
+
+* Your subject (cow + barn floor) is **moderately textured** — fur,
+  hay, equipment. Classical plane-sweep should work *for the cow*.
+* Background and uniform surfaces will be noisy. The cleanup is best
+  done by **masking the object** rather than by depth refinement.
+* If you want to try learning-based depth as a comparison, the cleanest
+  experiment is to run **Depth Anything V2** per-view, scale-align to
+  the sparse cloud, and fuse with the same Step 3/4 logic. Then visually
+  diff against `fused.ply`.
+
+In summary: **pixel-based depth is reliable on textured surfaces with
+known accurate poses**, which is exactly your setup. The current
+limitations of `fused.ply` are not the depth algorithm itself — they are
+(a) lack of object-vs-background segmentation, and (b) cameras 02/05/11
+having too few good source views due to the half-circle geometry.
+
 ## GPU requirements
 
 | Stage | GPU required? | Notes |
