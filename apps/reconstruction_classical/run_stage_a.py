@@ -132,7 +132,7 @@ def main() -> None:
     cams = load_cameras(intri, extri)
     print(f"[init] loaded {len(cams)} cameras from {data_root}")
 
-    # -------- Sparse step (on a moderately-downscaled copy) ------------------
+    # -------- Sparse step (native resolution by default) ---------------------
     sparse_ply = out_dir / "sparse.ply"
     sparse_points: np.ndarray
     if args.skip_sparse and sparse_ply.exists():

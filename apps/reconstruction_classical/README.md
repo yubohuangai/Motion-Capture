@@ -88,11 +88,13 @@ RGB images + known camera poses
 needed because Step 2 has to know roughly *where* the object is in depth
 in order to know which depth values to test.
 
-1. **SIFT detection.** Each image is downscaled (`--sparse_downscale 0.5`)
-   and run through OpenCV's SIFT detector. Each image yields tens of
-   thousands of (`x`, `y`, 128-d descriptor) keypoints. SIFT is chosen
-   because its descriptors are scale- and rotation-invariant, so they
-   match well even between cameras with very different viewpoints.
+1. **SIFT detection.** Each image is fed at native resolution
+   (`--sparse_downscale 1.0`, the default) into OpenCV's SIFT detector.
+   Each image yields tens of thousands of (`x`, `y`, 128-d descriptor)
+   keypoints. SIFT is chosen because its descriptors are scale- and
+   rotation-invariant, so they match well even between cameras with
+   very different viewpoints. Pass `--sparse_downscale 0.5` if you
+   want the older fast-but-less-accurate behavior.
 
 2. **Pairwise matching with Lowe's ratio test.** For every pair of cameras
    `(i, j)`, find each keypoint in `i`'s nearest two descriptors in `j`.
