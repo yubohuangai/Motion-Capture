@@ -90,10 +90,14 @@ in order to know which depth values to test.
 
 1. **SIFT detection.** Each image is fed at native resolution
    (`--sparse_downscale 1.0`, the default) into OpenCV's SIFT detector
-   with `contrastThreshold=0.02`. SIFT is chosen because its descriptors
-   are scale- and rotation-invariant, so they match well even between
-   cameras with very different viewpoints. Pass `--sparse_downscale 0.5`
-   if you want the older fast-but-less-accurate behavior.
+   with `contrastThreshold=0.02`. **SIFT** stands for *Scale-Invariant
+   Feature Transform* (Lowe, IJCV 2004) — for each detected keypoint
+   it produces a 128-dimensional descriptor that is invariant to image
+   scale and in-plane rotation, and robust to moderate changes in
+   viewpoint and illumination. That invariance is exactly why the same
+   physical point on the cow can be matched between cameras that see it
+   from very different angles. Pass `--sparse_downscale 0.5` if you
+   want the older fast-but-less-accurate behavior.
 
    On `cow_1/10465` at native resolution this yields **130k–260k
    keypoints per image** (e.g. cam 02 = 132k, cam 09 = 261k). The middle
