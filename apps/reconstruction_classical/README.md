@@ -89,38 +89,57 @@ needed because Step 2 has to know roughly *where* the object is in depth
 in order to know which depth values to test.
 
 1. **SIFT detection.** Each image is fed at native resolution
-   (`--sparse_downscale 1.0`, the default) into OpenCV's SIFT detector.
-   Each image yields tens of thousands of (`x`, `y`, 128-d descriptor)
-   keypoints. SIFT is chosen because its descriptors are scale- and
-   rotation-invariant, so they match well even between cameras with
-   very different viewpoints. Pass `--sparse_downscale 0.5` if you
-   want the older fast-but-less-accurate behavior.
+   (`--sparse_downscale 1.0`, the default) into OpenCV's SIFT detector
+   with `contrastThreshold=0.02`. SIFT is chosen because its descriptors
+   are scale- and rotation-invariant, so they match well even between
+   cameras with very different viewpoints. Pass `--sparse_downscale 0.5`
+   if you want the older fast-but-less-accurate behavior.
+
+   On `cow_1/10465` at native resolution this yields **130k–260k
+   keypoints per image** (e.g. cam 02 = 132k, cam 09 = 261k). The middle
+   cameras (07–10) get the most because they have the most cow visible.
 
 2. **Pairwise matching with Lowe's ratio test.** For every pair of cameras
    `(i, j)`, find each keypoint in `i`'s nearest two descriptors in `j`.
    Keep the match only if the best is significantly better than the
    second-best (`ratio = 0.75`). This eliminates ambiguous matches in
-   repetitive textures.
+   repetitive textures (cow fur in particular has many self-similar
+   patches).
 
 3. **Epipolar filter (uses known calibration).** Because we already know
    the camera poses, we know that any true match must lie on a specific
    line in the other image (the *epipolar line*). We compute the
    fundamental matrix `F_ij` between each pair from `K`, `R`, `T`, and
    reject any match whose distance from its epipolar line exceeds 2 px.
-   This typically kills 30–50% of matches that survived the ratio test.
+
+   On `cow_1/10465` this kept **44 733 matches in total** across all 55
+   pairs. Looking at the per-pair counts is very informative for
+   diagnosing the rig:
+
+   | pair | raw → kept | what it tells you |
+   |---|---|---|
+   | `07-08` | 9 734 → **8 694** | adjacent middle-arc cams: huge overlap |
+   | `03-04` | 8 154 → 4 768 | adjacent on the left side: also rich |
+   | `01-07` | 6 184 → 5 457 | cam 01 sees the same surface as 07 |
+   | `02-07` | 110 → **0** | opposite ends of the half-circle: no shared content |
+   | `02-11` | 105 → **1** | same — confirms the rig is an arc, not a ring |
+   | `01-06` | 732 → **347** | cam 01 should be *between* 6 and 7, but it matches 07 ~16× more strongly than 06 — likely a residual calibration error on cam 01 or 06 |
 
 4. **Track building.** A keypoint that appears in views 1, 4, 7 should be
    merged into one *track*. Using union-find, we connect all pairwise
    matches into multi-view tracks. Tracks shorter than 3 views are
-   discarded.
+   discarded. Run produced **6 636 candidate tracks** with ≥3 views.
 
 5. **Multi-view triangulation (DLT).** Each track of `m` 2D observations
    is triangulated to one 3D point by stacking projection equations and
    solving via SVD. Points that reproject with error > 2.5 px in any
-   view, or that lie behind any camera, are dropped.
+   view, or that lie behind any camera, are dropped. **5 665 / 6 636**
+   tracks survived (≈85% keep rate).
 
-**Output:** `sparse.ply`, typically 1k–5k points. In your `cow_1/10465`
-run: 3 633 points with median reprojection error 1.09 px.
+**Output:** `sparse.ply`, 5 665 points with median reprojection error
+**1.67 px** (max 2.50 px). End-to-end runtime on a CPU: **~15 min** for
+11 native-resolution images. The bulk of that is SIFT extraction +
+all-pairs matching — both scale roughly with `n_pixels` and `N²`.
 
 ---
 
