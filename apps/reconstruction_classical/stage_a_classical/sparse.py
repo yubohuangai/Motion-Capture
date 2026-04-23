@@ -60,19 +60,31 @@ class Track:
 def detect_sift(views: Dict[str, np.ndarray],
                 max_features: int = 0,
                 contrast_threshold: float = 0.02,
+                masks: Optional[Dict[str, np.ndarray]] = None,
                 ) -> Dict[str, ViewFeatures]:
     """Detect SIFT features in every view.
 
     Parameters
     ----------
     max_features : 0 for "no cap" (OpenCV SIFT default).
+    masks : optional ``cam_name -> uint8 (H,W)`` foreground mask. Where
+        present, SIFT keypoints are detected only on ``mask>0`` pixels.
+        Cameras missing from the dict use the whole image (no masking).
     """
     sift = cv2.SIFT_create(nfeatures=max_features,
                            contrastThreshold=contrast_threshold)
     out: Dict[str, ViewFeatures] = {}
     for name, img in views.items():
         gray = to_gray(img)
-        kps, desc = sift.detectAndCompute(gray, None)
+        m = None
+        if masks is not None and name in masks:
+            m = masks[name]
+            if m.shape[:2] != gray.shape[:2]:
+                m = cv2.resize(m, (gray.shape[1], gray.shape[0]),
+                               interpolation=cv2.INTER_NEAREST)
+            # OpenCV expects uint8 with non-zero meaning "detect here"
+            m = (m > 0).astype(np.uint8) * 255
+        kps, desc = sift.detectAndCompute(gray, m)
         if desc is None:
             kps = []; desc = np.zeros((0, 128), dtype=np.float32)
         pts = np.array([kp.pt for kp in kps], dtype=np.float32) if len(kps) else np.zeros((0, 2), np.float32)
@@ -299,16 +311,23 @@ def sparse_reconstruct(views: Dict[str, np.ndarray],
                        max_epi_px: float = 2.0,
                        max_reproj_err: float = 2.0,
                        min_views: int = 3,
+                       masks: Optional[Dict[str, np.ndarray]] = None,
                        verbose: bool = True,
                        ) -> Tuple[List[Track], Dict[str, ViewFeatures],
                                   Dict[Tuple[str, str], np.ndarray]]:
     """Run the whole sparse pipeline end to end.
 
+    ``masks`` (optional): cam_name -> uint8 (H,W) foreground mask. Keypoints
+    are only detected within the masked region for cameras present in this
+    dict; cameras missing from the dict use the whole image.
+
     Returns (tracks, features, pairwise_matches).
     """
     if verbose:
-        print(f"[sparse] detecting SIFT on {len(views)} views ...")
-    features = detect_sift(views)
+        n_masked = 0 if masks is None else len(masks)
+        print(f"[sparse] detecting SIFT on {len(views)} views "
+              f"({n_masked} with foreground masks) ...")
+    features = detect_sift(views, masks=masks)
     if verbose:
         for n, f in features.items():
             print(f"  [{n}] {len(f)} keypoints")

@@ -38,7 +38,7 @@ import cv2
 import numpy as np
 
 from apps.reconstruction_classical.common.cameras import load_cameras
-from apps.reconstruction_classical.common.images import load_views
+from apps.reconstruction_classical.common.images import load_views, load_masks
 from apps.reconstruction_classical.common.io_utils import (
     ensure_dir, timed, write_ply_points,
 )
@@ -120,6 +120,8 @@ def main() -> None:
     p.add_argument("--skip_mesh", action="store_true")
     p.add_argument("--only_sparse", action="store_true",
                    help="run sparse step only; skip MVS, fusion, mesh")
+    p.add_argument("--no_masks", action="store_true",
+                   help="ignore <data_root>/masks/ even if present")
     args = p.parse_args()
 
     data_root = Path(args.data_root)
@@ -144,10 +146,22 @@ def main() -> None:
     else:
         sparse_views, sparse_cams = load_views(data_root, cams, frame=args.frame,
                                                downscale=args.sparse_downscale)
+        sparse_masks = None
+        if not args.no_masks:
+            target_hw = {n: v.shape[:2] for n, v in sparse_views.items()}
+            sparse_masks = load_masks(data_root, sparse_cams.keys(),
+                                      frame=args.frame, target_hw=target_hw)
+            if sparse_masks:
+                print(f"[sparse] using foreground masks for "
+                      f"{len(sparse_masks)}/{len(sparse_cams)} cameras")
+            else:
+                print(f"[sparse] no masks/ directory found under {data_root}; "
+                      f"running on full images")
         with timed("sparse"):
             tracks, _feats, _pairs = sparse_reconstruct(
                 sparse_views, sparse_cams,
-                ratio=0.75, max_epi_px=2.0, max_reproj_err=2.5, min_views=3)
+                ratio=0.75, max_epi_px=2.0, max_reproj_err=2.5, min_views=3,
+                masks=sparse_masks)
         if not tracks:
             raise RuntimeError("sparse step produced zero tracks; aborting")
         pts, col = tracks_to_point_cloud(tracks)

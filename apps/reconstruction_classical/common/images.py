@@ -27,6 +27,47 @@ def imread(path: str | Path) -> np.ndarray:
     return img
 
 
+def load_masks(data_root: str | Path,
+               cam_names: Iterable[str],
+               frame: int = 0,
+               target_hw: Optional[Dict[str, Tuple[int, int]]] = None,
+               ) -> Dict[str, np.ndarray]:
+    """Load binary foreground masks (uint8, 0/255) if they exist.
+
+    Looks for ``<data_root>/masks/<cam>/<frame:06d>.png``. If a mask is
+    missing for a given camera, that key is omitted from the result (the
+    caller should treat "no mask" as "use the whole image").
+
+    If ``target_hw[cam]`` is given, the mask is resized (NEAREST) to match.
+    """
+    data_root = Path(data_root)
+    if data_root.name == "images":
+        data_root = data_root.parent
+    masks_root = data_root / "masks"
+    out: Dict[str, np.ndarray] = {}
+    if not masks_root.is_dir():
+        return out
+    for name in cam_names:
+        cand = masks_root / name / f"{frame:06d}.png"
+        if not cand.exists():
+            files = sorted((masks_root / name).glob("*.png"))
+            files = [f for f in files if not f.name.endswith("_overlay.jpg")]
+            if not files:
+                continue
+            cand = files[frame] if frame < len(files) else files[0]
+        m = cv2.imread(str(cand), cv2.IMREAD_GRAYSCALE)
+        if m is None:
+            continue
+        if target_hw is not None and name in target_hw:
+            H, W = target_hw[name]
+            if m.shape[:2] != (H, W):
+                m = cv2.resize(m, (W, H), interpolation=cv2.INTER_NEAREST)
+        # ensure strict 0/255
+        m = ((m > 127).astype(np.uint8)) * 255
+        out[name] = m
+    return out
+
+
 def load_views(images_root: str | Path,
                cams: Dict[str, Camera],
                frame: int = 0,
