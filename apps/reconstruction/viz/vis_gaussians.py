@@ -2,7 +2,7 @@
 Visualize a 3D Gaussian Splatting .ply point cloud using Open3D.
 
 Usage:
-    python apps/reconstruction_classical/viz/vis_gaussians.py /path/to/point_cloud.ply
+    python apps/reconstruction/viz/vis_gaussians.py /path/to/point_cloud.ply
 """
 
 import argparse

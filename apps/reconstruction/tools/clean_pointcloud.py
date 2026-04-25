@@ -5,8 +5,8 @@ Reads a .ply point cloud (e.g. COLMAP dense/fused.ply) and writes a cleaned
 version ready for surface reconstruction.
 
 Usage:
-    python apps/reconstruction_classical/tools/clean_pointcloud.py /path/to/data
-    python apps/reconstruction_classical/tools/clean_pointcloud.py /path/to/fused.ply
+    python apps/reconstruction/tools/clean_pointcloud.py /path/to/data
+    python apps/reconstruction/tools/clean_pointcloud.py /path/to/fused.ply
     # If given a directory, looks for colmap_ws/dense/fused.ply.
     # Writes cleaned.ply next to the input by default.
 
@@ -268,7 +268,7 @@ def main():
     print(f'  Has colors:  {pcd.has_colors()}')
     print(f'{"="*60}')
     print(f'\nNext step:')
-    print(f'  python apps/reconstruction_classical/tools/pointcloud_to_mesh.py {out_path}')
+    print(f'  python apps/reconstruction/tools/pointcloud_to_mesh.py {out_path}')
 
 
 if __name__ == '__main__':

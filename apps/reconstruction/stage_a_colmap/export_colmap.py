@@ -13,7 +13,7 @@ multi-view reconstruction frameworks can ingest directly:
         └── points3D.bin (+ points3D.txt)
 
 Usage:
-    python apps/reconstruction_classical/stage_a_colmap/export_colmap.py /path/to/data
+    python apps/reconstruction/stage_a_colmap/export_colmap.py /path/to/data
     # Default: -o <data>/colmap_ws, --frame 0, --undistort, --mask masks,
     #          --triangulate, --gpu. Override with --no-undistort, --no-mask,
     #          --no-triangulate, --no-gpu, or explicit -o.

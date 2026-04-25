@@ -11,17 +11,17 @@ Prerequisites:
 
 Usage:
     # Single frame
-    python apps/reconstruction_classical/stage_b_3dgs/run_3dgs.py /path/to/data \\
+    python apps/reconstruction/stage_b_3dgs/run_3dgs.py /path/to/data \\
         --frame 0 --output /path/to/recon \\
         --gs_repo /path/to/gaussian-splatting
 
     # Batch over frames 0-99
-    python apps/reconstruction_classical/stage_b_3dgs/run_3dgs.py /path/to/data \\
+    python apps/reconstruction/stage_b_3dgs/run_3dgs.py /path/to/data \\
         --frame_start 0 --frame_end 100 --output /path/to/recon \\
         --gs_repo /path/to/gaussian-splatting
 
     # With masks and undistortion
-    python apps/reconstruction_classical/stage_b_3dgs/run_3dgs.py /path/to/data \\
+    python apps/reconstruction/stage_b_3dgs/run_3dgs.py /path/to/data \\
         --frame 0 --output /path/to/recon --undistort --mask masks \\
         --gs_repo /path/to/gaussian-splatting
 """

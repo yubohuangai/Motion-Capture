@@ -2,9 +2,9 @@
 Visualize a COLMAP sparse model: triangulated 3D points + camera frustums.
 
 Usage:
-    python apps/reconstruction_classical/viz/vis_colmap_sparse.py /path/to/colmap_ws
-    python apps/reconstruction_classical/viz/vis_colmap_sparse.py /path/to/colmap_ws/sparse/0
-    python apps/reconstruction_classical/viz/vis_colmap_sparse.py /path/to/colmap_ws --images_dir /path/to/colmap_ws/images
+    python apps/reconstruction/viz/vis_colmap_sparse.py /path/to/colmap_ws
+    python apps/reconstruction/viz/vis_colmap_sparse.py /path/to/colmap_ws/sparse/0
+    python apps/reconstruction/viz/vis_colmap_sparse.py /path/to/colmap_ws --images_dir /path/to/colmap_ws/images
 """
 
 import argparse

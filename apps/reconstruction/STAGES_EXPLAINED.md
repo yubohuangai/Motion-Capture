@@ -1,6 +1,6 @@
 # Reconstruction Classical — Stage A & Stage B Explained
 
-A detailed walk-through of what the two stages of `apps/reconstruction_classical/` actually do, what knobs control them, and why they can produce garbage.
+A detailed walk-through of what the two stages of `apps/reconstruction/` actually do, what knobs control them, and why they can produce garbage.
 
 ---
 

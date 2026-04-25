@@ -12,7 +12,7 @@ the codebase). The fused dense cloud lands at
 
 Usage
 -----
-    python -m apps.reconstruction_classical.stage_a_colmap.run_stage_a_colmap \
+    python -m apps.reconstruction.stage_a_colmap.run_stage_a_colmap \
         /path/to/data --frame 0 --neighbor 6
 
 Requires the ``colmap`` binary on ``$PATH`` (``--colmap`` to override) and

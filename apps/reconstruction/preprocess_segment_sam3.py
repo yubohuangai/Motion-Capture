@@ -2,7 +2,7 @@
 
 Usage
 -----
-    python -m apps.reconstruction_classical.preprocess_segment_sam3 \
+    python -m apps.reconstruction.preprocess_segment_sam3 \
         /Users/yubo/data/cow_1/10465 \
         --prompt "cattle or cow" \
         --frame 0 \

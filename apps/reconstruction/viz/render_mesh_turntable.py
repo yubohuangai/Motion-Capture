@@ -5,7 +5,7 @@ On macOS, Filament OffscreenRenderer (EGL headless) is unavailable; this script
 tries CPU offscreen first, then falls back to Visualizer + screen capture.
 
 Usage:
-    python apps/reconstruction_classical/viz/render_mesh_turntable.py \\
+    python apps/reconstruction/viz/render_mesh_turntable.py \\
         /path/to/mesh.ply -o /path/to/turntable.mp4
 
 Requires: open3d, numpy; for MP4: imageio + imageio-ffmpeg (or save PNGs + ffmpeg).

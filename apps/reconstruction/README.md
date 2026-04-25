@@ -428,7 +428,7 @@ become real newlines. Writing to a script sidesteps this:
 ```bash
 cat > /tmp/run_neus.sh << 'EOF'
 cd /path/to/Motion-Capture
-python -m apps.reconstruction_classical.run_stage_b \
+python -m apps.reconstruction.run_stage_b \
   <data_root> \
   --n_iters 100000 \
   --batch_rays 512 \
@@ -444,7 +444,7 @@ For end-to-end validation at low cost, reduce iterations / samples /
 mesh resolution rather than image resolution:
 
 ```bash
-python -m apps.reconstruction_classical.run_stage_b <data_root> \
+python -m apps.reconstruction.run_stage_b <data_root> \
   --n_iters 2000 --batch_rays 256 \
   --n_samples 32 --n_importance 32 \
   --val_every 500 --ckpt_every 1000 \
@@ -457,7 +457,7 @@ within 1k iters) and `neus/val/` for re-rendered views.
 ### Full Stage B run (~1–3 hours on GPU)
 
 ```bash
-python -m apps.reconstruction_classical.run_stage_b <data_root> \
+python -m apps.reconstruction.run_stage_b <data_root> \
   --n_iters 100000 --batch_rays 512 \
   --mesh_resolution 256 --device auto
 ```
@@ -468,14 +468,14 @@ On A100/H100, raise `--batch_rays 1024` or `2048` for faster convergence.
 Resume a stopped run:
 
 ```bash
-python -m apps.reconstruction_classical.run_stage_b <data_root> \
+python -m apps.reconstruction.run_stage_b <data_root> \
   --resume_from <data_root>_output/neus/ckpt/final.pt
 ```
 
 Re-extract the mesh from a finished checkpoint without retraining:
 
 ```bash
-python -m apps.reconstruction_classical.run_stage_b <data_root> \
+python -m apps.reconstruction.run_stage_b <data_root> \
   --only_mesh --mesh_resolution 256 --device auto
 ```
 
@@ -484,7 +484,7 @@ python -m apps.reconstruction_classical.run_stage_b <data_root> \
 No GPU needed. ~35–40 min at native 4K (11 cameras, 128 depth planes).
 
 ```bash
-python -m apps.reconstruction_classical.run_stage_a <data_root>
+python -m apps.reconstruction.run_stage_a <data_root>
 ```
 
 #### Narval / SLURM template (CPU-only)
@@ -506,7 +506,7 @@ virtualenv --no-download "$SLURM_TMPDIR/env"
 source "$SLURM_TMPDIR/env/bin/activate"
 pip install --no-index numpy scipy tqdm pyyaml open3d
 
-python -m apps.reconstruction_classical.run_stage_a /scratch/yubo/cow_1/10465
+python -m apps.reconstruction.run_stage_a /scratch/yubo/cow_1/10465
 # outputs to /scratch/yubo/cow_1/10465_output/
 ```
 
@@ -530,7 +530,7 @@ virtualenv --no-download "$SLURM_TMPDIR/env"
 source "$SLURM_TMPDIR/env/bin/activate"
 pip install --no-index numpy scipy tqdm pyyaml tabulate termcolor
 
-python -m apps.reconstruction_classical.stage_a_colmap.run_stage_a_colmap \
+python -m apps.reconstruction.stage_a_colmap.run_stage_a_colmap \
   /scratch/yubo/cow_1/10465 --neighbor 6
 # outputs to /scratch/yubo/cow_1/10465_output/colmap_ws/
 # dense cloud at /scratch/yubo/cow_1/10465_output/colmap_ws/dense/fused.ply
@@ -609,7 +609,7 @@ full scene including background. Filter by opacity in
 Skips Stage A automatically if `sparse.ply` and `fused.ply` already exist.
 
 ```bash
-python -m apps.reconstruction_classical.run_pipeline <data_root> \
+python -m apps.reconstruction.run_pipeline <data_root> \
   --neus_iters 100000 --device auto
 ```
 
@@ -677,7 +677,7 @@ Stage A fused cloud or mesh.
 ## Package layout
 
 ```
-apps/reconstruction_classical/
+apps/reconstruction/
   common/
     cameras.py            # Camera dataclass, load_cameras, geometry helpers
     images.py             # imread, load_views, undistort_view

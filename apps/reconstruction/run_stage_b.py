@@ -2,7 +2,7 @@
 
 Usage
 -----
-    python -m apps.reconstruction_classical.run_stage_b <data_root> \
+    python -m apps.reconstruction.run_stage_b <data_root> \
         --n_iters 100000 --batch_rays 512 --device cuda
 
 By default Stage A is read from ``<data_root>_output`` and Stage B writes
@@ -31,14 +31,14 @@ from typing import Tuple
 import numpy as np
 import torch
 
-from apps.reconstruction_classical.common.cameras import load_cameras
-from apps.reconstruction_classical.common.io_utils import ensure_dir
-from apps.reconstruction_classical.run_stage_a import _read_ply_points
-from apps.reconstruction_classical.stage_b_neus.dataset import (
+from apps.reconstruction.common.cameras import load_cameras
+from apps.reconstruction.common.io_utils import ensure_dir
+from apps.reconstruction.run_stage_a import _read_ply_points
+from apps.reconstruction.stage_b_neus.dataset import (
     NeuSDataset, scene_bounds_from_cameras, scene_bounds_from_points,
 )
-from apps.reconstruction_classical.stage_b_neus.extract_mesh import extract_mesh
-from apps.reconstruction_classical.stage_b_neus.train import TrainConfig, train
+from apps.reconstruction.stage_b_neus.extract_mesh import extract_mesh
+from apps.reconstruction.stage_b_neus.train import TrainConfig, train
 
 
 def _pick_device(req: str) -> torch.device:
@@ -136,10 +136,10 @@ def main() -> None:
 
     # -- Train --------------------------------------------------------------
     if args.only_mesh:
-        from apps.reconstruction_classical.stage_b_neus.models import (
+        from apps.reconstruction.stage_b_neus.models import (
             ColorNetwork, SDFNetwork, SingleVariance,
         )
-        from apps.reconstruction_classical.stage_b_neus.train import load_checkpoint
+        from apps.reconstruction.stage_b_neus.train import load_checkpoint
         sdf_net = SDFNetwork().to(device)
         color_net = ColorNetwork().to(device)
         variance = SingleVariance(init_val=0.3).to(device)

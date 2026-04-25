@@ -6,7 +6,7 @@ to a final NeuS mesh, without caring about the intermediate knobs.
 
 Usage
 -----
-    python -m apps.reconstruction_classical.run_pipeline <data_root> \
+    python -m apps.reconstruction.run_pipeline <data_root> \
         --neus_iters 100000 --device cuda
 
 By default outputs go to ``<data_root>_output`` (Stage A) and
@@ -69,7 +69,7 @@ def main() -> None:
     need_stage_a = not args.skip_stage_a and (args.rerun_stage_a or not (have_sparse and have_fused))
     if need_stage_a:
         cmd_a = [
-            sys.executable, "-m", "apps.reconstruction_classical.run_stage_a",
+            sys.executable, "-m", "apps.reconstruction.run_stage_a",
             str(args.data_root),
             "--output", str(out_a),
             "--frame", str(args.frame),
@@ -85,7 +85,7 @@ def main() -> None:
     # ----- Stage B ----------------------------------------------------------
     if not args.skip_stage_b:
         cmd_b = [
-            sys.executable, "-m", "apps.reconstruction_classical.run_stage_b",
+            sys.executable, "-m", "apps.reconstruction.run_stage_b",
             str(args.data_root),
             "--stage_a_output", str(out_a),
             "--output", str(out_b),

@@ -13,8 +13,8 @@ Pipeline:
     5. stereo_fusion      (fuse into dense point cloud)
 
 Usage:
-    python apps/reconstruction_classical/stage_a_colmap/dense_reconstruct.py /path/to/colmap_ws
-    python apps/reconstruction_classical/stage_a_colmap/dense_reconstruct.py /path/to/data
+    python apps/reconstruction/stage_a_colmap/dense_reconstruct.py /path/to/colmap_ws
+    python apps/reconstruction/stage_a_colmap/dense_reconstruct.py /path/to/data
     # If given a data root, auto-resolves to <data>/colmap_ws.
     # Masks applied by default; disable with --no-mask.
 """
@@ -315,7 +315,7 @@ def main():
     print(f'{"="*60}')
     print(f'\nNext steps:')
     print(f'  # Visualize (headful machine):')
-    print(f'  python apps/reconstruction_classical/viz/vis_colmap_sparse.py {ws}  # sparse')
+    print(f'  python apps/reconstruction/viz/vis_colmap_sparse.py {ws}  # sparse')
     print(f'  python -c "import open3d as o3d; '
           f'pcd=o3d.io.read_point_cloud(\'{fused_path}\'); '
           f'print(f\\"{{len(pcd.points):,}} points\\"); '
