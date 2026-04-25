@@ -18,7 +18,7 @@ Notes
 * SAM 3 requires Python 3.12+, PyTorch 2.7+, CUDA 12.6+. It does NOT run on
   macOS / MPS. Run this on the cluster (or any CUDA box) before running
   ``run_stage_a.py`` if you want masked sparse reconstruction.
-* The ``masks/`` directory is consumed by ``stage_a_classical/sparse.py`` (and
+* The ``masks/`` directory is consumed by ``stage_a_plane_sweep/sparse.py`` (and
   later by MVS) only if the mask file for a given (cam, frame) actually
   exists; otherwise that step falls back to the full image.
 * Multiple detected instances for the prompt are unioned into one binary mask.

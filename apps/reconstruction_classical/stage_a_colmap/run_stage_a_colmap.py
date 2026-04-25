@@ -3,7 +3,7 @@
 Wraps :mod:`export_colmap` and :mod:`dense_reconstruct` so a single command
 takes posed images to a dense ``fused.ply`` produced by COLMAP's PatchMatch
 stereo. Useful as a reference baseline against the hand-rolled plane-sweep
-under ``stage_a_classical/``.
+under ``stage_a_plane_sweep/``.
 
 Defaults follow the project convention: output goes to
 ``<data_root>_output/colmap_ws/`` (sibling of the input dir, never inside

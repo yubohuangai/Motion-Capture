@@ -37,7 +37,7 @@ Stage A has three sub-stages: **sparse → MVS → fusion**, plus a Poisson mesh
 
 ### A.1 Sparse reconstruction (SIFT + matching + triangulation)
 
-File: `stage_a_classical/sparse.py`
+File: `stage_a_plane_sweep/sparse.py`
 
 Goal: produce a small, high-precision seed point cloud used to (a) set depth ranges for MVS and (b) provide scene bounds for NeuS.
 
@@ -55,7 +55,7 @@ Output: `sparse.ply`. Your run produced 1803 points with median reproj 1.33 px �
 
 ### A.2 Dense MVS (plane-sweep stereo)
 
-File: `stage_a_classical/mvs_plane_sweep.py`
+File: `stage_a_plane_sweep/mvs_plane_sweep.py`
 
 Goal: compute a per-pixel depth map for each view.
 
@@ -90,7 +90,7 @@ This correlates with your sparse matching matrix: `01-06: kept=84`, `01-07: kept
 
 ### A.3 Fusion (cross-view consistency + cleanup)
 
-File: `stage_a_classical/fusion.py`
+File: `stage_a_plane_sweep/fusion.py`
 
 Goal: aggregate per-view depth maps into one clean world-space point cloud.
 
@@ -103,7 +103,7 @@ Output: `fused.ply`. Your run: 142k → 128k → 123k pts — looks fine *numeri
 
 ### A.4 Poisson meshing
 
-File: `stage_a_classical/poisson.py`
+File: `stage_a_plane_sweep/poisson.py`
 
 Screened Poisson surface reconstruction at octree `--poisson_depth 9`. Prunes vertices in the bottom `--poisson_density_pct 5.0` percentile of point-density (removes "balloon" artifacts).
 

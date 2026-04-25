@@ -682,7 +682,7 @@ apps/reconstruction_classical/
     cameras.py            # Camera dataclass, load_cameras, geometry helpers
     images.py             # imread, load_views, undistort_view
     io_utils.py           # dependency-free PLY writers + timing context
-  stage_a_classical/
+  stage_a_plane_sweep/
     sparse.py             # SIFT + tracks + DLT triangulation
     mvs_plane_sweep.py    # plane-sweep ZNCC depth maps
     fuse.py               # cross-view consistency + oriented cloud
@@ -720,7 +720,7 @@ clouds; for Stage B you have **two backends** with different output types
 
 | Stage | Backend | Output | Use when |
 |---|---|---|---|
-| A | `stage_a_classical` | `fused.ply` (CPU plane-sweep) | Default — no extra deps; reproducible. |
+| A | `stage_a_plane_sweep` | `fused.ply` (CPU plane-sweep) | Default — no extra deps; reproducible. |
 | A | `stage_a_colmap` | `colmap_ws/dense/fused.ply` | Reference baseline; needs `colmap` binary + GPU. |
 | B | `stage_b_neus` | `mesh_neus.ply` (clean surface) | When you want a triangle mesh. |
 | B | `stage_b_3dgs` | `point_cloud.ply` (Gaussians) | When you want photorealistic novel-view rendering, not geometry. |

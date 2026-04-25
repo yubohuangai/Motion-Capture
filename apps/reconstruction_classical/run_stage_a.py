@@ -44,16 +44,16 @@ from apps.reconstruction_classical.common.images import load_views, load_masks
 from apps.reconstruction_classical.common.io_utils import (
     ensure_dir, timed, write_ply_points,
 )
-from apps.reconstruction_classical.stage_a_classical.sparse import (
+from apps.reconstruction_classical.stage_a_plane_sweep.sparse import (
     sparse_reconstruct, tracks_to_point_cloud,
 )
-from apps.reconstruction_classical.stage_a_classical.mvs_plane_sweep import (
+from apps.reconstruction_classical.stage_a_plane_sweep.mvs_plane_sweep import (
     compute_all_depth_maps, DepthMap,
 )
-from apps.reconstruction_classical.stage_a_classical.fuse import (
+from apps.reconstruction_classical.stage_a_plane_sweep.fuse import (
     fuse_depth_maps, voxel_downsample, statistical_outlier_removal,
 )
-from apps.reconstruction_classical.stage_a_classical.mesh import (
+from apps.reconstruction_classical.stage_a_plane_sweep.mesh import (
     poisson_mesh, save_mesh, save_fused_cloud, crop_to_bbox,
 )
 
