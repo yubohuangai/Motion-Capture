@@ -722,22 +722,32 @@ apps/reconstruction/
     render_mesh_turntable.py  # turntable MP4 of a mesh.ply
   preprocess_segment_sam3.py # foreground masks via SAM 3
   run_stage_a.py
+  run_stage_a.py          # thin dispatcher: --backend {colmap,plane_sweep}
   run_stage_b.py
-  run_pipeline.py         # Stage A then Stage B
+  run_pipeline.py         # Stage A then Stage B (each picks a backend)
 ```
 
 ### Choosing a backend
 
-For Stage A you have **two backends** that produce comparable dense point
-clouds; for Stage B you have **two backends** with different output types
-(implicit surface vs. radiance field).
+Both Stage A backends are classical multi-view stereo — they only differ
+in the dense matching algorithm. The Stage B backends produce different
+output types (implicit surface vs. radiance field).
 
-| Stage | Backend | Output | Use when |
-|---|---|---|---|
-| A | `stage_a_plane_sweep` | `fused.ply` (CPU plane-sweep) | Default — no extra deps; reproducible. |
-| A | `stage_a_colmap` | `colmap_ws/dense/fused.ply` | Reference baseline; needs `colmap` binary + GPU. |
-| B | `stage_b_neus` | `mesh_neus.ply` (clean surface) | When you want a triangle mesh. |
-| B | `stage_b_3dgs` | `point_cloud.ply` (Gaussians) | When you want photorealistic novel-view rendering, not geometry. |
+`run_stage_a` is a thin **dispatcher**: it accepts `--backend
+{colmap,plane_sweep}` (default `colmap`) and forwards remaining args to
+the chosen backend's driver.
+
+| Stage | Backend | `--backend` | Output | Use when |
+|---|---|---|---|---|
+| A | COLMAP MVS (PatchMatch) | `colmap` *(default)* | `stage_a/colmap/dense/fused.ply` | Sharper, cleaner geometry — visually preferred on cow_1/10465. Needs the `colmap` binary + GPU. |
+| A | Hand-rolled plane-sweep | `plane_sweep` | `stage_a/plane_sweep/fused.ply` | No COLMAP, no GPU; useful as a fallback or for experimentation. Looser cross-view consistency than COLMAP. |
+| B | NeuS | `neus` *(default)* | `stage_b/neus/mesh_neus.ply` | Clean triangle mesh from a learned SDF. |
+| B | 3D Gaussian Splatting | `3dgs` | `stage_b/3dgs/point_cloud/iteration_*/point_cloud.ply` | Photorealistic novel-view rendering; not a mesh. |
+
+Empirically on `cow_1/10465` the COLMAP backend produces visually
+cleaner dense geometry than plane-sweep. Plane-sweep stays in the tree
+because it has no external-binary dependency and is useful as a sanity
+check when COLMAP and our results diverge.
 
 ## Notes on the design
 
