@@ -510,6 +510,36 @@ python -m apps.reconstruction_classical.run_stage_a /scratch/yubo/cow_1/10465
 # outputs to /scratch/yubo/cow_1/10465_output/
 ```
 
+### Stage A — COLMAP backend (alternative)
+
+Uses Narval's prebuilt CUDA-enabled COLMAP module (3.12.6). PatchMatch
+stereo runs on GPU; expect a single-GPU job.
+
+```bash
+#!/bin/bash
+#SBATCH --account=rrg-vislearn          # GPU job
+#SBATCH --gres=gpu:1
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=32G
+#SBATCH --time=1:00:00
+#SBATCH --job-name=stageA_colmap
+
+module load StdEnv/2023 gcc/12.3 openmpi/4.1.5 cuda/12.6 \
+            python/3.11 opencv/4.9.0 colmap/3.12.6
+virtualenv --no-download "$SLURM_TMPDIR/env"
+source "$SLURM_TMPDIR/env/bin/activate"
+pip install --no-index numpy scipy tqdm pyyaml tabulate termcolor
+
+python -m apps.reconstruction_classical.stage_a_colmap.run_stage_a_colmap \
+  /scratch/yubo/cow_1/10465 --neighbor 6
+# outputs to /scratch/yubo/cow_1/10465_output/colmap_ws/
+# dense cloud at /scratch/yubo/cow_1/10465_output/colmap_ws/dense/fused.ply
+```
+
+The non-CUDA `colmap` module is also available (`module load colmap/3.12.6`
+without `cuda/12.6`), but it cannot run `patch_match_stereo` — use it only
+for sparse triangulation (`--skip_dense`).
+
 ### Full pipeline from scratch (Stage A → Stage B)
 
 Skips Stage A automatically if `sparse.ply` and `fused.ply` already exist.
