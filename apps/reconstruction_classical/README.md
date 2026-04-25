@@ -540,6 +540,70 @@ The non-CUDA `colmap` module is also available (`module load colmap/3.12.6`
 without `cuda/12.6`), but it cannot run `patch_match_stereo` — use it only
 for sparse triangulation (`--skip_dense`).
 
+### Stage B — 3DGS backend (alternative)
+
+Trains a 3D Gaussian Splatting model against a COLMAP workspace produced
+by `stage_a_colmap` (or any other COLMAP-formatted directory). Output is a
+`.ply` of Gaussians + spherical-harmonic colors, **not** a triangle mesh —
+use it for novel-view rendering rather than geometry.
+
+#### One-time env build (~5 min on a MIG slice)
+
+The CUDA submodules `simple-knn`, `diff-gaussian-rasterization`, and
+`fused-ssim` need to be compiled against the installed PyTorch + CUDA. Build
+once into a persistent venv at `~/envs/3dgs/`:
+
+```bash
+#!/bin/bash
+#SBATCH --account=rrg-vislearn --gres=gpu:a100_1g.5gb:1
+#SBATCH --cpus-per-task=8 --mem=16G --time=2:00:00 --job-name=build_3dgs
+
+ENV_DIR=$HOME/envs/3dgs
+GS_DIR=$HOME/github/gaussian-splatting   # cloned with --recursive
+
+module load StdEnv/2023 gcc/12.3 cuda/12.6 python/3.11 opencv/4.9.0
+[ -d "$ENV_DIR" ] || virtualenv --no-download "$ENV_DIR"
+source "$ENV_DIR/bin/activate"
+pip install --no-index --upgrade pip wheel setuptools
+pip install --no-index torch torchvision numpy plyfile tqdm opencv-python joblib
+
+export TORCH_CUDA_ARCH_LIST="8.0"   # A100
+export MAX_JOBS=4
+cd "$GS_DIR"
+# --no-build-isolation: setup.py imports torch; PEP 517 isolation hides it
+pip install --no-build-isolation ./submodules/simple-knn
+pip install --no-build-isolation ./submodules/diff-gaussian-rasterization
+pip install --no-build-isolation ./submodules/fused-ssim
+
+python -c "import diff_gaussian_rasterization, simple_knn, fused_ssim; print('OK')"
+```
+
+If the gaussian-splatting submodule dirs are empty, run
+`git submodule update --init --recursive` from the login node first.
+
+#### Training a single frame (~30–60 min on a full A100)
+
+```bash
+#!/bin/bash
+#SBATCH --account=rrg-vislearn --gres=gpu:a100:1
+#SBATCH --cpus-per-task=8 --mem=32G --time=2:00:00 --job-name=cow1_3dgs
+
+WS=/scratch/yubo/cow_1/10465_output/colmap_ws        # from stage_a_colmap
+OUT=/scratch/yubo/cow_1/10465_output/3dgs
+
+module load StdEnv/2023 gcc/12.3 cuda/12.6 python/3.11 opencv/4.9.0
+source $HOME/envs/3dgs/bin/activate
+
+cd $HOME/github/gaussian-splatting
+python train.py -s "$WS" -m "$OUT" --iterations 7000
+
+# Output: <OUT>/point_cloud/iteration_7000/point_cloud.ply
+```
+
+Vanilla `train.py` does not honor `colmap_ws/masks/` — Gaussians cover the
+full scene including background. Filter by opacity in
+`viz/vis_gaussians.py --opacity 0.5` if you only want high-confidence ones.
+
 ### Full pipeline from scratch (Stage A → Stage B)
 
 Skips Stage A automatically if `sparse.ply` and `fused.ply` already exist.
