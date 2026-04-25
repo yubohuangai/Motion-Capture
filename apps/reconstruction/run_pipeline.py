@@ -60,8 +60,9 @@ def main() -> None:
                    help="extra CLI string forwarded to run_stage_b")
     args = p.parse_args()
 
-    out_a = Path(args.output) if args.output else Path(f"{str(args.data_root)}_output")
-    out_b = out_a / "neus"
+    output_root = Path(args.output) if args.output else Path(f"{str(args.data_root)}_output")
+    out_a = output_root / "stage_a" / "plane_sweep"
+    out_b = output_root / "stage_b" / "neus"
 
     # ----- Stage A ----------------------------------------------------------
     have_sparse = (out_a / "sparse.ply").exists()

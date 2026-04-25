@@ -127,7 +127,7 @@ def main() -> None:
     args = p.parse_args()
 
     data_root = Path(args.data_root)
-    output_dir = Path(args.output) if args.output else Path(f"{str(data_root)}_output")
+    output_dir = Path(args.output) if args.output else Path(f"{str(data_root)}_output") / "stage_a" / "plane_sweep"
     out_dir = ensure_dir(output_dir)
     intri = data_root / "intri.yml"
     extri = data_root / "extri.yml"

@@ -60,7 +60,7 @@ def main() -> None:
     args = p.parse_args()
 
     data_root = Path(args.data_root)
-    out = Path(args.output) if args.output else Path(f"{data_root}_output") / "colmap_ws"
+    out = Path(args.output) if args.output else Path(f"{data_root}_output") / "stage_a" / "colmap"
     out.mkdir(parents=True, exist_ok=True)
 
     here = Path(__file__).resolve().parent
@@ -107,7 +107,7 @@ def main() -> None:
     fused = out / "dense" / "fused.ply"
     print(f"[stage_a_colmap] done; dense cloud: {fused}")
     print(f"[stage_a_colmap] compare to plane-sweep output at "
-          f"{Path(f'{data_root}_output') / 'fused.ply'}")
+          f"{Path(f'{data_root}_output') / 'stage_a' / 'plane_sweep' / 'fused.ply'}")
 
 
 if __name__ == "__main__":

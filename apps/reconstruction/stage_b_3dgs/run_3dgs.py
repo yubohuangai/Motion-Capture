@@ -91,10 +91,12 @@ def main():
         description='End-to-end: export calibration + run 3D Gaussian Splatting',
     )
     parser.add_argument('data', help='Root data path (images/, intri.yml, extri.yml)')
-    parser.add_argument('--output', '-o', required=True,
-                        help='Base output directory')
-    parser.add_argument('--gs_repo', required=True,
-                        help='Path to gaussian-splatting repo root')
+    parser.add_argument('--output', '-o', default=None,
+                        help='Base output directory '
+                             '(default: <data>_output/stage_b/3dgs/)')
+    parser.add_argument('--gs_repo', default=os.path.expanduser('~/github/gaussian-splatting'),
+                        help='Path to gaussian-splatting repo root '
+                             '(default: ~/github/gaussian-splatting)')
 
     frame_group = parser.add_mutually_exclusive_group()
     frame_group.add_argument('--frame', type=int, default=None,
@@ -138,13 +140,15 @@ def main():
     else:
         frames = [0]
 
+    output_root = args.output if args.output else f'{args.data}_output'
+
     for frame in frames:
         if len(frames) == 1:
-            colmap_dir = join(args.output, 'colmap')
-            model_dir = join(args.output, 'model')
+            colmap_dir = join(output_root, 'stage_a', 'colmap')
+            model_dir = join(output_root, 'stage_b', '3dgs')
         else:
-            colmap_dir = join(args.output, f'frame_{frame:06d}', 'colmap')
-            model_dir = join(args.output, f'frame_{frame:06d}', 'model')
+            colmap_dir = join(output_root, 'stage_a', 'colmap', f'frame_{frame:06d}')
+            model_dir = join(output_root, 'stage_b', '3dgs', f'frame_{frame:06d}')
 
         if not args.skip_export:
             run_export(

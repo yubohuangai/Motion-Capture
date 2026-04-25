@@ -615,24 +615,38 @@ python -m apps.reconstruction.run_pipeline <data_root> \
 
 ## Outputs
 
+Defaults land under `<data_root>_output/` next to the input data, never
+inside the codebase. Each backend gets its own subdirectory so multiple
+implementations of the same stage can coexist.
+
 ```
-<output>/
-  sparse.ply               # Stage A: triangulated SIFT tracks
-  depth/<cam>.npz          # Stage A: per-view depth + confidence
-  depth/<cam>.png          # turbo-colormapped preview
-  fused.ply                # Stage A: dense oriented + colored point cloud
-  mesh.ply                 # Stage A: Poisson mesh (requires open3d)
-  config.json              # Stage A run parameters + summary
-  neus/
-    ckpt/iter_*.pt, final.pt
-    val/<cam>_<iter>.png   # periodic re-renderings of training views
-    mesh_neus.ply          # Stage B final marching-cubes mesh (world coords)
-    config.json, train.log
+<data_root>_output/
+├── stage_a/
+│   ├── plane_sweep/         # default for run_stage_a (hand-rolled)
+│   │   ├── sparse.ply       # SIFT tracks → DLT triangulation
+│   │   ├── depth/<cam>.npz  # per-view plane-sweep depth + confidence
+│   │   ├── depth/<cam>.png  # turbo colormap preview
+│   │   ├── fused.ply        # cross-view consistency + outlier removal
+│   │   ├── mesh.ply         # screened Poisson (requires open3d)
+│   │   └── config.json      # run params + summary
+│   └── colmap/              # default for run_stage_a_colmap (PatchMatch)
+│       ├── sparse/0/        # COLMAP sparse model
+│       ├── images/  masks/  database.db
+│       └── dense/
+│           └── fused.ply    # stereo_fusion output
+└── stage_b/
+    ├── neus/                # default for run_stage_b (NeuS)
+    │   ├── ckpt/iter_*.pt, final.pt
+    │   ├── val/<cam>_<iter>.png
+    │   ├── mesh_neus.ply
+    │   └── config.json, train.log
+    └── 3dgs/                # default for stage_b_3dgs.run_3dgs
+        └── point_cloud/iteration_<N>/point_cloud.ply
 ```
 
 All `.ply` files are in the same world coordinate frame defined by
-`intri.yml` / `extri.yml`, so the NeuS mesh can be overlaid directly on the
-Stage A fused cloud or mesh.
+`intri.yml` / `extri.yml`, so any artifact can be overlaid against any
+other (e.g. NeuS mesh on top of plane-sweep `fused.ply`).
 
 ## Key tunables
 

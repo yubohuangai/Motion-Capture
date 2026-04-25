@@ -86,9 +86,10 @@ def main() -> None:
     args = p.parse_args()
 
     data_root = Path(args.data_root)
-    default_stage_a = Path(f"{str(data_root)}_output")
+    output_root = Path(f"{str(data_root)}_output")
+    default_stage_a = output_root / "stage_a" / "plane_sweep"
     stage_a_dir = Path(args.stage_a_output) if args.stage_a_output else default_stage_a
-    out_dir = ensure_dir(Path(args.output) if args.output else default_stage_a / "neus")
+    out_dir = ensure_dir(Path(args.output) if args.output else output_root / "stage_b" / "neus")
     device = _pick_device(args.device)
     print(f"[init] device={device}")
 
