@@ -13,7 +13,7 @@ from typing import Dict, Iterable, List, Optional, Tuple
 import cv2
 import numpy as np
 
-from .cameras import Camera, scale_camera
+from .cameras import Camera
 
 
 def imread(path: str | Path) -> np.ndarray:
@@ -71,9 +71,8 @@ def load_masks(data_root: str | Path,
 def load_views(images_root: str | Path,
                cams: Dict[str, Camera],
                frame: int = 0,
-               downscale: float = 1.0,
                ) -> Tuple[Dict[str, np.ndarray], Dict[str, Camera]]:
-    """Load one frame per camera and optionally downscale.
+    """Load one frame per camera at native resolution.
 
     Parameters
     ----------
@@ -81,12 +80,11 @@ def load_views(images_root: str | Path,
         If the final path segment is not ``images``, we append it automatically.
     cams : dict of loaded Cameras (only these names will be read).
     frame : frame index; filenames are zero-padded to 6 digits (``000000.jpg``).
-    downscale : factor <=1. 1 keeps native resolution; 0.5 halves each side.
 
     Returns
     -------
     views : cam_name -> BGR uint8 image.
-    cams_scaled : cam_name -> Camera with updated (K, W, H).
+    cams_out : cam_name -> Camera with width/height set from the loaded image.
     """
     images_root = Path(images_root)
     if images_root.name != "images" and (images_root / "images").is_dir():
@@ -95,8 +93,6 @@ def load_views(images_root: str | Path,
     cams_out: Dict[str, Camera] = {}
     for name, cam in cams.items():
         cam_dir = images_root / name
-        # accept either zero-padded frame index or any sorted file if the
-        # caller points us at a single-frame directory.
         cand = cam_dir / f"{frame:06d}.jpg"
         if not cand.exists():
             files = sorted(p for p in cam_dir.glob("*.jpg"))
@@ -104,21 +100,10 @@ def load_views(images_root: str | Path,
                 raise FileNotFoundError(f"no jpg found under {cam_dir}")
             cand = files[frame] if frame < len(files) else files[0]
         img = imread(cand)
-        if downscale != 1.0:
-            H0, W0 = img.shape[:2]
-            new_w = max(1, int(round(W0 * downscale)))
-            new_h = max(1, int(round(H0 * downscale)))
-            img = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_AREA)
-            cam_s = scale_camera(cam.__class__(name=cam.name, K=cam.K, dist=cam.dist,
-                                               R=cam.R, T=cam.T,
-                                               width=W0, height=H0),
-                                 sx=new_w / W0, sy=new_h / H0)
-        else:
-            H0, W0 = img.shape[:2]
-            cam_s = Camera(name=cam.name, K=cam.K, dist=cam.dist,
-                           R=cam.R, T=cam.T, width=W0, height=H0)
+        H0, W0 = img.shape[:2]
         views[name] = img
-        cams_out[name] = cam_s
+        cams_out[name] = Camera(name=cam.name, K=cam.K, dist=cam.dist,
+                                R=cam.R, T=cam.T, width=W0, height=H0)
     return views, cams_out
 
 

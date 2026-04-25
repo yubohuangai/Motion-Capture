@@ -155,14 +155,32 @@ def zncc_map(ref: np.ndarray, src: np.ndarray, ksize: int = 7,
 # ---------------------------------------------------------------------------
 
 
-def texture_mask(img_bgr: np.ndarray, ksize: int = 7,
-                 min_grad_var: float = 6.0) -> np.ndarray:
+def clahe_gray(img_bgr: np.ndarray, clip_limit: float = 3.0,
+               tile: int = 8) -> np.ndarray:
+    """Grayscale with CLAHE applied on the LAB L channel.
+
+    Equalises local contrast so very dark regions (black fur, shadowed cloth)
+    carry the same matchable signal as bright ones. Without this, ZNCC on
+    high-dynamic-range subjects silently drops the dark side because its
+    patch variance falls below sensor noise.
+    """
+    if img_bgr.ndim == 2:
+        L = img_bgr
+    else:
+        lab = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2LAB)
+        L = lab[..., 0]
+    clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=(tile, tile))
+    return clahe.apply(L)
+
+
+def texture_mask_from_gray(gray: np.ndarray, ksize: int = 7,
+                           min_grad_var: float = 2.0) -> np.ndarray:
     """Boolean mask of pixels with enough local texture to trust for NCC.
 
-    Uses the local variance of the gray image; thresholds a pixel IN when the
-    std-dev of grayscale values in a ksize window exceeds ``sqrt(min_grad_var)``.
+    Operates on a precomputed grayscale (typically CLAHE-equalised) so the
+    threshold has consistent meaning across bright and dark regions.
     """
-    g = to_gray(img_bgr).astype(np.float32)
+    g = gray.astype(np.float32)
     mean = _box_mean(g, ksize)
     mean_sq = _box_mean(g * g, ksize)
     var = np.clip(mean_sq - mean * mean, 0.0, None)
@@ -178,7 +196,9 @@ def plane_sweep(ref_view: np.ndarray,
                 aggregate: str = "mean",
                 min_sources_per_pixel: int = 2,
                 use_texture_mask: bool = True,
-                texture_var_thr: float = 6.0,
+                texture_var_thr: float = 2.0,
+                ref_fg_mask: Optional[np.ndarray] = None,
+                use_clahe: bool = True,
                 ) -> Tuple[np.ndarray, np.ndarray]:
     """Winner-take-all plane-sweep depth estimation for one reference view.
 
@@ -204,7 +224,17 @@ def plane_sweep(ref_view: np.ndarray,
         and multiplies them together for a stable confidence.
     """
     H_r, W_r = ref_view.shape[:2]
-    ref_g = to_gray(ref_view).astype(np.float32)
+    if use_clahe:
+        ref_g_u8 = clahe_gray(ref_view)
+    else:
+        ref_g_u8 = to_gray(ref_view)
+    ref_g = ref_g_u8.astype(np.float32)
+    # Precompute source grays once so we can warp the gray (instead of BGR)
+    # each plane — avoids re-applying CLAHE on warped output, which would
+    # spread border pixels into the equalisation histogram.
+    src_grays_u8 = [
+        clahe_gray(s) if use_clahe else to_gray(s) for s in src_views
+    ]
     D = int(depths.shape[0])
 
     # Best cost at each pixel so far (we invert NCC into cost = 1 - ncc).
@@ -220,27 +250,36 @@ def plane_sweep(ref_view: np.ndarray,
     # reliably; we invalidate them upfront.
     tex_valid = np.ones((H_r, W_r), dtype=bool)
     if use_texture_mask:
-        tex_valid = texture_mask(ref_view, ksize=ncc_ksize, min_grad_var=texture_var_thr)
+        tex_valid = texture_mask_from_gray(ref_g_u8, ksize=ncc_ksize,
+                                           min_grad_var=texture_var_thr)
+    # Foreground mask: restrict depth estimation to the object. Background
+    # pixels get cost=inf so the confidence filter drops them — cleaner and
+    # faster because most images are >90% background after segmentation.
+    if ref_fg_mask is not None:
+        fg = ref_fg_mask
+        if fg.shape[:2] != (H_r, W_r):
+            fg = cv2.resize(fg, (W_r, H_r), interpolation=cv2.INTER_NEAREST)
+        tex_valid = tex_valid & (fg > 0)
 
     for di, d in enumerate(depths):
         per_src_ncc = np.full((len(src_views), H_r, W_r), -1.0, dtype=np.float32)
         per_src_valid = np.zeros_like(per_src_ncc, dtype=bool)
-        for si, (src_img, src_cam) in enumerate(zip(src_views, src_cams)):
+        for si, (src_gray_u8, src_cam) in enumerate(zip(src_grays_u8, src_cams)):
             H = ref_cam.plane_induced_homography(src_cam, depth=float(d))
-            # warp source -> reference (cv2.warpPerspective maps src pixels
-            # through H; because ``plane_induced_homography`` maps source to
-            # reference, we invert H for a backward warp).
-            Hinv = np.linalg.inv(H)
-            warped = cv2.warpPerspective(src_img, Hinv, (W_r, H_r),
-                                         flags=cv2.INTER_LINEAR,
-                                         borderMode=cv2.BORDER_CONSTANT,
-                                         borderValue=0)
-            mask_src = cv2.warpPerspective(np.ones(src_img.shape[:2], np.uint8) * 255,
-                                           Hinv, (W_r, H_r),
+            # cv2.warpPerspective's default flag treats M as the FORWARD
+            # src->dst map and inverts it internally to sample src per dst
+            # pixel. Since plane_induced_homography already returns H: src->ref,
+            # we pass it directly — inverting it first produces the wrong warp.
+            warped_g_u8 = cv2.warpPerspective(src_gray_u8, H, (W_r, H_r),
+                                              flags=cv2.INTER_LINEAR,
+                                              borderMode=cv2.BORDER_CONSTANT,
+                                              borderValue=0)
+            mask_src = cv2.warpPerspective(np.ones(src_gray_u8.shape[:2], np.uint8) * 255,
+                                           H, (W_r, H_r),
                                            flags=cv2.INTER_NEAREST,
                                            borderMode=cv2.BORDER_CONSTANT,
                                            borderValue=0)
-            warped_g = to_gray(warped).astype(np.float32)
+            warped_g = warped_g_u8.astype(np.float32)
             ncc = zncc_map(ref_g, warped_g, ksize=ncc_ksize)
             valid = mask_src > 0
             # invalidate border pixels where the NCC window would reach outside
@@ -385,6 +424,7 @@ def compute_all_depth_maps(views: Dict[str, np.ndarray],
                            bilateral_sigma_color: float = 20.0,
                            bilateral_sigma_space: float = 5.0,
                            texture_var_thr: float = 6.0,
+                           masks: Optional[Dict[str, np.ndarray]] = None,
                            verbose: bool = True,
                            ) -> Dict[str, DepthMap]:
     """Compute a :class:`DepthMap` for each view using the shared sparse points
@@ -404,10 +444,12 @@ def compute_all_depth_maps(views: Dict[str, np.ndarray],
                   f"depth=[{d_min:.2f}, {d_max:.2f}] ({n_depths} planes)")
         src_views = [views[s] for s in src_names]
         src_cams = [cams[s] for s in src_names]
+        ref_fg = masks.get(ref_name) if masks else None
         depth, conf = plane_sweep(ref_view, src_views, ref_cam, src_cams,
                                   depths, ncc_ksize=ncc_ksize,
                                   aggregate=aggregate,
-                                  texture_var_thr=texture_var_thr)
+                                  texture_var_thr=texture_var_thr,
+                                  ref_fg_mask=ref_fg)
         dm = DepthMap(cam_name=ref_name, depth=depth, confidence=conf)
         dm = filter_depth_by_confidence(dm, min_confidence=min_conf)
         if median_ksize > 1:

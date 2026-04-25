@@ -11,17 +11,17 @@ Prerequisites:
 
 Usage:
     # Single frame
-    python apps/reconstruction/run_3dgs.py /path/to/data \\
+    python apps/reconstruction_classical/stage_b_3dgs/run_3dgs.py /path/to/data \\
         --frame 0 --output /path/to/recon \\
         --gs_repo /path/to/gaussian-splatting
 
     # Batch over frames 0-99
-    python apps/reconstruction/run_3dgs.py /path/to/data \\
+    python apps/reconstruction_classical/stage_b_3dgs/run_3dgs.py /path/to/data \\
         --frame_start 0 --frame_end 100 --output /path/to/recon \\
         --gs_repo /path/to/gaussian-splatting
 
     # With masks and undistortion
-    python apps/reconstruction/run_3dgs.py /path/to/data \\
+    python apps/reconstruction_classical/stage_b_3dgs/run_3dgs.py /path/to/data \\
         --frame 0 --output /path/to/recon --undistort --mask masks \\
         --gs_repo /path/to/gaussian-splatting
 """
@@ -35,8 +35,8 @@ from os.path import join
 
 def run_export(data, output, frame, intri, extri, ext, undistort, mask,
                triangulate=True, colmap_bin='colmap', gpu=False):
-    """Run export_colmap.py for one frame."""
-    script = join(os.path.dirname(__file__), 'export_colmap.py')
+    """Run export_colmap.py for one frame (lives in stage_a_colmap/)."""
+    script = join(os.path.dirname(__file__), '..', 'stage_a_colmap', 'export_colmap.py')
     cmd = [
         sys.executable, script, data,
         '--output', output,

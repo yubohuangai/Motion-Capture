@@ -3,9 +3,11 @@
 Usage
 -----
     python -m apps.reconstruction_classical.run_stage_b <data_root> \
-        --stage_a_output output/reconstruction_classical/<scene> \
-        --output output/reconstruction_classical/<scene>/neus \
-        --n_iters 100000 --batch_rays 512 --device mps
+        --n_iters 100000 --batch_rays 512 --device cuda
+
+By default Stage A is read from ``<data_root>_output`` and Stage B writes
+to ``<data_root>_output/neus`` so artifacts sit next to the input data,
+never inside the codebase. Override with ``--stage_a_output`` / ``--output``.
 
 Reads calibration and images from ``<data_root>`` and the sparse cloud from
 Stage A (used only to set the object-space normalisation — the network is
@@ -53,11 +55,10 @@ def main() -> None:
     p = argparse.ArgumentParser(description="Stage B: scene-specific NeuS")
     p.add_argument("data_root", type=str)
     p.add_argument("--stage_a_output", type=str, default=None,
-                   help="Stage A output dir (uses its sparse.ply for scene bounds)")
-    p.add_argument("--output", type=str, required=True)
+                   help="Stage A output dir (default: <data_root>_output)")
+    p.add_argument("--output", type=str, default=None,
+                   help="output dir (default: <data_root>_output/neus)")
     p.add_argument("--frame", type=int, default=0)
-    p.add_argument("--downscale", type=float, default=0.25,
-                   help="image downsample for training rays (1.0 = native)")
     # Normalisation
     p.add_argument("--bound_padding", type=float, default=1.1,
                    help="multiplicative radius padding around the sparse cloud bbox")
@@ -85,7 +86,9 @@ def main() -> None:
     args = p.parse_args()
 
     data_root = Path(args.data_root)
-    out_dir = ensure_dir(args.output)
+    default_stage_a = Path(f"{str(data_root)}_output")
+    stage_a_dir = Path(args.stage_a_output) if args.stage_a_output else default_stage_a
+    out_dir = ensure_dir(Path(args.output) if args.output else default_stage_a / "neus")
     device = _pick_device(args.device)
     print(f"[init] device={device}")
 
@@ -94,8 +97,8 @@ def main() -> None:
     print(f"[init] loaded {len(cams)} cameras")
 
     # -- Scene bounds -------------------------------------------------------
-    if args.stage_a_output and (Path(args.stage_a_output) / "sparse.ply").exists():
-        sparse_path = Path(args.stage_a_output) / "sparse.ply"
+    if (stage_a_dir / "sparse.ply").exists():
+        sparse_path = stage_a_dir / "sparse.ply"
         sparse_pts = _read_ply_points(sparse_path)
         center, radius = scene_bounds_from_points(
             sparse_pts, padding=args.bound_padding,
@@ -110,8 +113,7 @@ def main() -> None:
     # -- Dataset ------------------------------------------------------------
     dataset = NeuSDataset(data_root=data_root, cams=cams,
                           scene_center=center, scene_radius=radius,
-                          frame=args.frame, downscale=args.downscale,
-                          device=device)
+                          frame=args.frame, device=device)
     print(f"[init] dataset: {dataset.n_views} views, {dataset.n_pixels:,} pixels")
 
     cfg = TrainConfig(

@@ -13,7 +13,7 @@ multi-view reconstruction frameworks can ingest directly:
         └── points3D.bin (+ points3D.txt)
 
 Usage:
-    python apps/reconstruction/export_colmap.py /path/to/data
+    python apps/reconstruction_classical/stage_a_colmap/export_colmap.py /path/to/data
     # Default: -o <data>/colmap_ws, --frame 0, --undistort, --mask masks,
     #          --triangulate, --gpu. Override with --no-undistort, --no-mask,
     #          --no-triangulate, --no-gpu, or explicit -o.
@@ -30,7 +30,7 @@ from os.path import join
 import cv2
 import numpy as np
 
-sys.path.insert(0, join(os.path.dirname(__file__), '..', '..'))
+sys.path.insert(0, join(os.path.dirname(__file__), '..', '..', '..'))
 
 from easymocap.mytools.camera_utils import read_camera
 from easymocap.mytools.colmap_structure import (

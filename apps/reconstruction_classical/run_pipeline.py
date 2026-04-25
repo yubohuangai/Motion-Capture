@@ -7,8 +7,10 @@ to a final NeuS mesh, without caring about the intermediate knobs.
 Usage
 -----
     python -m apps.reconstruction_classical.run_pipeline <data_root> \
-        --output output/reconstruction_classical/<scene> \
-        --downscale 0.25 --neus_iters 100000 --device mps
+        --neus_iters 100000 --device cuda
+
+By default outputs go to ``<data_root>_output`` (Stage A) and
+``<data_root>_output/neus`` (Stage B). Pass ``--output`` to override.
 
 Pass ``--stage_a_args '...extra flags...'`` / ``--stage_b_args '...'`` for
 tuning. Stage A is skipped if ``<output>/sparse.ply`` already exists (unless
@@ -34,10 +36,10 @@ def _run(cmd: list[str]) -> None:
 def main() -> None:
     p = argparse.ArgumentParser(description="Classical MVS + NeuS pipeline")
     p.add_argument("data_root", type=str)
-    p.add_argument("--output", type=str, required=True,
-                   help="root output dir; Stage A goes in <output>/, Stage B in <output>/neus/")
+    p.add_argument("--output", type=str, default=None,
+                   help="root output dir (default: <data_root>_output); "
+                        "Stage A goes in <output>/, Stage B in <output>/neus/")
     p.add_argument("--frame", type=int, default=0)
-    p.add_argument("--downscale", type=float, default=0.25)
     # Stage A passthroughs (common knobs)
     p.add_argument("--n_depths", type=int, default=128)
     p.add_argument("--max_sources", type=int, default=4)
@@ -58,7 +60,7 @@ def main() -> None:
                    help="extra CLI string forwarded to run_stage_b")
     args = p.parse_args()
 
-    out_a = Path(args.output)
+    out_a = Path(args.output) if args.output else Path(f"{str(args.data_root)}_output")
     out_b = out_a / "neus"
 
     # ----- Stage A ----------------------------------------------------------
@@ -71,7 +73,6 @@ def main() -> None:
             str(args.data_root),
             "--output", str(out_a),
             "--frame", str(args.frame),
-            "--downscale", str(args.downscale),
             "--n_depths", str(args.n_depths),
             "--max_sources", str(args.max_sources),
         ]
@@ -89,7 +90,6 @@ def main() -> None:
             "--stage_a_output", str(out_a),
             "--output", str(out_b),
             "--frame", str(args.frame),
-            "--downscale", str(args.downscale),
             "--n_iters", str(args.neus_iters),
             "--batch_rays", str(args.batch_rays),
             "--mesh_resolution", str(args.mesh_resolution),

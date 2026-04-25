@@ -120,7 +120,6 @@ class NeuSDataset:
         ``intri.yml`` / ``extri.yml`` (same layout Stage A expects).
     cams      : the calibrated cameras.
     frame     : frame index to load (one frame per camera).
-    downscale : factor <=1 applied to both images and intrinsics.
     scene_center, scene_radius : world -> object transform (see module doc).
     device    : torch device for the cached tensors (CPU is fine, GPU optional).
     """
@@ -131,13 +130,12 @@ class NeuSDataset:
                  scene_center: np.ndarray,
                  scene_radius: float,
                  frame: int = 0,
-                 downscale: float = 1.0,
                  device: str | torch.device = "cpu") -> None:
         self.device = torch.device(device)
         self.scene_center = np.asarray(scene_center, dtype=np.float32).reshape(3)
         self.scene_radius = float(scene_radius)
 
-        views_imgs, cams_scaled = load_views(data_root, cams, frame=frame, downscale=downscale)
+        views_imgs, cams_scaled = load_views(data_root, cams, frame=frame)
         self.views: List[ViewData] = []
         for name, img_bgr in views_imgs.items():
             cam = cams_scaled[name]

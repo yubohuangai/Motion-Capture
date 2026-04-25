@@ -110,19 +110,28 @@ def sample_colors(view_bgr: np.ndarray, uv: np.ndarray) -> np.ndarray:
 
 
 def consistency_check(points: np.ndarray,
-                      source_depth: np.ndarray,
+                      point_normals: np.ndarray,
                       cams: Dict[str, Camera],
                       depth_maps: Dict[str, DepthMap],
+                      normal_maps: Dict[str, np.ndarray],
                       ref_name: str,
                       rel_tol: float = 0.02,
                       min_consistent: int = 2,
+                      max_normal_deg: float = 60.0,
                       ) -> np.ndarray:
-    """For each candidate point, count how many other views' depth maps agree.
+    """For each candidate point, count how many other views agree on both
+    depth (within ``rel_tol``) and surface normal (within ``max_normal_deg``).
+
+    ``point_normals`` are the ref-view normals at each candidate point (world
+    frame, unit length). ``normal_maps`` is a dict of per-view normal images
+    (H, W, 3) in the world frame.
 
     Returns a boolean mask (N,) of accepted points.
     """
     N = points.shape[0]
     count = np.zeros(N, dtype=np.int32)
+    cos_thr = float(np.cos(np.deg2rad(max_normal_deg)))
+    ref_n_valid = np.linalg.norm(point_normals, axis=1) > 1e-6
     for other_name, other_dm in depth_maps.items():
         if other_name == ref_name:
             continue
@@ -133,12 +142,19 @@ def consistency_check(points: np.ndarray,
         v = np.round(uv[:, 1]).astype(np.int32)
         in_img = (u >= 0) & (u < W) & (v >= 0) & (v < H) & (z > 0)
         other_d = np.zeros(N, dtype=np.float32)
+        other_n = np.zeros((N, 3), dtype=np.float32)
         idx = np.where(in_img)[0]
         other_d[idx] = other_dm.depth[v[idx], u[idx]]
+        other_n[idx] = normal_maps[other_name][v[idx], u[idx]]
         valid = (other_d > 0) & in_img
         # relative depth agreement
         rel = np.where(valid, np.abs(z - other_d) / np.maximum(z, 1e-3), 1.0)
-        count += (valid & (rel < rel_tol)).astype(np.int32)
+        depth_ok = valid & (rel < rel_tol)
+        # normal agreement (skip this filter where either side has no normal)
+        other_n_valid = np.linalg.norm(other_n, axis=1) > 1e-6
+        cos_sim = np.sum(point_normals * other_n, axis=1)
+        normal_ok = ~(ref_n_valid & other_n_valid) | (cos_sim > cos_thr)
+        count += (depth_ok & normal_ok).astype(np.int32)
     return count >= min_consistent
 
 
@@ -160,30 +176,55 @@ def fuse_depth_maps(views: Dict[str, np.ndarray],
                     depth_maps: Dict[str, DepthMap],
                     rel_tol: float = 0.02,
                     min_consistent: int = 2,
+                    max_normal_deg: float = 60.0,
+                    masks: Optional[Dict[str, np.ndarray]] = None,
                     verbose: bool = True,
                     ) -> FusedCloud:
     """Fuse per-view depth maps into a single oriented + colored point cloud.
 
     Cross-view consistency keeps only pixels whose 3D location is confirmed
     by at least ``min_consistent`` other views' depth maps (within ``rel_tol``
-    of the predicted depth).
+    of the predicted depth, and with normal angle below ``max_normal_deg``).
+
+    ``masks`` (optional): cam_name -> uint8 (H, W) foreground mask at the same
+    resolution as ``views`` / depth maps. Where a mask is present, only
+    foreground pixels are back-projected (background depth is discarded even
+    if it survived MVS, e.g. from an earlier unmasked run).
     """
+    # Precompute normals for every view once (reused inside the inner loop
+    # for cross-view agreement).
+    normal_maps: Dict[str, np.ndarray] = {
+        name: estimate_normals(dm, cams[name]) for name, dm in depth_maps.items()
+    }
+
     all_pts: List[np.ndarray] = []
     all_nrm: List[np.ndarray] = []
     all_col: List[np.ndarray] = []
     all_cnf: List[np.ndarray] = []
     for ref_name, dm in depth_maps.items():
         cam = cams[ref_name]
-        normals_map = estimate_normals(dm, cam)
+        normals_map = normal_maps[ref_name]
+        # Optional foreground mask zeroes out background depth so it never
+        # enters fusion.
+        if masks and ref_name in masks:
+            fg = masks[ref_name]
+            if fg.shape[:2] != dm.depth.shape:
+                fg = cv2.resize(fg, (dm.depth.shape[1], dm.depth.shape[0]),
+                                interpolation=cv2.INTER_NEAREST)
+            dm = DepthMap(cam_name=dm.cam_name,
+                          depth=np.where(fg > 0, dm.depth, 0.0).astype(np.float32),
+                          confidence=np.where(fg > 0, dm.confidence, 0.0).astype(np.float32),
+                          normal=dm.normal)
         pts, pix = backproject_depth(dm, cam)
         if pts.shape[0] == 0:
             continue
         n = normals_map[pix[:, 1], pix[:, 0]]
         conf = dm.confidence[pix[:, 1], pix[:, 0]]
-        # consistency check
-        keep = consistency_check(pts, dm.depth, cams, depth_maps,
+        # consistency check (depth + normal)
+        keep = consistency_check(pts, n, cams, depth_maps, normal_maps,
                                  ref_name=ref_name, rel_tol=rel_tol,
-                                 min_consistent=min_consistent)
+                                 min_consistent=min_consistent,
+                                 max_normal_deg=max_normal_deg)
         pts = pts[keep]; n = n[keep]; conf = conf[keep]; pix = pix[keep]
         col = sample_colors(views[ref_name], pix.astype(np.float32))
 

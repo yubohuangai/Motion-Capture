@@ -5,8 +5,8 @@ Reads a .ply point cloud (with normals) and produces a triangle mesh with
 vertex colors. If normals are missing, they are estimated automatically.
 
 Usage:
-    python apps/reconstruction/pointcloud_to_mesh.py /path/to/cleaned.ply
-    python apps/reconstruction/pointcloud_to_mesh.py /path/to/data
+    python apps/reconstruction_classical/tools/pointcloud_to_mesh.py /path/to/cleaned.ply
+    python apps/reconstruction_classical/tools/pointcloud_to_mesh.py /path/to/data
     # If given a directory, looks for colmap_ws/dense/cleaned.ply.
 
 Output: mesh.ply (triangle mesh with vertex colors) next to the input.
@@ -251,7 +251,7 @@ def main():
           f"mesh.compute_vertex_normals(); "
           f'o3d.visualization.draw_geometries([mesh])"')
     print(f'\nNext step:')
-    print(f'  python apps/reconstruction/texture_mesh.py {out_path} '
+    print(f'  python apps/reconstruction_classical/tools/texture_mesh.py {out_path} '
           f'--data /path/to/data')
 
 

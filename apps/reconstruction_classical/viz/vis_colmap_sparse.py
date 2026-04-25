@@ -2,9 +2,9 @@
 Visualize a COLMAP sparse model: triangulated 3D points + camera frustums.
 
 Usage:
-    python apps/reconstruction/vis_colmap_sparse.py /path/to/colmap_ws
-    python apps/reconstruction/vis_colmap_sparse.py /path/to/colmap_ws/sparse/0
-    python apps/reconstruction/vis_colmap_sparse.py /path/to/colmap_ws --images_dir /path/to/colmap_ws/images
+    python apps/reconstruction_classical/viz/vis_colmap_sparse.py /path/to/colmap_ws
+    python apps/reconstruction_classical/viz/vis_colmap_sparse.py /path/to/colmap_ws/sparse/0
+    python apps/reconstruction_classical/viz/vis_colmap_sparse.py /path/to/colmap_ws --images_dir /path/to/colmap_ws/images
 """
 
 import argparse
@@ -20,7 +20,7 @@ except ImportError:
     print("open3d is required: pip install open3d")
     sys.exit(1)
 
-sys.path.insert(0, join(os.path.dirname(__file__), '..', '..'))
+sys.path.insert(0, join(os.path.dirname(__file__), '..', '..', '..'))
 
 from easymocap.mytools.colmap_structure import (
     read_cameras_binary,

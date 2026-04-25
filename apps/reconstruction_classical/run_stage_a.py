@@ -3,9 +3,11 @@
 Usage
 -----
     python apps/reconstruction_classical/run_stage_a.py <data_root> \
-        --output output/reconstruction_classical/<scene> \
         --n_depths 128 \
         --max_sources 4
+
+By default outputs go to ``<data_root>_output`` so artifacts sit next to
+the input data, never inside the codebase. Pass ``--output`` to override.
 
 ``<data_root>`` is expected to contain::
 
@@ -87,10 +89,6 @@ def main() -> None:
     p.add_argument("--output", type=str, default=None,
                    help="output directory (default: <data_root>_output)")
     p.add_argument("--frame", type=int, default=0)
-    p.add_argument("--downscale", type=float, default=1.0,
-                   help="image downsample factor for MVS (1.0 = native)")
-    p.add_argument("--sparse_downscale", type=float, default=1.0,
-                   help="image downsample factor for SIFT matching (1.0 = native)")
     p.add_argument("--n_depths", type=int, default=128)
     p.add_argument("--max_sources", type=int, default=4)
     p.add_argument("--ncc_ksize", type=int, default=7)
@@ -108,6 +106,10 @@ def main() -> None:
                    help="fusion: relative depth tolerance for cross-view consistency")
     p.add_argument("--min_consistent", type=int, default=2,
                    help="fusion: minimum agreeing views for a point to survive")
+    p.add_argument("--max_normal_deg", type=float, default=60.0,
+                   help="fusion: max angular disagreement between per-view "
+                        "surface normals (degrees) for a view to count as "
+                        "consistent; large values effectively disable the check")
     p.add_argument("--voxel_size", type=float, default=0.01)
     p.add_argument("--poisson_depth", type=int, default=9)
     p.add_argument("--poisson_density_pct", type=float, default=5.0)
@@ -144,8 +146,7 @@ def main() -> None:
         # lightweight loader avoiding open3d dependency for this branch
         sparse_points = _read_ply_points(sparse_ply)
     else:
-        sparse_views, sparse_cams = load_views(data_root, cams, frame=args.frame,
-                                               downscale=args.sparse_downscale)
+        sparse_views, sparse_cams = load_views(data_root, cams, frame=args.frame)
         sparse_masks = None
         if not args.no_masks:
             target_hw = {n: v.shape[:2] for n, v in sparse_views.items()}
@@ -174,7 +175,6 @@ def main() -> None:
         summary = {
             "data_root": str(data_root),
             "frame": args.frame,
-            "downscale_sparse": args.sparse_downscale,
             "n_sparse_points": int(sparse_points.shape[0]),
             "cameras": list(cams.keys()),
             "mode": "sparse_only",
@@ -186,14 +186,20 @@ def main() -> None:
         return
 
     # -------- Dense MVS -----------------------------------------------------
+    mvs_masks = None
     if args.skip_mvs:
         depth_maps = _load_depth_maps(out_dir / "depth")
         assert depth_maps, "no cached depth maps and --skip_mvs was set"
-        views, cams_mvs = load_views(data_root, cams, frame=args.frame,
-                                     downscale=args.downscale)
+        views, cams_mvs = load_views(data_root, cams, frame=args.frame)
     else:
-        views, cams_mvs = load_views(data_root, cams, frame=args.frame,
-                                     downscale=args.downscale)
+        views, cams_mvs = load_views(data_root, cams, frame=args.frame)
+        if not args.no_masks:
+            target_hw = {n: v.shape[:2] for n, v in views.items()}
+            mvs_masks = load_masks(data_root, cams_mvs.keys(),
+                                   frame=args.frame, target_hw=target_hw)
+            if mvs_masks:
+                print(f"[mvs] using foreground masks for "
+                      f"{len(mvs_masks)}/{len(cams_mvs)} cameras")
         with timed("mvs"):
             depth_maps = compute_all_depth_maps(
                 views, cams_mvs, sparse_points,
@@ -203,7 +209,8 @@ def main() -> None:
                 bilateral_d=args.bilateral_d,
                 bilateral_sigma_color=args.bilateral_sigma_color,
                 bilateral_sigma_space=args.bilateral_sigma_space,
-                texture_var_thr=args.texture_var_thr)
+                texture_var_thr=args.texture_var_thr,
+                masks=mvs_masks)
         depth_dir = ensure_dir(out_dir / "depth")
         for name, dm in depth_maps.items():
             np.savez_compressed(depth_dir / f"{name}.npz",
@@ -211,10 +218,18 @@ def main() -> None:
             _save_depth_preview(dm, depth_dir / f"{name}.png")
 
     # -------- Fusion --------------------------------------------------------
+    # Also plumb masks here — if MVS was cached from a pre-mask run, this
+    # still excludes background depths from the fused cloud.
+    if args.skip_mvs and not args.no_masks:
+        target_hw = {n: v.shape[:2] for n, v in views.items()}
+        mvs_masks = load_masks(data_root, cams_mvs.keys(),
+                               frame=args.frame, target_hw=target_hw)
     with timed("fuse"):
         cloud = fuse_depth_maps(views, cams_mvs, depth_maps,
                                 rel_tol=args.rel_tol,
-                                min_consistent=args.min_consistent)
+                                min_consistent=args.min_consistent,
+                                max_normal_deg=args.max_normal_deg,
+                                masks=mvs_masks)
     print(f"[fuse] raw fused cloud: {cloud.points.shape[0]} points")
     if args.crop_center is not None and args.crop_extent is not None:
         cloud = crop_to_bbox(cloud, args.crop_center, args.crop_extent)
@@ -243,8 +258,6 @@ def main() -> None:
     summary = {
         "data_root": str(data_root),
         "frame": args.frame,
-        "downscale_mvs": args.downscale,
-        "downscale_sparse": args.sparse_downscale,
         "n_depths": args.n_depths,
         "n_sparse_points": int(sparse_points.shape[0]),
         "n_fused_points": int(cloud.points.shape[0]),

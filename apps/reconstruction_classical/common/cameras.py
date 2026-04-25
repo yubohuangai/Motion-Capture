@@ -154,16 +154,27 @@ class Camera:
         H : (3,3) so that p_self ~ H @ p_other (both in homogeneous pixels).
         """
         if normal is None:
-            # plane normal in self's camera frame is (0,0,1); in world it is R_self^T @ (0,0,1)
+            # plane normal in self's camera frame is (0,0,1)
             n_cam_self = np.array([0.0, 0.0, 1.0])
         else:
             n_cam_self = self.R @ np.asarray(normal, dtype=np.float64).reshape(3)
             n_cam_self = n_cam_self / (np.linalg.norm(n_cam_self) + 1e-12)
-        # Express relative pose: x_self = R_rel @ x_other + T_rel
+        # Relative pose: x_self = R_rel @ x_other + T_rel
         R_rel, T_rel = self.relative_to(other)
-        # Classic plane-induced homography (see Hartley & Zisserman Eq. 13.2)
         d = float(depth)
-        H_cam = R_rel + (T_rel @ n_cam_self.reshape(1, 3)) / d
+        # Plane is parameterised in SELF's camera frame (z_self = d). The
+        # Hartley & Zisserman closed form requires the plane in the OTHER
+        # frame, so we transport it through the relative pose:
+        #   plane in other: (R_rel^T n)^T X_other = d - n^T T_rel
+        # yielding
+        #   H_cam = R_rel + T_rel · n^T R_rel / (d - n^T T_rel)
+        # The earlier simplification (n^T / d) is only valid when R_rel = I
+        # and T_rel_z = 0 (identical cameras), and produces systematic depth
+        # bias that grows with inter-camera rotation — exactly the failure we
+        # observed on the cow's middle-of-arc views.
+        n = n_cam_self.reshape(1, 3)
+        denom = d - float(n @ T_rel)
+        H_cam = R_rel + (T_rel @ (n @ R_rel)) / denom
         H = self.K @ H_cam @ np.linalg.inv(other.K)
         return H
 

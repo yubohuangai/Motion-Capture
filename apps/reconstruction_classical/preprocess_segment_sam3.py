@@ -58,10 +58,10 @@ def _to_binary_union(masks: "np.ndarray | list", H: int, W: int,
     SAM 3 returns ``state['masks']`` of shape (N, 1, H, W) (bool/0-1).
     """
     if hasattr(masks, "detach"):
-        masks = masks.detach().cpu().numpy()
+        masks = masks.detach().float().cpu().numpy()
     masks = np.asarray(masks)
     if scores is not None and hasattr(scores, "detach"):
-        scores = scores.detach().cpu().numpy()
+        scores = scores.detach().float().cpu().numpy()
     if masks.ndim == 4:                      # (N,1,H,W)
         masks = masks[:, 0]
     if masks.size == 0:
@@ -90,14 +90,25 @@ def main() -> None:
     p = argparse.ArgumentParser(description="SAM 3 foreground masks")
     p.add_argument("data_root", type=str,
                    help="root containing images/<cam>/<frame>.jpg")
-    p.add_argument("--prompt", type=str, default="cattle or cow",
-                   help="text concept to segment")
+    p.add_argument("--prompt", type=str, action="append", default=None,
+                   help="text concept to segment. Pass multiple times to "
+                        "ensemble prompts; per-prompt masks are unioned. "
+                        "Default: ['cow', 'cow tail'] — the tail prompt is "
+                        "needed because SAM 3 text queries routinely miss "
+                        "thin low-contrast appendages.")
     p.add_argument("--frame", type=int, default=0)
-    p.add_argument("--score_thr", type=float, default=0.5,
-                   help="discard SAM 3 instances with score below this")
-    p.add_argument("--erode_px", type=int, default=4,
-                   help="erode mask by N px before saving (0 = off). "
-                        "Reduces noise from imperfect silhouette edges.")
+    p.add_argument("--score_thr", type=float, default=0.3,
+                   help="discard SAM 3 instances with score below this. "
+                        "Low default (0.3) because thin parts often score "
+                        "below 0.5 even when correct, and a loose mask is "
+                        "preferred for reconstruction.")
+    p.add_argument("--erode_px", type=int, default=0,
+                   help="erode mask by N px (tight silhouette; default off).")
+    p.add_argument("--dilate_px", type=int, default=8,
+                   help="dilate mask by N px after any erode (loose silhouette; "
+                        "preferred for reconstruction — losing a foreground "
+                        "pixel costs a 3D point, gaining a background one is "
+                        "filtered by RANSAC/MVS).")
     p.add_argument("--max_long_side", type=int, default=2048,
                    help="downsize image before inference if its long side "
                         "exceeds this. The mask is then upsampled to native "
@@ -107,6 +118,7 @@ def main() -> None:
     p.add_argument("--no_overlay", action="store_true",
                    help="skip writing the green-overlay JPEG previews")
     args = p.parse_args()
+    prompts = args.prompt if args.prompt else ["cow", "cow tail"]
 
     data_root = Path(args.data_root)
     images_root = data_root / "images"
@@ -142,8 +154,14 @@ def main() -> None:
     model = build_sam3_image_model().to(device).eval()
     processor = Sam3Processor(model)
 
+    # SAM 3 ships fp32 weights but its forward pass expects bf16 activations;
+    # every example notebook enters a global autocast before calling set_image.
+    if device == "cuda":
+        torch.autocast("cuda", dtype=torch.bfloat16).__enter__()
+
     cam_dirs = _list_camera_dirs(images_root)
     print(f"[sam3] found {len(cam_dirs)} cameras under {images_root}")
+    print(f"[sam3] prompts: {prompts}")
 
     for cam_dir in cam_dirs:
         cam = cam_dir.name
@@ -172,15 +190,19 @@ def main() -> None:
         rgb_inf = cv2.cvtColor(bgr_inf, cv2.COLOR_BGR2RGB)
         pil = Image.fromarray(rgb_inf)
 
-        # --- run SAM 3 -----------------------------------------------------
+        # --- run SAM 3 (one call per prompt, then union) -------------------
         state = processor.set_image(pil)
-        out = processor.set_text_prompt(state=state, prompt=args.prompt)
-        masks = out.get("masks")
-        scores = out.get("scores")
-        n_inst = 0 if masks is None else int(getattr(masks, "shape", [0])[0])
-        union_inf = _to_binary_union(masks, H_inf, W_inf,
-                                     scores=scores,
-                                     score_thr=args.score_thr)
+        union_inf = np.zeros((H_inf, W_inf), dtype=np.uint8)
+        n_inst = 0
+        for prompt in prompts:
+            out = processor.set_text_prompt(state=state, prompt=prompt)
+            masks = out.get("masks")
+            scores = out.get("scores")
+            n_inst += 0 if masks is None else int(getattr(masks, "shape", [0])[0])
+            part = _to_binary_union(masks, H_inf, W_inf,
+                                    scores=scores,
+                                    score_thr=args.score_thr)
+            union_inf = np.maximum(union_inf, part)
 
         # --- upscale back to native resolution -----------------------------
         if (H_inf, W_inf) != (H_full, W_full):
@@ -194,6 +216,12 @@ def main() -> None:
             k = max(1, int(args.erode_px))
             kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * k + 1,) * 2)
             mask_full = cv2.erode(mask_full, kernel, iterations=1)
+
+        # --- dilate silhouette ---------------------------------------------
+        if args.dilate_px > 0 and mask_full.any():
+            k = max(1, int(args.dilate_px))
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * k + 1,) * 2)
+            mask_full = cv2.dilate(mask_full, kernel, iterations=1)
 
         # --- write ---------------------------------------------------------
         out_dir = masks_root / cam

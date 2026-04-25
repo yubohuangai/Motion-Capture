@@ -5,8 +5,8 @@ Reads a .ply point cloud (e.g. COLMAP dense/fused.ply) and writes a cleaned
 version ready for surface reconstruction.
 
 Usage:
-    python apps/reconstruction/clean_pointcloud.py /path/to/data
-    python apps/reconstruction/clean_pointcloud.py /path/to/fused.ply
+    python apps/reconstruction_classical/tools/clean_pointcloud.py /path/to/data
+    python apps/reconstruction_classical/tools/clean_pointcloud.py /path/to/fused.ply
     # If given a directory, looks for colmap_ws/dense/fused.ply.
     # Writes cleaned.ply next to the input by default.
 
@@ -27,7 +27,7 @@ from os.path import join
 import numpy as np
 import open3d as o3d
 
-sys.path.insert(0, join(os.path.dirname(__file__), '..', '..'))
+sys.path.insert(0, join(os.path.dirname(__file__), '..', '..', '..'))
 
 from easymocap.mytools.colmap_structure import (
     read_images_binary,
@@ -268,7 +268,7 @@ def main():
     print(f'  Has colors:  {pcd.has_colors()}')
     print(f'{"="*60}')
     print(f'\nNext step:')
-    print(f'  python apps/reconstruction/pointcloud_to_mesh.py {out_path}')
+    print(f'  python apps/reconstruction_classical/tools/pointcloud_to_mesh.py {out_path}')
 
 
 if __name__ == '__main__':

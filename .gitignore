@@ -119,6 +119,12 @@ yolov5m.pt
 
 # output
 output/
+
+# Claude Code session state
+.claude/
+
+# Local-only files (e.g. Narval frozen wheels list)
+*.local
 # ChArUco generator: ignore PNGs; track .json metadata and .gitkeep
 apps/calibration/generated_charuco_boards/*
 !apps/calibration/generated_charuco_boards/.gitkeep

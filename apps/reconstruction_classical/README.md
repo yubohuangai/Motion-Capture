@@ -88,16 +88,14 @@ RGB images + known camera poses
 needed because Step 2 has to know roughly *where* the object is in depth
 in order to know which depth values to test.
 
-1. **SIFT detection.** Each image is fed at native resolution
-   (`--sparse_downscale 1.0`, the default) into OpenCV's SIFT detector
-   with `contrastThreshold=0.02`. **SIFT** stands for *Scale-Invariant
-   Feature Transform* (Lowe, IJCV 2004) — for each detected keypoint
-   it produces a 128-dimensional descriptor that is invariant to image
-   scale and in-plane rotation, and robust to moderate changes in
-   viewpoint and illumination. That invariance is exactly why the same
-   physical point on the cow can be matched between cameras that see it
-   from very different angles. Pass `--sparse_downscale 0.5` if you
-   want the older fast-but-less-accurate behavior.
+1. **SIFT detection.** Each image is fed at native resolution into
+   OpenCV's SIFT detector with `contrastThreshold=0.02`. **SIFT** stands
+   for *Scale-Invariant Feature Transform* (Lowe, IJCV 2004) — for each
+   detected keypoint it produces a 128-dimensional descriptor that is
+   invariant to image scale and in-plane rotation, and robust to moderate
+   changes in viewpoint and illumination. That invariance is exactly why
+   the same physical point on the cow can be matched between cameras
+   that see it from very different angles.
 
    On `cow_1/10465` at native resolution this yields **130k–260k
    keypoints per image** (e.g. cam 02 = 132k, cam 09 = 261k). Cameras
@@ -228,7 +226,13 @@ Pixels are rejected if:
 * Confidence < `--min_conf` (default 0.25) — the cost curve is flat,
   the algorithm couldn't decide.
 * Reference patch variance < `--texture_var_thr` (default 2.0) — a
-  blank wall has no information to match.
+  blank wall has no information to match. The variance is measured on a
+  **CLAHE-equalised** grayscale (LAB-L, clip 3.0, 8×8 tiles), not the raw
+  gray, so very dark regions (black fur, deep shadow) get the same chance
+  as bright ones — without CLAHE, dark Holstein patches were below the
+  variance floor and produced empty holes in the depth map. Disable with
+  `use_clahe=False` in `plane_sweep` if matching a controlled-lighting
+  scene where raw intensity is more informative.
 
 Surviving depths are smoothed with a **median filter** (kills isolated
 spikes) and a **joint bilateral filter** that uses the RGB image as a
@@ -404,9 +408,17 @@ This workaround is not needed on Linux.
 
 ## Running
 
-All commands are run from the repo root. Replace `<data_root>` and `<output>`
-with your actual paths. The cow scene example uses
-`/path/to/data/cow_2/7813` and `output/reconstruction_classical/cow_2_7813`.
+All commands are run from the repo root. By default, outputs are written
+to **`<data_root>_output/`** — i.e. next to the input data, never inside
+the codebase. Override with `--output` if you need a different location.
+
+All examples below use `<data_root>` as a placeholder; for the cow scene
+on Narval that's `/scratch/yubo/cow_1/10465`, which produces
+`/scratch/yubo/cow_1/10465_output/`.
+
+> **Resolution policy:** images are always processed at **native
+> resolution**. Downscaling has been removed — for fur/hair subjects it
+> destroys the matching signal that Stage A and Stage B both rely on.
 
 ### Recommended: write to a script, then run it
 
@@ -417,10 +429,7 @@ become real newlines. Writing to a script sidesteps this:
 cat > /tmp/run_neus.sh << 'EOF'
 cd /path/to/Motion-Capture
 python -m apps.reconstruction_classical.run_stage_b \
-  /path/to/data/cow_2/7813 \
-  --stage_a_output output/reconstruction_classical/cow_2_7813 \
-  --output output/reconstruction_classical/cow_2_7813/neus \
-  --downscale 0.25 \
+  <data_root> \
   --n_iters 100000 \
   --batch_rays 512 \
   --mesh_resolution 256 \
@@ -429,84 +438,76 @@ EOF
 bash /tmp/run_neus.sh
 ```
 
-### Quick smoke test (~5–10 min on GPU)
+### Stage B smoke test
 
-Validates the full Stage B pipeline end-to-end at very low resolution before
-committing to a long run:
+For end-to-end validation at low cost, reduce iterations / samples /
+mesh resolution rather than image resolution:
 
 ```bash
-cat > /tmp/run_neus_smoke.sh << 'EOF'
-cd /path/to/Motion-Capture
-python -m apps.reconstruction_classical.run_stage_b \
-  /path/to/data/cow_2/7813 \
-  --stage_a_output output/reconstruction_classical/cow_2_7813 \
-  --output output/reconstruction_classical/cow_2_7813/neus_smoke \
-  --downscale 0.125 \
-  --n_iters 2000 \
-  --batch_rays 256 \
-  --n_samples 32 \
-  --n_importance 32 \
-  --val_every 500 \
-  --ckpt_every 1000 \
-  --mesh_resolution 128 \
-  --device auto
-EOF
-bash /tmp/run_neus_smoke.sh
+python -m apps.reconstruction_classical.run_stage_b <data_root> \
+  --n_iters 2000 --batch_rays 256 \
+  --n_samples 32 --n_importance 32 \
+  --val_every 500 --ckpt_every 1000 \
+  --mesh_resolution 128 --device auto
 ```
 
-Check `neus_smoke/train.log` (PSNR should climb past ~15 dB within 1k iters)
-and `neus_smoke/val/` for re-rendered views.
+Check `<data_root>_output/neus/train.log` (PSNR should climb past ~15 dB
+within 1k iters) and `neus/val/` for re-rendered views.
 
 ### Full Stage B run (~1–3 hours on GPU)
 
 ```bash
-cat > /tmp/run_neus_full.sh << 'EOF'
-cd /path/to/Motion-Capture
-python -m apps.reconstruction_classical.run_stage_b \
-  /path/to/data/cow_2/7813 \
-  --stage_a_output output/reconstruction_classical/cow_2_7813 \
-  --output output/reconstruction_classical/cow_2_7813/neus \
-  --downscale 0.25 \
-  --n_iters 100000 \
-  --batch_rays 512 \
-  --mesh_resolution 256 \
-  --device auto
-EOF
-bash /tmp/run_neus_full.sh
+python -m apps.reconstruction_classical.run_stage_b <data_root> \
+  --n_iters 100000 --batch_rays 512 \
+  --mesh_resolution 256 --device auto
 ```
 
-On a multi-GPU machine you can point to a specific card:
-`--device cuda:1`
-
-On a powerful GPU (A100, H100) raise `--batch_rays 1024` or `2048` for faster
-convergence.
+On a multi-GPU machine, point to a specific card with `--device cuda:1`.
+On A100/H100, raise `--batch_rays 1024` or `2048` for faster convergence.
 
 Resume a stopped run:
 
 ```bash
-python -m apps.reconstruction_classical.run_stage_b ... \
-  --resume_from output/reconstruction_classical/cow_2_7813/neus/ckpt/final.pt
+python -m apps.reconstruction_classical.run_stage_b <data_root> \
+  --resume_from <data_root>_output/neus/ckpt/final.pt
 ```
 
 Re-extract the mesh from a finished checkpoint without retraining:
 
 ```bash
-python -m apps.reconstruction_classical.run_stage_b \
-  /path/to/data/cow_2/7813 \
-  --stage_a_output output/reconstruction_classical/cow_2_7813 \
-  --output output/reconstruction_classical/cow_2_7813/neus \
+python -m apps.reconstruction_classical.run_stage_b <data_root> \
   --only_mesh --mesh_resolution 256 --device auto
 ```
 
 ### Stage A only (classical MVS, CPU)
 
-No GPU needed. Typical runtime ~5–15 min at 0.25× scale.
+No GPU needed. ~35–40 min at native 4K (11 cameras, 128 depth planes).
 
 ```bash
-python -m apps.reconstruction_classical.run_stage_a \
-  /path/to/data/cow_2/7813 \
-  --output output/reconstruction_classical/cow_2_7813 \
-  --downscale 0.25
+python -m apps.reconstruction_classical.run_stage_a <data_root>
+```
+
+#### Narval / SLURM template (CPU-only)
+
+Measured on `cow_1/10465` (11 cameras, 4K native, 128 depth planes,
+4 sources/view): wall **38 min**, peak RSS **4 GB**, 8 CPUs (OpenCV
+boxFilter/warpPerspective thread internally — diminishing returns past 8).
+
+```bash
+#!/bin/bash
+#SBATCH --account=def-vislearn          # rrg-vislearn is GPU-only; CPU jobs use def
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=8G                         # 4 GB peak observed; 8 G gives 2× headroom
+#SBATCH --time=1:00:00                   # ~40 min observed; 1 h covers slower nodes
+#SBATCH --job-name=stageA
+
+module load python/3.11 opencv/4.9.0
+virtualenv --no-download "$SLURM_TMPDIR/env"
+source "$SLURM_TMPDIR/env/bin/activate"
+pip install --no-index numpy scipy tqdm pyyaml open3d
+
+python -m apps.reconstruction_classical.run_stage_a /scratch/yubo/cow_1/10465
+# outputs to /scratch/yubo/cow_1/10465_output/
 ```
 
 ### Full pipeline from scratch (Stage A → Stage B)
@@ -514,16 +515,8 @@ python -m apps.reconstruction_classical.run_stage_a \
 Skips Stage A automatically if `sparse.ply` and `fused.ply` already exist.
 
 ```bash
-cat > /tmp/run_pipeline.sh << 'EOF'
-cd /path/to/Motion-Capture
-python -m apps.reconstruction_classical.run_pipeline \
-  /path/to/data/cow_2/7813 \
-  --output output/reconstruction_classical/cow_2_7813 \
-  --downscale 0.25 \
-  --neus_iters 100000 \
-  --device auto
-EOF
-bash /tmp/run_pipeline.sh
+python -m apps.reconstruction_classical.run_pipeline <data_root> \
+  --neus_iters 100000 --device auto
 ```
 
 ## Outputs
@@ -553,7 +546,6 @@ Stage A fused cloud or mesh.
 
 | Flag | Default | Notes |
 |---|---|---|
-| `--downscale` | `0.25` | MVS image scale; smaller = faster, less detail |
 | `--n_depths` | `128` | number of depth planes in the plane sweep |
 | `--max_sources` | `4` | neighboring views per reference |
 | `--ncc_ksize` | `7` | ZNCC window (odd, pixels) |
@@ -601,16 +593,43 @@ apps/reconstruction_classical/
     mvs_plane_sweep.py    # plane-sweep ZNCC depth maps
     fuse.py               # cross-view consistency + oriented cloud
     mesh.py               # Poisson meshing (Open3D)
+  stage_a_colmap/         # alternate Stage A backend — runs COLMAP MVS
+    export_colmap.py      # calibration -> COLMAP workspace + sparse model
+    dense_reconstruct.py  # PatchMatch stereo + stereo_fusion -> dense/fused.ply
+    run_stage_a_colmap.py # one-shot driver wrapping the two scripts
   stage_b_neus/
     models.py             # SDFNetwork + ColorNetwork + learnable variance
     renderer.py           # NeuS volume renderer (unbiased alpha)
     dataset.py            # ray sampler in normalized object frame
     train.py              # training loop (photometric + Eikonal)
     extract_mesh.py       # marching cubes + vertex coloring
+  stage_b_3dgs/           # alternate Stage B backend — 3D Gaussian Splatting
+    run_3dgs.py           # wraps export_colmap + 3DGS train.py
+  tools/                  # PLY post-processing utilities (work on any dense cloud)
+    clean_pointcloud.py   # statistical/DBSCAN/radius outlier + camera-oriented normals
+    pointcloud_to_mesh.py # Poisson or ball-pivoting + smoothing/decimation/color
+  viz/                    # visualization helpers (Open3D windows)
+    vis_colmap_sparse.py  # sparse points + camera frustums
+    vis_gaussians.py      # 3DGS .ply with opacity filtering
+    render_mesh_turntable.py  # turntable MP4 of a mesh.ply
+  preprocess_segment_sam3.py # foreground masks via SAM 3
   run_stage_a.py
   run_stage_b.py
   run_pipeline.py         # Stage A then Stage B
 ```
+
+### Choosing a backend
+
+For Stage A you have **two backends** that produce comparable dense point
+clouds; for Stage B you have **two backends** with different output types
+(implicit surface vs. radiance field).
+
+| Stage | Backend | Output | Use when |
+|---|---|---|---|
+| A | `stage_a_classical` | `fused.ply` (CPU plane-sweep) | Default — no extra deps; reproducible. |
+| A | `stage_a_colmap` | `colmap_ws/dense/fused.ply` | Reference baseline; needs `colmap` binary + GPU. |
+| B | `stage_b_neus` | `mesh_neus.ply` (clean surface) | When you want a triangle mesh. |
+| B | `stage_b_3dgs` | `point_cloud.ply` (Gaussians) | When you want photorealistic novel-view rendering, not geometry. |
 
 ## Notes on the design
 

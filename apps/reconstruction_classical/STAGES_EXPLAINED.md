@@ -43,7 +43,7 @@ Goal: produce a small, high-precision seed point cloud used to (a) set depth ran
 
 Pipeline:
 
-1. **SIFT detection** on each native-resolution image (`--sparse_downscale 1.0`, default). Uses OpenCV SIFT with `contrastThreshold=0.02`. Pass `--sparse_downscale 0.5` for the older fast-but-less-accurate behavior.
+1. **SIFT detection** on each native-resolution image. Uses OpenCV SIFT with `contrastThreshold=0.02`.
 2. **Pairwise matching** for all `C(N, 2)` camera pairs using FLANN KD-tree. Lowe's ratio test at `0.75` + mutual-nearest-neighbor check.
 3. **Epipolar filter**: uses your known poses to compute the fundamental matrix per pair, then rejects matches farther than `--max_epi_px 2.0` px from their epipolar line. (This is what turned `match 07-08: raw=1763` into `kept=1650` in your log.)
 4. **Track building** (union-find): merge pairwise matches into multi-view tracks. Tracks with `< min_views=3` observations are dropped.
@@ -178,8 +178,6 @@ Based on the log you showed:
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--downscale` | 1.0 | downscale images for MVS |
-| `--sparse_downscale` | 1.0 | downscale for SIFT (1.0 = native) |
 | `--n_depths` | 128 | plane-sweep depth hypotheses |
 | `--max_sources` | 4 | src views per reference |
 | `--ncc_ksize` | 7 | ZNCC window |
