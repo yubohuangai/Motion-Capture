@@ -88,9 +88,10 @@ def _setup_shared(data_root: Path, ref_frame: int, shared_dir: Path,
     per-frame ``image_undistorter`` will then handle undistortion using each
     timestamp's own raw images.
 
-    Skips SIFT triangulation entirely (calibration is already known) — output
-    is just ``cameras.bin`` + ``images.bin``. The ``images/`` subdir is
-    populated from ``ref_frame`` (raw distorted) but never used at dense time.
+    Runs SIFT triangulation on ``ref_frame`` to populate sparse points —
+    ``patch_match_stereo`` needs them to auto-estimate depth bounds (without
+    them it errors with "you must manually set min/max depth"). The
+    triangulation costs ~5 min one-time and is amortized across all frames.
     """
     if (shared_dir / "sparse" / "0" / "cameras.bin").exists():
         print(f"[stage_a_colmap_4d] shared sparse model already at {shared_dir}; reusing.")
@@ -105,7 +106,7 @@ def _setup_shared(data_root: Path, ref_frame: int, shared_dir: Path,
         "--extri", extri,
         "--ext", ext,
         "--no-undistort",
-        "--no-triangulate",
+        "--triangulate",   # populates sparse points → patch_match_stereo can auto-set depth bounds
         "--no-mask",
         "--colmap", colmap,
     ]

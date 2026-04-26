@@ -300,14 +300,18 @@ def main():
             from plyfile import PlyData
             ply = PlyData.read(fused_path)
             n_pts = ply['vertex'].count
-            x = np.array(ply['vertex']['x'])
-            y = np.array(ply['vertex']['y'])
-            z = np.array(ply['vertex']['z'])
             print(f'  Points: {n_pts:,}')
-            print(f'  Bounding box:')
-            print(f'    X: [{x.min():.4f}, {x.max():.4f}]')
-            print(f'    Y: [{y.min():.4f}, {y.max():.4f}]')
-            print(f'    Z: [{z.min():.4f}, {z.max():.4f}]')
+            if n_pts > 0:
+                x = np.array(ply['vertex']['x'])
+                y = np.array(ply['vertex']['y'])
+                z = np.array(ply['vertex']['z'])
+                print(f'  Bounding box:')
+                print(f'    X: [{x.min():.4f}, {x.max():.4f}]')
+                print(f'    Y: [{y.min():.4f}, {y.max():.4f}]')
+                print(f'    Z: [{z.min():.4f}, {z.max():.4f}]')
+            else:
+                print('  WARNING: zero points fused — check patch_match_stereo output above '
+                      '(common cause: empty sparse model → unset depth bounds)')
         except ImportError:
             print('  (install plyfile for point count / bounding box stats)')
     else:
