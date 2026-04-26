@@ -2,11 +2,13 @@
 # SLURM array template for parallel per-frame stage_a_colmap_4d.
 # Each array task processes ONE frame on its own GPU.
 #
-# Usage:
-#   1. Decide your frames (env var FRAMES, comma-separated, e.g. "0,5,10,15,20")
-#   2. Submit:  sbatch --array=0-$((N-1)) --export=ALL,FRAMES=...,DATA=... run_4d_array.sh
+# Required env vars (set by launcher via --export=ALL,FRAMES_FILE=...,DATA=...):
+#   FRAMES_FILE  path to a text file with one frame index per line
+#   DATA         path to data root (with images/, intri.yml, extri.yml)
 #
-# Or use the launcher script below ('# CALLER' comment).
+# A frames-file (rather than a comma-list var) is needed because
+# `--export=ALL,FRAMES=0,5,10,...` makes SLURM split on the commas in the
+# value, so only `FRAMES=0` reaches each task.
 
 #SBATCH --account=rrg-vislearn
 #SBATCH --gres=gpu:a100:1
@@ -20,8 +22,8 @@
 set -euo pipefail
 mkdir -p /scratch/yubo/jobs/logs
 
-# Pick this task's frame from the comma-separated FRAMES list
-IFS=',' read -ra FRAME_ARR <<< "$FRAMES"
+# Pick this task's frame from the file (one frame per line)
+mapfile -t FRAME_ARR < "$FRAMES_FILE"
 FRAME=${FRAME_ARR[$SLURM_ARRAY_TASK_ID]}
 echo "[array task $SLURM_ARRAY_TASK_ID] frame=$FRAME data=$DATA"
 
