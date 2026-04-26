@@ -192,8 +192,7 @@ def main() -> None:
 
 def _process_one_frame(cam_dirs, frame, masks_root, processor, prompts, args):
     """Generator-like helper that runs SAM3 over all cams for one frame."""
-    import cv2 as _cv2  # already imported at top, kept local for clarity
-    from PIL import Image as _Image
+    from PIL import Image  # local import: keeps top-of-file importable on Mac
     for cam_dir in cam_dirs:
         cam = cam_dir.name
         img_path = _pick_frame(cam_dir, frame)
