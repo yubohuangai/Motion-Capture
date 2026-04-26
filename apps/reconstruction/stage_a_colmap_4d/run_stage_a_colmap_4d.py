@@ -164,25 +164,27 @@ def _run_dense(frame_dir: Path, neighbor: int, gpu_index: str, colmap: str,
 
 
 def _auto_depth_bounds(data_root: Path, intri: str, extri: str) -> tuple[float, float]:
-    """Compute conservative [depth_min, depth_max] from camera geometry.
+    """Compute conservative [depth_min, depth_max] from camera-rig geometry.
 
-    Assumes the rig looks at the scene centroid (true for cow-style rigs);
-    bounds are 0.3× and 1.5× the inter-camera distance to the centroid, so
-    PatchMatch sweeps generously without wasting hypotheses on far depths.
+    Uses **rig diameter** (max pairwise camera distance) rather than
+    distance-to-centroid: for a rig looking inward at a subject, the
+    subject lives roughly at ~half the rig diameter from any camera.
+    Distance-to-centroid is unreliable when cameras cluster asymmetrically
+    (e.g. one cam near the world origin pulls the centroid off the subject).
+
+    Returns ``(0.25 × diameter, 1.0 × diameter)``: wide enough to
+    accommodate subjects of ~half-rig-radius extent, narrow enough that
+    PatchMatch hypotheses concentrate on plausible depths.
     """
     import numpy as np
+    from scipy.spatial.distance import pdist
     sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
     from easymocap.mytools.camera_utils import read_camera
     cams = read_camera(str(data_root / intri), str(data_root / extri))
     names = cams.pop("basenames")
-    centers = []
-    for n in names:
-        R, T = cams[n]["R"], cams[n]["T"].flatten()
-        centers.append(-R.T @ T)
-    centers = np.array(centers)
-    centroid = centers.mean(axis=0)
-    dists = np.linalg.norm(centers - centroid, axis=1)
-    return float(dists.min() * 0.3), float(dists.max() * 1.5)
+    centers = np.array([-cams[n]["R"].T @ cams[n]["T"].flatten() for n in names])
+    rig_diameter = float(pdist(centers).max())
+    return max(0.5, rig_diameter * 0.25), rig_diameter
 
 
 def main() -> None:
