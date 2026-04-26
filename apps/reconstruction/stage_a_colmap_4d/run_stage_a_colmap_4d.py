@@ -154,6 +154,10 @@ def _run_single_frame(data_root: Path, frame: int, frame_dir: Path,
         "--neighbor", str(neighbor),
         "--gpu_index", gpu_index,
         "--colmap", colmap,
+        # Always triangulate on the unmasked image: a tight cow mask leaves
+        # too few SIFT points to derive per-cam depth bounds and PatchMatch
+        # silently fails. Dense step still applies the mask.
+        "--no-mask-sparse",
     ]
     _run(cmd)
     _expose_human_outputs(data_root, frame, frame_dir)

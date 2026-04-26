@@ -57,6 +57,13 @@ def main() -> None:
                    help="GPU index for patch_match_stereo (default: 0)")
     p.add_argument("--skip_dense", action="store_true",
                    help="run sparse triangulation only; skip dense MVS")
+    p.add_argument("--no-mask-sparse", dest="no_mask_sparse",
+                   action="store_true",
+                   help="do NOT apply masks during SIFT/triangulation, even "
+                        "if --mask is set. Useful for masked dense + unmasked "
+                        "sparse: SIFT then has the whole scene to match on, "
+                        "preventing the depth-bound failure that happens when "
+                        "a tight mask leaves <100 sparse points.")
     args = p.parse_args()
 
     data_root = Path(args.data_root)
@@ -78,7 +85,9 @@ def main() -> None:
         "--triangulate",
     ]
     cmd.append("--undistort")
-    if args.no_mask:
+    # Sparse-step masks: optionally suppressed even when --mask is set, so
+    # SIFT has the full scene and produces enough points for depth bounds.
+    if args.no_mask or args.no_mask_sparse:
         cmd.append("--no-mask")
     else:
         cmd.extend(["--mask", args.mask])
