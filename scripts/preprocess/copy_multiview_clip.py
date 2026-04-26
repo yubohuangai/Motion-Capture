@@ -298,7 +298,12 @@ def parse_args():
         type=str,
         default=None,
         metavar="OUT_ROOT",
-        help="Output root; writes OUT_ROOT/images/NN/000000.ext (e.g. ~/scratch/cow_2_board/board)",
+        help=(
+            "Output root; writes OUT_ROOT/images/NN/000000.ext. "
+            "Default: <parent_of_input>/<frame_start>_<frame_end> "
+            "(e.g. input=~/scratch/cow_1_board/raw, frames 9148..10581 "
+            "→ ~/scratch/cow_1_board/9148_10581)."
+        ),
     )
     parser.add_argument(
         "--frame-start",
@@ -363,10 +368,16 @@ if __name__ == "__main__":
         for task in CONFIG["tasks"]:
             print(f"=== Task: {task['name']} → {task['dst']} ===")
             run_task(base, task)
-    elif args.input and args.output and args.frame_start is not None and args.frame_end is not None:
+    elif args.input and args.frame_start is not None and args.frame_end is not None:
+        if args.output:
+            output_root = args.output
+        else:
+            input_path = Path(args.input).expanduser().resolve()
+            output_root = str(input_path.parent / f"{args.frame_start}_{args.frame_end}")
+            print(f"[copy_multiview_clip] --output not given; defaulting to {output_root}")
         run_cli_clip(
             args.input,
-            args.output,
+            output_root,
             args.frame_start,
             args.frame_end,
             camera_workers=args.camera_workers,
@@ -378,10 +389,13 @@ if __name__ == "__main__":
             "Usage:\n"
             "  python scripts/preprocess/copy_multiview_clip.py \\\n"
             "    --input  <raw_root> \\\n"
-            "    --output <out_root> \\\n"
+            "    [--output <out_root>] \\\n"
             "    --frame-start <N> --frame-end <M>\n"
             "\n"
+            "If --output is omitted, defaults to <parent_of_input>/<N>_<M>.\n"
+            "\n"
             "Example:\n"
-            "  python scripts/preprocess/copy_multiview_clip.py -i ~/scratch/cow_2_board/raw "
-            "-o ~/scratch/cow_2_board/board --frame-start 1525 --frame-end 3361\n"
+            "  python scripts/preprocess/copy_multiview_clip.py -i ~/scratch/cow_1_board/raw "
+            "--frame-start 9148 --frame-end 10581\n"
+            "  → writes to ~/scratch/cow_1_board/9148_10581/images/NN/\n"
         )

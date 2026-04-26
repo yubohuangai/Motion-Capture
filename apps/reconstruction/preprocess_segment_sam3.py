@@ -96,7 +96,13 @@ def main() -> None:
                         "Default: ['cow', 'cow tail'] — the tail prompt is "
                         "needed because SAM 3 text queries routinely miss "
                         "thin low-contrast appendages.")
-    p.add_argument("--frame", type=int, default=0)
+    p.add_argument("--frame", type=int, default=0,
+                   help="single frame index to process (default 0). "
+                        "Use --frames to process a sequence instead.")
+    p.add_argument("--frames", type=str, default=None,
+                   help="frame range 'START:END[:STEP]' (end-exclusive) or "
+                        "explicit 'N1,N2,N3'. Overrides --frame when set; "
+                        "model is built once and reused across all frames.")
     p.add_argument("--score_thr", type=float, default=0.3,
                    help="discard SAM 3 instances with score below this. "
                         "Low default (0.3) because thin parts often score "
@@ -163,11 +169,37 @@ def main() -> None:
     print(f"[sam3] found {len(cam_dirs)} cameras under {images_root}")
     print(f"[sam3] prompts: {prompts}")
 
+    # Determine which frames to process
+    if args.frames:
+        if ":" in args.frames:
+            parts = [int(p) for p in args.frames.split(":")]
+            frames = (list(range(parts[0], parts[1])) if len(parts) == 2
+                      else list(range(parts[0], parts[1], parts[2])))
+        else:
+            frames = [int(p) for p in args.frames.split(",") if p.strip()]
+    else:
+        frames = [args.frame]
+    print(f"[sam3] {len(frames)} frame(s): {frames[:5]}{'...' if len(frames)>5 else ''}")
+
+    for fi, frame in enumerate(frames, start=1):
+        if len(frames) > 1:
+            print(f"\n[sam3] === frame {frame} ({fi}/{len(frames)}) ===")
+        list(_process_one_frame(cam_dirs, frame, masks_root, processor,
+                                prompts, args))
+
+    print(f"\n[sam3] done. Masks under {masks_root}")
+
+
+def _process_one_frame(cam_dirs, frame, masks_root, processor, prompts, args):
+    """Generator-like helper that runs SAM3 over all cams for one frame."""
+    import cv2 as _cv2  # already imported at top, kept local for clarity
+    from PIL import Image as _Image
     for cam_dir in cam_dirs:
         cam = cam_dir.name
-        img_path = _pick_frame(cam_dir, args.frame)
+        img_path = _pick_frame(cam_dir, frame)
         if img_path is None:
-            print(f"[sam3] {cam}: no image, skipping")
+            print(f"[sam3] {cam}/frame{frame}: no image, skipping")
+            yield cam_dir
             continue
 
         bgr_full = cv2.imread(str(img_path), cv2.IMREAD_COLOR)
@@ -226,17 +258,17 @@ def main() -> None:
         # --- write ---------------------------------------------------------
         out_dir = masks_root / cam
         out_dir.mkdir(parents=True, exist_ok=True)
-        out_png = out_dir / f"{args.frame:06d}.png"
+        out_png = out_dir / f"{frame:06d}.png"
         cv2.imwrite(str(out_png), mask_full)
         coverage = float((mask_full > 0).mean())
-        print(f"[sam3] {cam}: {n_inst} instance(s) "
+        print(f"[sam3] {cam}/frame{frame}: {n_inst} instance(s) "
               f"-> coverage {coverage * 100:5.1f}% -> {out_png}")
 
         if not args.no_overlay:
-            overlay_path = out_dir / f"{args.frame:06d}_overlay.jpg"
+            overlay_path = out_dir / f"{frame:06d}_overlay.jpg"
             _save_overlay(bgr_full, mask_full, overlay_path)
 
-    print(f"[sam3] done. Masks under {masks_root}")
+        yield cam_dir
 
 
 if __name__ == "__main__":
