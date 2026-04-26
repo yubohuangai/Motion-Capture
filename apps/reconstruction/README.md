@@ -540,6 +540,65 @@ The non-CUDA `colmap` module is also available (`module load colmap/3.12.6`
 without `cuda/12.6`), but it cannot run `patch_match_stereo` — use it only
 for sparse triangulation (`--skip_dense`).
 
+### Stage A — 4D extension (`stage_a_colmap_4d`)
+
+Half-circle rigs only see one side of a static subject. If the subject
+**moves through the rig** (e.g. a cow walks 360° over a few seconds), the
+union of per-frame reconstructions covers more of the surface — cameras
+stayed put, the cow rotated.
+
+`stage_a_colmap_4d` wraps `stage_a_colmap` over a sequence of frames,
+exploiting two facts to skip redundant work:
+
+1. **Cameras don't move** → the COLMAP sparse model (cameras + poses) is
+   built **once** from the calibration files (no SIFT triangulation
+   needed) and symlinked into per-frame workspaces.
+2. **Per-frame work is just dense MVS** → image_undistorter +
+   patch_match_stereo + stereo_fusion, each operating on that frame's
+   images plus the shared sparse model.
+
+Output: one `fused.ply` per timestamp, all in the **same world coords**
+(so they overlay directly in MeshLab / Open3D). Frames close in time will
+mostly differ in where the cow is; the union of all frames covers more
+of the cow than any single frame alone.
+
+```bash
+#!/bin/bash
+#SBATCH --account=rrg-vislearn --gres=gpu:a100:1
+#SBATCH --cpus-per-task=8 --mem=32G --time=2:30:00 --job-name=cow1_4d_colmap
+
+module load StdEnv/2023 gcc/12.3 openmpi/4.1.5 cuda/12.6 \
+            python/3.11 opencv/4.9.0 colmap/3.12.6
+virtualenv --no-download "$SLURM_TMPDIR/env" && \
+  source "$SLURM_TMPDIR/env/bin/activate"
+pip install --no-index numpy scipy tqdm pyyaml plyfile tabulate termcolor
+
+# 5 timestamps spaced 1 sec apart at 30 fps
+python -m apps.reconstruction.stage_a_colmap_4d.run_stage_a_colmap_4d \
+    /scratch/yubo/cow_1/9148_10581 --frames 0:150:30
+```
+
+`--frames` accepts either a `START:END[:STEP]` range (end-exclusive) or a
+comma-separated explicit list `--frames 0,30,60,90,120`.
+
+Outputs:
+```
+<data>_output/stage_a/colmap_4d/
+  shared/sparse/0/{cameras.bin, images.bin}    # one-time
+  frame_<NNNNNN>/dense/fused.ply               # per timestamp, world coords
+```
+
+Resource estimate: ~16 min/frame on a full A100 (PatchMatch is the bulk),
+plus ~1–2 min one-time setup. 5-frame run ≈ 80 min wall; 60-frame run ≈
+16 hr — split across array jobs or pass `--skip_setup` on subsequent
+calls to reuse the shared sparse workspace.
+
+To **aggregate** per-frame clouds into one fuller reconstruction, open
+all `frame_*/dense/fused.ply` together in MeshLab, or concatenate with
+`tools/clean_pointcloud.py`'s voxel-downsample (background gets denser as
+frames pile up; the cow appears at multiple positions, which the user
+can crop or filter by motion).
+
 ### Stage B — 3DGS backend (alternative)
 
 Trains a 3D Gaussian Splatting model against a COLMAP workspace produced
@@ -705,6 +764,8 @@ apps/reconstruction/
     export_colmap.py      # calibration -> COLMAP workspace + sparse model
     dense_reconstruct.py  # PatchMatch stereo + stereo_fusion -> dense/fused.ply
     run_stage_a_colmap.py # one-shot driver wrapping the two scripts
+  stage_a_colmap_4d/      # 4D extension — per-frame MVS for moving subjects
+    run_stage_a_colmap_4d.py  # shared sparse + per-frame dense over a sequence
   stage_b_neus/
     models.py             # SDFNetwork + ColorNetwork + learnable variance
     renderer.py           # NeuS volume renderer (unbiased alpha)
