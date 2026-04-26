@@ -183,6 +183,10 @@ def main():
                         help='PatchMatchStereo num_iterations (default: 5)')
     parser.add_argument('--skip_undistort', action='store_true',
                         help='Skip image_undistorter (dense/ already exists)')
+    parser.add_argument('--depth_min', type=float, default=-1.0,
+                        help='PatchMatch min depth (default: -1 = auto from sparse points)')
+    parser.add_argument('--depth_max', type=float, default=-1.0,
+                        help='PatchMatch max depth (default: -1 = auto from sparse points)')
     args = parser.parse_args()
 
     ws = resolve_workspace(args.workspace)
@@ -271,6 +275,10 @@ def main():
         f' --PatchMatchStereo.window_radius {args.window_radius}'
         f' --PatchMatchStereo.num_iterations {args.num_iterations}'
     )
+    if args.depth_min > 0:
+        cmd += f' --PatchMatchStereo.depth_min {args.depth_min}'
+    if args.depth_max > 0:
+        cmd += f' --PatchMatchStereo.depth_max {args.depth_max}'
     print(f'  Running: {cmd}')
     subprocess.check_call(cmd, shell=True)
 

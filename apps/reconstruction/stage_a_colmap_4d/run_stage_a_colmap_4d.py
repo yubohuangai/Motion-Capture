@@ -88,10 +88,10 @@ def _setup_shared(data_root: Path, ref_frame: int, shared_dir: Path,
     per-frame ``image_undistorter`` will then handle undistortion using each
     timestamp's own raw images.
 
-    Runs SIFT triangulation on ``ref_frame`` to populate sparse points —
-    ``patch_match_stereo`` needs them to auto-estimate depth bounds (without
-    them it errors with "you must manually set min/max depth"). The
-    triangulation costs ~5 min one-time and is amortized across all frames.
+    Skips SIFT triangulation: it would force PINHOLE cameras in the rewrite
+    step of ``export_colmap.triangulate_points`` and mismatch the OPENCV
+    cameras we wrote. Instead, we compute explicit depth bounds from camera
+    geometry and pass them to ``patch_match_stereo`` via ``--depth_min/max``.
     """
     if (shared_dir / "sparse" / "0" / "cameras.bin").exists():
         print(f"[stage_a_colmap_4d] shared sparse model already at {shared_dir}; reusing.")
@@ -106,7 +106,7 @@ def _setup_shared(data_root: Path, ref_frame: int, shared_dir: Path,
         "--extri", extri,
         "--ext", ext,
         "--no-undistort",
-        "--triangulate",   # populates sparse points → patch_match_stereo can auto-set depth bounds
+        "--no-triangulate",  # depth bounds come from --depth_min/max instead
         "--no-mask",
         "--colmap", colmap,
     ]
@@ -147,7 +147,8 @@ def _link_frame_workspace(data_root: Path, frame: int, frame_dir: Path,
             dst.symlink_to(src.resolve())
 
 
-def _run_dense(frame_dir: Path, neighbor: int, gpu_index: str, colmap: str) -> None:
+def _run_dense(frame_dir: Path, neighbor: int, gpu_index: str, colmap: str,
+               depth_min: float, depth_max: float) -> None:
     cmd = [
         sys.executable, "-m",
         "apps.reconstruction.stage_a_colmap.dense_reconstruct",
@@ -156,8 +157,32 @@ def _run_dense(frame_dir: Path, neighbor: int, gpu_index: str, colmap: str) -> N
         "--gpu_index", gpu_index,
         "--no-mask",
         "--colmap", colmap,
+        "--depth_min", str(depth_min),
+        "--depth_max", str(depth_max),
     ]
     _run(cmd)
+
+
+def _auto_depth_bounds(data_root: Path, intri: str, extri: str) -> tuple[float, float]:
+    """Compute conservative [depth_min, depth_max] from camera geometry.
+
+    Assumes the rig looks at the scene centroid (true for cow-style rigs);
+    bounds are 0.3× and 1.5× the inter-camera distance to the centroid, so
+    PatchMatch sweeps generously without wasting hypotheses on far depths.
+    """
+    import numpy as np
+    sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+    from easymocap.mytools.camera_utils import read_camera
+    cams = read_camera(str(data_root / intri), str(data_root / extri))
+    names = cams.pop("basenames")
+    centers = []
+    for n in names:
+        R, T = cams[n]["R"], cams[n]["T"].flatten()
+        centers.append(-R.T @ T)
+    centers = np.array(centers)
+    centroid = centers.mean(axis=0)
+    dists = np.linalg.norm(centers - centroid, axis=1)
+    return float(dists.min() * 0.3), float(dists.max() * 1.5)
 
 
 def main() -> None:
@@ -184,6 +209,10 @@ def main() -> None:
                    help="GPU index for patch_match_stereo (default: 0)")
     p.add_argument("--skip_setup", action="store_true",
                    help="reuse existing shared sparse workspace; skip export_colmap")
+    p.add_argument("--depth_min", type=float, default=None,
+                   help="PatchMatch min depth (default: 0.3× nearest cam-to-centroid dist)")
+    p.add_argument("--depth_max", type=float, default=None,
+                   help="PatchMatch max depth (default: 1.5× farthest cam-to-centroid dist)")
     args = p.parse_args()
 
     data_root = Path(args.data_root)
@@ -210,6 +239,15 @@ def main() -> None:
     elif not (shared_dir / "sparse" / "0" / "cameras.bin").exists():
         raise SystemExit(f"[stage_a_colmap_4d] --skip_setup but no shared model at {shared_dir}")
 
+    # ---- Depth bounds for PatchMatch (no sparse points → must specify) ----
+    if args.depth_min is None or args.depth_max is None:
+        dmin, dmax = _auto_depth_bounds(data_root, args.intri, args.extri)
+        depth_min = args.depth_min if args.depth_min is not None else dmin
+        depth_max = args.depth_max if args.depth_max is not None else dmax
+    else:
+        depth_min, depth_max = args.depth_min, args.depth_max
+    print(f"[stage_a_colmap_4d] depth bounds: min={depth_min:.3f} max={depth_max:.3f}")
+
     # ---- Phase 2: per-frame dense ----
     for i, f in enumerate(frames, start=1):
         frame_dir = out / f"frame_{f:06d}"
@@ -219,7 +257,8 @@ def main() -> None:
             continue
         print(f"\n{'='*60}\n[stage_a_colmap_4d] frame {f} ({i}/{len(frames)})\n{'='*60}")
         _link_frame_workspace(data_root, f, frame_dir, shared_dir, cam_names, args.ext)
-        _run_dense(frame_dir, args.neighbor, args.gpu_index, args.colmap)
+        _run_dense(frame_dir, args.neighbor, args.gpu_index, args.colmap,
+                   depth_min, depth_max)
         print(f"[stage_a_colmap_4d] frame {f}: {fused}")
 
     print(f"\n[stage_a_colmap_4d] done; per-frame clouds at {out}/frame_*/dense/fused.ply")
