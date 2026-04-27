@@ -49,6 +49,24 @@ import simple_knn, tinycudann, diff_gaussian_rasterization, cv2
 print('CUDA extensions + cv2: all import OK')
 "
 
+# Pre-flight: verify pretrained model weights are cached locally.
+# train.py imports `lpips` at module scope, which downloads VGG16 if not
+# cached. Compute nodes have no internet → 9 min of TCP retry timeout
+# before crash. Fail fast here instead.
+VGG=$HOME/.cache/torch/hub/checkpoints/vgg16-397923af.pth
+LPIPS_VGG=$(python -c "import lpips, os; print(os.path.join(os.path.dirname(lpips.__file__), 'weights/v0.1/vgg.pth'))")
+for f in "$VGG" "$LPIPS_VGG"; do
+    if [ ! -s "$f" ]; then
+        echo "ERROR: required pretrained weight missing: $f"
+        echo "Pre-cache on a login node first:"
+        echo "  source ~/envs/localdygs/bin/activate"
+        echo "  python -c 'import lpips; lpips.LPIPS(net=\"vgg\")'"
+        echo "(also fetch lpips bundled weights — see SETUP.md lesson #7)"
+        exit 1
+    fi
+done
+echo "pretrained weights pre-flight OK"
+
 cd ~/github/LocalDyGS
 time python train.py \
     -s "$SCENE" \

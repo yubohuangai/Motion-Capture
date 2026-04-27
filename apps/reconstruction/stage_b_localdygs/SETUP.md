@@ -153,6 +153,48 @@ Instead, run the prep script under the dedicated lightweight
 `run_localdygs_prep.sh` SLURM script already does this. Training and
 rendering still use `~/envs/localdygs/`.
 
+### 7. Pre-cache pretrained model weights on a login node
+
+LocalDyGS's `train.py` imports `lpips` at module scope, and
+`lpips.LPIPS(net='vgg')` downloads two things from the internet:
+
+1. **VGG16 backbone** (`vgg16-397923af.pth`, ~528 MB) → torchvision pulls
+   from `download.pytorch.org` into `~/.cache/torch/hub/checkpoints/`.
+2. **LPIPS calibration weights** (`vgg.pth`, ~7 KB) → the wheelhouse
+   build of `lpips==0.1.4+computecanada` is **missing** these bundled
+   data files. Stock pip-from-PyPI lpips includes them, but Compute
+   Canada's wheel does not.
+
+Compute nodes have no internet. If either is missing on the compute node,
+LocalDyGS hangs ~9 min on TCP retry then crashes with
+`urllib.error.URLError: [Errno 101] Network is unreachable`.
+
+**Pre-cache once on a login node** before submitting any training job:
+
+```bash
+module load StdEnv/2023 gcc/12.3 cuda/12.9 python/3.11 opencv/4.13.0
+source ~/envs/localdygs/bin/activate
+
+# 1. VGG16 backbone (downloads from torchvision)
+python -c "import lpips; lpips.LPIPS(net='vgg')"   # initially fails — see #2
+
+# 2. LPIPS bundled calibration weights (fetch from upstream GitHub)
+DEST=$(python -c "import lpips, os; print(os.path.dirname(lpips.__file__))")/weights/v0.1
+mkdir -p "$DEST"
+for net in vgg alex squeeze; do
+    wget -O "$DEST/${net}.pth" \
+        "https://raw.githubusercontent.com/richzhang/PerceptualSimilarity/master/lpips/weights/v0.1/${net}.pth"
+done
+
+# 3. Verify
+python -c "import lpips; m = lpips.LPIPS(net='vgg'); print('LPIPS init OK')"
+```
+
+`run_localdygs_smoke.sh` has a fail-fast pre-flight that checks both
+files exist before invoking `train.py` — if you see "required pretrained
+weight missing" in the smoke job log, run the steps above on a login
+node and resubmit.
+
 ## Hardcoded values worth knowing
 
 These live in upstream code and we may need to override later:
