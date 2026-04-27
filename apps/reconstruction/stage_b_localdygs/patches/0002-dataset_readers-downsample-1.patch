@@ -1,0 +1,13 @@
+diff --git a/scene/dataset_readers.py b/scene/dataset_readers.py
+index 9017f1c..1779411 100644
+--- a/scene/dataset_readers.py
++++ b/scene/dataset_readers.py
+@@ -201,7 +201,7 @@ def readColmapSceneInfo(path, images, eval, lod, frames_start_end=[0,300],llffho
+     train_exr = [cam_extrinsics[i] for i in range(len(cam_extrinsics)) if i not in test_num] 
+     test_exr = [cam_extrinsics[i] for i in range(len(cam_extrinsics)) if i in test_num] 
+ 
+-    downsample = 2.0 
++    downsample = 1.0  # cow data: native 4K, no downscale (Motion-Capture project rule)
+     train_dataset = Colmap_Dataset(  path, train_exr, cam_intrinsics, downsample = downsample, split = train_num ,frames_start_end = frames_start_end)
+     test_dataset =  Colmap_Dataset(  path, test_exr,  cam_intrinsics,  downsample =downsample, split = test_num , frames_start_end = frames_start_end )
+ 

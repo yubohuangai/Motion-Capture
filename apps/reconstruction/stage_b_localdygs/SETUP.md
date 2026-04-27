@@ -15,47 +15,64 @@ Repo: `~/github/LocalDyGS` (upstream `WuJH2001/LocalDyGS`, ICCV 2025).
 - LocalDyGS-fork `diff_gaussian_rasterization` (vendored in `submodules/`)
 - LocalDyGS-fork `simple_knn` (vendored, **needs the cfloat patch** — see below)
 
-## Build steps (run from a login node)
+## Build steps
+
+The CUDA-extension installs (tinycudann, simple_knn, diff_gaussian_rasterization)
+need a GPU at build time so nvcc can detect compute capability. Run the
+whole recipe inside a short interactive GPU allocation:
 
 ```bash
-module load python/3.11 cuda gcc apptainer
+salloc --account=rrg-vislearn --gres=gpu:1 --cpus-per-task=8 --mem=32G --time=1:00:00
+```
+
+**Critical**: `module load opencv` MUST come *before* `source venv/bin/activate`,
+or cv2 won't import. The opencv module sets PYTHONPATH; venv activation
+freezes whatever PYTHONPATH it sees at activation time.
+
+```bash
+module --force purge
+module load StdEnv/2023 gcc/12.3 cuda/12.9 python/3.11 opencv/4.13.0
 virtualenv --no-download ~/envs/localdygs
 source ~/envs/localdygs/bin/activate
 pip install --no-index --upgrade pip
 
 # Wheelhouse installs (Alliance prebuilt, no internet needed)
-pip install --no-index numpy matplotlib opencv-python imageio
+pip install --no-index numpy matplotlib scipy imageio
+pip install --no-index opencv-python-headless                   # uses opencv module
 pip install --no-index torch torchvision plyfile colorama tqdm
 pip install --no-index einops wandb lpips laspy torchmetrics jaxtyping
-pip install --no-index pytorch-msssim torch_scatter mmcv
+pip install --no-index pytorch-msssim torch_scatter mmcv pillow typing_extensions
 
 # tinycudann — fetch from PyPI/git (no wheelhouse build), needs setuptools<81
-pip install 'setuptools<81'                           # tinycudann uses pkg_resources
+pip install --no-index 'setuptools<81'                          # tinycudann uses pkg_resources
 cd ~/github && git clone --recursive https://github.com/NVlabs/tiny-cuda-nn
 cd tiny-cuda-nn && \
     TCNN_CUDA_ARCHITECTURES=80 \
-    pip install bindings/torch                        # SM 8.0 = A100
+    pip install bindings/torch                                  # SM 8.0 = A100
 
-# Apply the simple_knn patch before installing the LocalDyGS submodules
+# Apply both patches before installing the LocalDyGS submodules
 cd ~/github/LocalDyGS
-git apply ~/github/Motion-Capture/apps/reconstruction/stage_b_localdygs/patches/0001-simple_knn-include-cfloat.patch
+PATCHES=~/github/Motion-Capture/apps/reconstruction/stage_b_localdygs/patches
+git apply $PATCHES/0001-simple_knn-include-cfloat.patch
+git apply $PATCHES/0002-dataset_readers-downsample-1.patch
 pip install submodules/diff-gaussian-rasterization
 pip install submodules/simple-knn
 
-# Sanity
-python -c "import torch, tinycudann, mmcv, simple_knn, diff_gaussian_rasterization; \
+# Sanity (re-load modules in same one-shot, opencv must be loaded BEFORE activate)
+python -c "import torch, tinycudann, mmcv, simple_knn, diff_gaussian_rasterization, cv2; \
            print('all imports OK')"
 ```
 
-You should NOT do the build on a login node for tinycudann or
-the LocalDyGS submodules — they compile CUDA kernels and login nodes
-have CPU-only nvcc with strict resource limits. Use a short interactive
-GPU allocation:
+## Activating the env in a future session
 
 ```bash
-salloc --account=rrg-vislearn --gres=gpu:1 --cpus-per-task=8 --mem=32G --time=1:00:00
-# then run the build steps above
+module --force purge
+module load StdEnv/2023 gcc/12.3 cuda/12.9 python/3.11 opencv/4.13.0
+source ~/envs/localdygs/bin/activate
 ```
+
+The opencv-before-activate ordering is the part most likely to bite you.
+If `import cv2` fails, you almost certainly activated the venv first.
 
 ## Lessons (the non-obvious ones — keep these in memory)
 
@@ -86,6 +103,15 @@ apply with `git apply` after a fresh clone.
 
 The vanilla 3DGS `simple-knn` repo *does* have the include — only the
 LocalDyGS fork is missing it.
+
+### 2b. `readColmapSceneInfo` hardcodes `downsample = 2.0`
+
+Half-resolution training violates this project's no-downscale rule for
+cow data (fur texture). Patch is at
+`patches/0002-dataset_readers-downsample-1.patch` — flips it to 1.0.
+
+If memory becomes a concern at native 4K (660 train images × 4K is a
+lot for Gaussian splatting), reconsider, but only after measuring.
 
 ### 3. `tinycudann` must be built for the right SM
 
@@ -119,8 +145,8 @@ These live in upstream code and we may need to override later:
 | File | Symbol | Value | Why we care |
 |---|---|---|---|
 | `scene/dataset_readers.py:198` | `test_num` | `[0,10,20,30]` | With our 11 cams (sort indices 0–10), only positions 0 and 10 become test cams (`01.jpg` and `11.jpg`). 9 train, 2 test. Acceptable for a first run. |
-| `scene/dataset_readers.py:204` | `downsample` | `2.0` | LocalDyGS halves the input image side. Cow data is captured at 4K specifically *not* to be downscaled (fur texture loss). Either patch this to 1.0 or accept 2K training res for the first run. |
+| `scene/dataset_readers.py:204` | `downsample` | `2.0` | LocalDyGS halves the input image side. Patched to 1.0 in `patches/0002-*` to honor cow no-downscale rule. |
 | `scene/dataset_readers.py:242` | `maxtime` | `300` | Hardcoded; affects positional encoding range. For shorter sequences (e.g. our 60-frame sweep) it's still fine — `time = i/N_frames` is in [0,1]. |
 
-When we train, decide on the downsample question first. Currently
-recommend overriding to 1.0 for cow data to honor the no-downscale rule.
+The `downsample` question is now resolved (patch 0002 sets it to 1.0).
+The other two are runtime hyperparameters that don't currently block us.
