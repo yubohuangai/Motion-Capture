@@ -145,7 +145,7 @@ def _expose_human_outputs(data_root: Path, frame: int,
 
 def _run_single_frame(data_root: Path, frame: int, work_frame_dir: Path,
                       human_dir: Path, neighbor: int, gpu_index: str,
-                      colmap: str) -> None:
+                      colmap: str, mask_sparse: bool) -> None:
     """Run single-frame stage_a_colmap into work/, then expose into human/."""
     work_frame_dir.mkdir(parents=True, exist_ok=True)
     cmd = [
@@ -157,11 +157,12 @@ def _run_single_frame(data_root: Path, frame: int, work_frame_dir: Path,
         "--neighbor", str(neighbor),
         "--gpu_index", gpu_index,
         "--colmap", colmap,
-        # Always triangulate on the unmasked image: a tight cow mask leaves
-        # too few SIFT points to derive per-cam depth bounds and PatchMatch
-        # silently fails. Dense step still applies the mask.
-        "--no-mask-sparse",
     ]
+    if not mask_sparse:
+        # Default policy: triangulate on the unmasked image so SIFT has the
+        # full scene → enough points for per-cam depth bounds. Dense step
+        # still applies the mask. Disable with --mask-sparse to A/B test.
+        cmd.append("--no-mask-sparse")
     _run(cmd)
     _expose_human_outputs(data_root, frame, work_frame_dir, human_dir)
 
@@ -180,6 +181,12 @@ def main() -> None:
     p.add_argument("--colmap", default="colmap")
     p.add_argument("--gpu_index", default="0",
                    help="GPU index for patch_match_stereo (default: 0)")
+    p.add_argument("--mask-sparse", dest="mask_sparse", action="store_true",
+                   help="apply masks during sparse triangulation too (default off). "
+                        "Off because tight cow masks leave <100 SIFT pts in early "
+                        "frames → COLMAP can't auto-set depth bounds → 0 fused pts. "
+                        "Set this if testing whether a particular sequence has "
+                        "enough cow texture to pass that bar.")
     args = p.parse_args()
 
     data_root = Path(args.data_root)
@@ -206,7 +213,8 @@ def main() -> None:
             continue
         print(f"\n{'='*60}\n[stage_a_colmap_4d] frame {f} ({i}/{len(frames)})\n{'='*60}")
         _run_single_frame(data_root, f, work_root / f"frame_{f:06d}",
-                          human_dir, args.neighbor, args.gpu_index, args.colmap)
+                          human_dir, args.neighbor, args.gpu_index, args.colmap,
+                          mask_sparse=args.mask_sparse)
 
     print(f"\n[stage_a_colmap_4d] done; human deliverables in {human_dir}/")
 
