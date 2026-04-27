@@ -143,11 +143,9 @@ def _expose_human_outputs(data_root: Path, frame: int,
                 _save_thumbnail(src, human_dir / f"{prefix}thumb.jpg")
 
 
-def _run_single_frame(data_root: Path, frame: int, work_frame_dir: Path,
-                      human_dir: Path, neighbor: int, gpu_index: str,
-                      colmap: str, mask_sparse: bool) -> None:
-    """Run single-frame stage_a_colmap into work/, then expose into human/."""
-    work_frame_dir.mkdir(parents=True, exist_ok=True)
+def _build_stage_a_cmd(data_root: Path, frame: int, work_frame_dir: Path,
+                       neighbor: int, gpu_index: str, colmap: str,
+                       mask_sparse: bool) -> list[str]:
     cmd = [
         sys.executable, "-m",
         "apps.reconstruction.stage_a_colmap.run_stage_a_colmap",
@@ -159,11 +157,45 @@ def _run_single_frame(data_root: Path, frame: int, work_frame_dir: Path,
         "--colmap", colmap,
     ]
     if not mask_sparse:
-        # Default policy: triangulate on the unmasked image so SIFT has the
-        # full scene → enough points for per-cam depth bounds. Dense step
-        # still applies the mask. Disable with --mask-sparse to A/B test.
         cmd.append("--no-mask-sparse")
-    _run(cmd)
+    return cmd
+
+
+def _fused_is_empty(work_frame_dir: Path) -> bool:
+    fused = work_frame_dir / "dense" / "fused.ply"
+    return not fused.exists() or fused.stat().st_size < 1024
+
+
+def _run_single_frame(data_root: Path, frame: int, work_frame_dir: Path,
+                      human_dir: Path, neighbor: int, gpu_index: str,
+                      colmap: str, sparse_policy: str) -> None:
+    """Run stage_a_colmap into work/, then expose into human/.
+
+    sparse_policy:
+      'masked'   — sparse SIFT inside cow mask (denser dense, fragile)
+      'unmasked' — sparse SIFT on full image (robust, ~half the dense pts)
+      'auto'     — try masked, fall back to unmasked on empty fused.ply
+
+    Both policies produce cow-only dense (masks always applied at dense).
+    The choice only affects depth bounds → per-frame point density.
+    """
+    import shutil as _sh
+    work_frame_dir.mkdir(parents=True, exist_ok=True)
+
+    first_masked = sparse_policy in ("masked", "auto")
+    _run(_build_stage_a_cmd(data_root, frame, work_frame_dir,
+                            neighbor, gpu_index, colmap, mask_sparse=first_masked))
+
+    # Auto-fallback: masked sparse can fail when SIFT inside the mask gives
+    # <100 pts → COLMAP can't auto-derive per-cam depth bounds → 0 fused pts.
+    if sparse_policy == "auto" and _fused_is_empty(work_frame_dir):
+        print(f"[stage_a_colmap_4d] frame {frame}: masked sparse → empty fused.ply; "
+              "wiping and retrying with --no-mask-sparse (~10 min penalty)")
+        _sh.rmtree(work_frame_dir)
+        work_frame_dir.mkdir(parents=True)
+        _run(_build_stage_a_cmd(data_root, frame, work_frame_dir,
+                                neighbor, gpu_index, colmap, mask_sparse=False))
+
     _expose_human_outputs(data_root, frame, work_frame_dir, human_dir)
 
 
@@ -181,13 +213,19 @@ def main() -> None:
     p.add_argument("--colmap", default="colmap")
     p.add_argument("--gpu_index", default="0",
                    help="GPU index for patch_match_stereo (default: 0)")
-    p.add_argument("--mask-sparse", dest="mask_sparse", action="store_true",
-                   help="apply masks during sparse triangulation too (default off). "
-                        "Off because tight cow masks leave <100 SIFT pts in early "
-                        "frames → COLMAP can't auto-set depth bounds → 0 fused pts. "
-                        "Set this if testing whether a particular sequence has "
-                        "enough cow texture to pass that bar.")
+    p.add_argument("--sparse-policy",
+                   choices=["masked", "unmasked", "auto"], default="auto",
+                   help="how to handle the SIFT/triangulation step's masking. "
+                        "masked = sparse uses cow mask (densest dense when it "
+                        "works, fragile). unmasked = sparse uses full image "
+                        "(robust, fewer dense pts). auto = try masked, fall "
+                        "back to unmasked on empty fused.ply. Default: auto.")
+    # Back-compat: --mask-sparse (boolean) maps to --sparse-policy=masked.
+    p.add_argument("--mask-sparse", dest="legacy_mask_sparse",
+                   action="store_true", help=argparse.SUPPRESS)
     args = p.parse_args()
+    if args.legacy_mask_sparse:
+        args.sparse_policy = "masked"
 
     data_root = Path(args.data_root)
     out = Path(args.output) if args.output else (
@@ -214,7 +252,7 @@ def main() -> None:
         print(f"\n{'='*60}\n[stage_a_colmap_4d] frame {f} ({i}/{len(frames)})\n{'='*60}")
         _run_single_frame(data_root, f, work_root / f"frame_{f:06d}",
                           human_dir, args.neighbor, args.gpu_index, args.colmap,
-                          mask_sparse=args.mask_sparse)
+                          sparse_policy=args.sparse_policy)
 
     print(f"\n[stage_a_colmap_4d] done; human deliverables in {human_dir}/")
 

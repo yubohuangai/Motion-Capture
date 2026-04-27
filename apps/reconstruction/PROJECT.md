@@ -125,6 +125,29 @@ python -m apps.reconstruction.viz.aggregate_4d_clouds \
     /scratch/yubo/cow_1/<dataset>_output/stage_a/colmap_4d/human
 ```
 
+### Masking semantics — read carefully (common confusion)
+
+**Masks are always applied at the dense step**, regardless of sparse policy.
+`dense_reconstruct.py:apply_masks` blacks out background pixels in the dense
+workspace before PatchMatch, so the resulting `fused.ply` is **cow-only in
+all cases**.
+
+The choice is only about *whether SIFT/triangulation also uses the mask*:
+
+| Policy | Sparse pts source | Effect on dense |
+|---|---|---|
+| `masked` | SIFT inside cow mask only | tighter per-cam depth bounds → **2× more cow pts** when it works |
+| `unmasked` | SIFT on full image | wider depth bounds → fewer cow pts but always works |
+| `auto` (default) | tries masked first; falls back if empty | best of both, ~10 min retry penalty per failed frame |
+
+The `masked` policy fails when too few SIFT points survive the mask
+(<100 → COLMAP can't auto-derive depth bounds → 0 fused pts). On the
+`9148_10581` sequence: early frames (cow far/oblique) fail, end frames
+(cow well-centered) give ~700 sparse pts and 400K–500K dense pts.
+
+`auto` is the default since 2026-04-26 — get the dense lift when possible,
+graceful fallback otherwise.
+
 ## 5. Lessons learned (do not relitigate)
 
 - **Plane-sweep MVS produces 2× more points than COLMAP but they are
@@ -143,6 +166,15 @@ python -m apps.reconstruction.viz.aggregate_4d_clouds \
   no-downscale rule for cow data.
 - **Holstein cow black fur** needs CLAHE on LAB-L for plane-sweep MVS
   (does not affect COLMAP MVS, which uses NCC on raw pixels).
+- **Temporal optimization at Stage A is not worth it for a deforming
+  subject.** The cow surface deforms, so cross-frame depth smoothing
+  *blurs out* exactly the deformation Stage 2 needs to capture. The
+  background, where temporal smoothing would help, is masked out anyway.
+  Stage A produces independent per-frame clouds; all temporal work
+  belongs in Stage 2 (canonical model with explicit deformation field).
+  Possible exception worth considering later: temporally consistent SAM
+  masks (SAM2 with track propagation) — that's a *pre-Stage-A input*
+  improvement, not Stage A reconstruction.
 
 ## 6. Stage 2 — design space (open question)
 
@@ -235,6 +267,7 @@ External:
 | Date | Change | By |
 |---|---|---|
 | 2026-04-26 | Initial draft. Documents Stage 1 (working) + Stage 2 (open). | Claude (under Yubo's direction) |
+| 2026-04-26 | Add §4 masking-semantics clarification: dense always applies masks regardless of sparse policy. Add `auto` sparse policy as default. Add lesson on temporal-at-Stage-A being not worth it. | Claude |
 
 > When you change the pipeline, the layout, or a decision: add a row here
 > with the date and a one-line description of what changed.
