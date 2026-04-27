@@ -9,25 +9,35 @@
 
 ## 1. North Star
 
-Build a **canonical deformable model** of a captured cow:
-> a rest-pose 3D shape  +  per-frame deformation field
+Build a **canonical articulated model** of a captured cow:
+> a rest-pose 3D shape  +  a kinematic structure (joints, bones, skinning)
+> +  per-frame joint angles  (and minor non-rigid residuals)
 > that together explain every observed video frame from every camera.
 
-A canonical model is what lets you *re-pose* the cow, *retarget* its motion,
-*compare body shape across animals*, and downstream — fit body-condition
-scoring, weight estimation, gait analysis. None of that is possible from a
-sequence of independent per-frame point clouds.
+A canonical articulated model is what lets you *re-pose* the cow, *retarget*
+its motion, *compare body shape across animals*, and downstream — fit
+body-condition scoring, weight estimation, gait analysis. None of that is
+possible from a sequence of independent per-frame point clouds.
+
+**Term notes (since these recur):**
+- *canonical* = one rest-pose reference shape (not N per-frame meshes)
+- *articulated* = motion explained by a skeleton + skinning weights, with
+  small non-rigid residuals on top. The cow's dominant motion is skeletal
+  (legs, head, tail, spine rotations); soft-tissue effects are second
+  order. Supersedes the looser term "deformable", which would also cover
+  cloth, fluid, etc.
 
 ## 2. Why this is hard (and why we don't have it yet)
 
 1. **Half-circle rig**: at any instant, only one side of the cow is observed.
    Static reconstruction is fundamentally incomplete per frame.
-2. **The cow deforms**: legs, head, neck, breathing — non-rigid. Naive
-   "stack all per-frame clouds" doesn't merge into one coherent surface
-   because corresponding points have moved.
+2. **The cow articulates**: legs, head, neck, tail rotate around joints;
+   breathing and muscle bulge add small non-rigid residuals. Naive "stack
+   all per-frame clouds" doesn't merge into one coherent surface because
+   corresponding points have moved.
 3. **Classical MVS has no notion of time**: each frame is reconstructed
-   independently. To leverage temporal info you need a *deformation model*,
-   which classical methods don't provide.
+   independently. To leverage temporal info you need an *articulation +
+   deformation model*, which classical methods don't provide.
 4. **Holstein fur** has very low contrast in the dark patches — even SIFT +
    ZNCC struggles. Our CLAHE + masking work mitigates this but doesn't fully
    solve it.
@@ -57,13 +67,16 @@ Multi-view 30-fps RGB  +  calibration (intri.yml, extri.yml)
         └─────────────────┬──────────────────┘
                           │
         ┌─────────────────▼──────────────────┐
-        │ STAGE 2: canonical model           │  ⚠ NOT YET IMPLEMENTED
-        │ (method to be picked, see §6)      │  Solves the deformation field.
+        │ STAGE 2: canonical articulated     │  ⚠ NOT YET IMPLEMENTED
+        │ model (method TBD, see §6)         │  Solves skeleton + skinning +
+        │                                    │  per-frame joint angles.
         │                                    │  Inputs: Stage 1 outputs +
         │                                    │  optionally SMAL prior.
         │ Output:                            │  Outputs: canonical mesh +
-        │   canonical_cow.{obj,ply}          │  per-frame SE3/skinning weights
-        │   deformation_field/<frame>.npz    │  + a renderer.
+        │   canonical_cow.{obj,ply}          │  skeleton + skinning weights +
+        │   skeleton.json                    │  per-frame joint angles
+        │   pose/<frame>.npz                 │  (small non-rigid residuals
+        │                                    │  optional).
         └────────────────────────────────────┘
 ```
 
@@ -168,10 +181,11 @@ graceful fallback otherwise.
   (does not affect COLMAP MVS, which uses NCC on raw pixels).
 - **Temporal optimization at Stage A is not worth it for a deforming
   subject.** The cow surface deforms, so cross-frame depth smoothing
-  *blurs out* exactly the deformation Stage 2 needs to capture. The
-  background, where temporal smoothing would help, is masked out anyway.
-  Stage A produces independent per-frame clouds; all temporal work
-  belongs in Stage 2 (canonical model with explicit deformation field).
+  *blurs out* exactly the articulated motion Stage 2 needs to capture.
+  The background, where temporal smoothing would help, is masked out
+  anyway. Stage A produces independent per-frame clouds; all temporal
+  work belongs in Stage 2 (canonical articulated model with explicit
+  skeleton + per-frame joint angles).
   Possible exception worth considering later: temporally consistent SAM
   masks (SAM2 with track propagation) — that's a *pre-Stage-A input*
   improvement, not Stage A reconstruction.
@@ -183,14 +197,19 @@ Three candidates, pick one based on Stage 1 quality + lab priorities.
 | Method | What it is | Pros | Cons |
 |---|---|---|---|
 | **BANMo / RAC / Lab4D** | Articulated neural body: skeleton + skinning + canonical SDF, fit to images via differentiable rendering | Animal-specific (cats/dogs/horses already shown). Outputs reusable canonical + skinning weights. Skeleton enables intuitive editing/retargeting. | Paper expects monocular casual video; multi-view + known calibration needs adaptation. Training is multi-day. |
-| **LocalDyGS** (cloned at `~/github/LocalDyGS`) | Multi-view dynamic 3DGS with seed-anchored local spaces, static-vs-dynamic feature decoupling | Designed for our exact setup (multi-view sync). Handles large motion. Repo present. | Output is Gaussians, not a mesh; canonical "rest pose" isn't a first-class concept. Env build is risky on Narval (tinycudann). |
-| **Deformable 3DGS** | Per-Gaussian time-conditioned deformation MLP over a single static set | Simpler than LocalDyGS. Active community. | Designed for monocular video. Adapting multi-view + cow scale unproven. |
+| **LocalDyGS** (cloned at `~/github/LocalDyGS`) | Multi-view dynamic 3DGS with seed-anchored local spaces, static-vs-dynamic feature decoupling | Designed for our exact setup (multi-view sync). Handles large motion. Repo present. | **Not articulated** — outputs Gaussians without a skeleton; "canonical rest pose" isn't a first-class concept. Would need extra work to extract joints. Env build is risky on Narval (tinycudann). |
+| **Deformable 3DGS** | Per-Gaussian time-conditioned deformation MLP over a single static set | Simpler than LocalDyGS. Active community. | Same articulation gap as LocalDyGS. Designed for monocular video. Adapting multi-view + cow scale unproven. |
 
-**Recommendation when we get there**: try LocalDyGS first since (a) the
-repo is already cloned, (b) the data layout matches our multi-view rig,
-(c) Stage 1's COLMAP per-frame outputs slot directly into LocalDyGS's
-seed initialization. BANMo is the "real" answer for an articulated cow
-model but is more research and less infrastructure.
+**Recommendation when we get there**: BANMo / RAC is the methodologically
+right answer for the goal as stated — it natively produces the canonical
+articulated model (skeleton + skinning + canonical SDF). LocalDyGS would
+likely be faster to first results since the repo is cloned and the data
+format matches, but its output isn't articulated; we'd then have to fit
+a skeleton on top of its Gaussians, which adds its own research problem.
+
+Pragmatic order: try BANMo / Lab4D for the articulated path. Hold
+LocalDyGS as a fallback if BANMo training proves too brittle on our
+data — a non-articulated dense reconstruction is still better than nothing.
 
 ## 7. Repo layout — what lives where
 
@@ -247,7 +266,7 @@ External:
 - [ ] If LocalDyGS picked: build the env on Narval. Known risks: tinycudann,
   mmcv 1.6.0, the differing diff-gaussian-rasterization fork.
 - [ ] Evaluate whether per-frame stride 5 is enough vs stride 1 for Stage 2.
-  Smaller stride = less per-frame deformation = easier registration.
+  Smaller stride = less per-frame articulation change = easier registration.
 
 ## 10. Constraints to remember
 
@@ -268,6 +287,7 @@ External:
 |---|---|---|
 | 2026-04-26 | Initial draft. Documents Stage 1 (working) + Stage 2 (open). | Claude (under Yubo's direction) |
 | 2026-04-26 | Add §4 masking-semantics clarification: dense always applies masks regardless of sparse policy. Add `auto` sparse policy as default. Add lesson on temporal-at-Stage-A being not worth it. | Claude |
+| 2026-04-27 | Replace "canonical deformable model" with "**canonical articulated model**" throughout: more accurate for cow's skeleton-driven motion. Update Stage 2 recommendation: BANMo/RAC over LocalDyGS since LocalDyGS isn't natively articulated. | Claude |
 
 > When you change the pipeline, the layout, or a decision: add a row here
 > with the date and a one-line description of what changed.
