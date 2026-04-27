@@ -20,22 +20,27 @@ the first time**, then a smoke-test LocalDyGS training run.
 
 ## Last completed
 
-**Stage 1 → Stage 2 prep succeeded** (job `59959992`, 17 s wall, cleanply venv):
-`/scratch/yubo/cow_1/9148_10581_output/stage_b/localdygs_scene/` has 60 frame
-dirs × 11 image symlinks, 11 cameras renumbered 0..10 PINHOLE 3840×2160 (4K
-preserved), init pcd `pcds/downsample_0_60.ply` 73,784 pts (3.8 MB) — voxel
-size 0.035 hit the ≤90K target on the 8.6 M-point combined input.
+**LPIPS/VGG16 weights pre-cached on login node + fail-fast guard added**
+(commit `b1304d4`). VGG16 backbone (528 MB) at
+`~/.cache/torch/hub/checkpoints/vgg16-397923af.pth`. LPIPS bundled
+weights (vgg/alex/squeeze, ~25 KB total) at
+`~/envs/localdygs/lib/python3.11/site-packages/lpips/weights/v0.1/`
+(fetched from upstream GitHub; wheelhouse lpips ships without them).
+Smoke sbatch now fails in 1 s if either is missing.
+
+Prior: prep job `59959992` succeeded (60 frames, 73,784-pt init pcd).
+Smoke job `59960152` failed at 9 min on `URLError [Errno 101] Network
+is unreachable` — train.py downloads VGG16 at import; compute nodes
+have no internet.
 
 ## Next concrete step
 
-**In flight: smoke-test training job 59960152** (commit `51b985b` —
-`scripts/slurm/run_localdygs_smoke.sh` + `apps/.../configs/cow_smoke.py`).
-500 iterations on a single A100, ~5–10 min wall, output to
-`/scratch/yubo/cow_1/9148_10581_output/stage_b/smoke_<timestamp>/`.
-Watcher running; will dump logs on completion.
+**In flight: smoke job 59960468** (resubmission with weights cached).
+Same config (500 iters, single A100, cow_smoke.py).
+Watcher running.
 
-After smoke succeeds: run full-iteration training (30000 iters with
-upstream basketball.py config) — same scene, separate output dir.
+After smoke succeeds: full 30000-iter training run with upstream
+basketball.py config.
 
 ## Recent activity
 
@@ -43,6 +48,9 @@ Newest first.
 
 | Date | Event | Detail |
 |---|---|---|
+| 2026-04-27 | Smoke job 59960468 resubmitted | with VGG16 + LPIPS weights pre-cached |
+| 2026-04-27 | LPIPS/VGG16 weights pre-cached + fail-fast guard | commit `b1304d4`. VGG16 ~528 MB to ~/.cache; lpips bundled weights wget'd from upstream GitHub (wheelhouse lpips missing them) |
+| 2026-04-27 | Smoke job 59960152 FAILED | 9 min wall on `URLError [Errno 101]` — train.py downloads VGG16 at import; compute node no internet |
 | 2026-04-27 | Smoke job submitted | `59960152` — single A100, 500 iters, cow_smoke.py config |
 | 2026-04-27 | Smoke artifacts committed | `51b985b` — `configs/cow_smoke.py` + `scripts/slurm/run_localdygs_smoke.sh` |
 | 2026-04-27 | Prep job 59959992 SUCCEEDED | 17 s, 60 frames, 73,784-pt init pcd, 4K cameras |
