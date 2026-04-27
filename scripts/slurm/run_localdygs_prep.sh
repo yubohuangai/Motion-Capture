@@ -31,13 +31,17 @@ echo "stage_a_root: $STAGE_A_ROOT"
 echo "frames:       [$FRAMES_START, $FRAMES_END)"
 echo
 
-# opencv module BEFORE venv activate — see SETUP.md lesson
+# Use cleanply venv (numpy + open3d + plyfile) — NOT localdygs.
+# Reason: open3d's wheelhouse wheel pins torch==2.6, which downgrades the
+# 2.10 install in localdygs and ABI-breaks the CUDA extensions
+# (simple_knn / tinycudann / diff_gaussian_rasterization). The prep script
+# only needs numpy/open3d/plyfile and zero torch, so use the dedicated env.
 module --force purge
-module load StdEnv/2023 gcc/12.3 cuda/12.9 python/3.11 opencv/4.13.0
-source ~/envs/localdygs/bin/activate
+module load StdEnv/2023 python/3.11
+source ~/envs/cleanply/bin/activate
 
 # Sanity: verify env can import what the prep needs (open3d for voxel downsample)
-python -c "import open3d, plyfile, numpy; print('prep imports OK')"
+python -c "import open3d, plyfile, numpy; print('prep imports OK — open3d', open3d.__version__)"
 
 cd /home/yubo/github/Motion-Capture
 time python -m apps.reconstruction.stage_b_localdygs.prepare_localdygs_data \

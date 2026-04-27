@@ -138,6 +138,21 @@ python -c "from scene.dataset_readers import readColmapSceneInfo; print('reader 
 This catches missing `cv2`, `colorama`, `plyfile` etc. that LocalDyGS
 imports lazily.
 
+### 6. Do NOT install `open3d` into this venv — use `~/envs/cleanply/` for prep
+
+`prepare_localdygs_data.py` needs `open3d` to voxel-downsample the init
+point cloud, but **don't** install open3d into `~/envs/localdygs/`. The
+wheelhouse `open3d-0.19.0+computecanada` package pins `torch==2.6.0`,
+which silently downgrades torch from 2.10 → 2.6 and ABI-breaks the
+CUDA extensions (`simple_knn`, `tinycudann`, `diff_gaussian_rasterization`)
+that were built against torch 2.10. Recovering takes a `pip install
+--force-reinstall torch==2.10.0` plus uninstalling open3d.
+
+Instead, run the prep script under the dedicated lightweight
+`~/envs/cleanply/` venv (numpy + open3d + plyfile, no torch). The
+`run_localdygs_prep.sh` SLURM script already does this. Training and
+rendering still use `~/envs/localdygs/`.
+
 ## Hardcoded values worth knowing
 
 These live in upstream code and we may need to override later:
