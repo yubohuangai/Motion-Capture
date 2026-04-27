@@ -20,27 +20,25 @@ the first time**, then a smoke-test LocalDyGS training run.
 
 ## Last completed
 
-**LPIPS/VGG16 weights pre-cached on login node + fail-fast guard added**
-(commit `b1304d4`). VGG16 backbone (528 MB) at
-`~/.cache/torch/hub/checkpoints/vgg16-397923af.pth`. LPIPS bundled
-weights (vgg/alex/squeeze, ~25 KB total) at
-`~/envs/localdygs/lib/python3.11/site-packages/lpips/weights/v0.1/`
-(fetched from upstream GitHub; wheelhouse lpips ships without them).
-Smoke sbatch now fails in 1 s if either is missing.
+**Patch 0003 landed** (commit `1e53592`): bounds upstream
+`test_num = [0,10,20,30]` to in-range cam indices. Caught when smoke
+`59960468` reached `Scene.__init__` and crashed on `IndexError` in
+`Colmap_Dataset.load_images_path` (upstream code assumes ≥31 cams;
+our rig has 11). Train dataset successfully loaded 540 images first
+(9 cams × 60 frames) — confirms scene layout is structurally correct.
 
-Prior: prep job `59959992` succeeded (60 frames, 73,784-pt init pcd).
-Smoke job `59960152` failed at 9 min on `URLError [Errno 101] Network
-is unreachable` — train.py downloads VGG16 at import; compute nodes
-have no internet.
+Prior: prep `59959992` succeeded → smoke `59960152` failed (no internet
+for VGG16) → weights pre-cached + fail-fast guard (`b1304d4`) → smoke
+`59960468` failed (test_num index error).
 
 ## Next concrete step
 
-**In flight: smoke job 59960468** (resubmission with weights cached).
+**In flight: smoke job 59960670** (resubmission with patch 0003 applied).
 Same config (500 iters, single A100, cow_smoke.py).
 Watcher running.
 
 After smoke succeeds: full 30000-iter training run with upstream
-basketball.py config.
+basketball.py config (separate output dir).
 
 ## Recent activity
 
@@ -48,6 +46,9 @@ Newest first.
 
 | Date | Event | Detail |
 |---|---|---|
+| 2026-04-27 | Smoke job 59960670 resubmitted | with patch 0003 applied |
+| 2026-04-27 | Patch 0003 landed | commit `1e53592` — bounds test_num to in-range indices; SETUP lesson #2c |
+| 2026-04-27 | Smoke job 59960468 FAILED | 25 s, IndexError in Colmap_Dataset.load_images_path — upstream test_num=[0,10,20,30] assumes ≥31 cams; ours has 11 |
 | 2026-04-27 | Smoke job 59960468 resubmitted | with VGG16 + LPIPS weights pre-cached |
 | 2026-04-27 | LPIPS/VGG16 weights pre-cached + fail-fast guard | commit `b1304d4`. VGG16 ~528 MB to ~/.cache; lpips bundled weights wget'd from upstream GitHub (wheelhouse lpips missing them) |
 | 2026-04-27 | Smoke job 59960152 FAILED | 9 min wall on `URLError [Errno 101]` — train.py downloads VGG16 at import; compute node no internet |
