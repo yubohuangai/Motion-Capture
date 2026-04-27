@@ -7,13 +7,13 @@ separate clouds.
 
 Usage
 -----
+    # Default: read the flat layout, write aggregated_4d.ply alongside
     python -m apps.reconstruction.viz.aggregate_4d_clouds \
-        /scratch/yubo/cow_1/9148_10581_output/stage_a/colmap_4d \
-        --pattern 'frame_*/human/fused.ply' \
-        --output  /scratch/yubo/cow_1/9148_10581_output/stage_a/colmap_4d/aggregated_4d.ply
+        /scratch/yubo/cow_1/9148_10581_output/stage_a/colmap_4d/human
 
-Defaults assume the new-layout output (``frame_*/human/fused.ply``). For
-the old layout pass ``--pattern 'frame_*/dense/fused.ply'``.
+    # Override with --pattern / --output if your layout differs
+    python -m apps.reconstruction.viz.aggregate_4d_clouds <root> \
+        --pattern 'frame_*/dense/fused.ply'        # old per-frame layout
 
 Optional: ``--max_per_frame N`` randomly subsamples each frame to N points
 to keep the PLY manageable when the full union would be hundreds of MB.
@@ -65,13 +65,18 @@ def _write_ply_xyz_rgb(path: Path, xyz: np.ndarray, rgb: np.ndarray) -> None:
 
 
 def _frame_index(path: Path) -> int:
-    """Extract the integer frame index from a path like '.../frame_000030/...'."""
-    for part in path.parts:
-        if part.startswith("frame_"):
-            try:
-                return int(part.split("_", 1)[1])
-            except ValueError:
-                pass
+    """Extract integer frame index from a path or filename containing 'frame_<N>...'."""
+    # Try filename first (flat layout: frame_000030_fused.ply)
+    for token in [path.stem, *path.parts]:
+        if token.startswith("frame_"):
+            digits = ""
+            for ch in token.split("_", 1)[1]:
+                if ch.isdigit():
+                    digits += ch
+                else:
+                    break
+            if digits:
+                return int(digits)
     return -1
 
 
@@ -80,10 +85,12 @@ def main() -> None:
         description="Aggregate 4D per-frame clouds into one color-coded PLY",
     )
     p.add_argument("root", type=str,
-                   help="root containing frame_<NNNNNN>/ subdirs")
-    p.add_argument("--pattern", default="frame_*/human/fused.ply",
-                   help="glob pattern relative to <root> (default: new-layout). "
-                        "Use 'frame_*/dense/fused.ply' for old layout.")
+                   help="root to glob (typically <out>/human/ in flat layout)")
+    p.add_argument("--pattern", default="frame_*_fused.ply",
+                   help="glob pattern relative to <root> "
+                        "(default: flat layout 'frame_*_fused.ply'). "
+                        "Use 'frame_*/human/fused.ply' for the prior nested "
+                        "layout, or 'frame_*/dense/fused.ply' for raw COLMAP.")
     p.add_argument("--output", "-o", default=None,
                    help="output PLY (default: <root>/aggregated_4d.ply)")
     p.add_argument("--max_per_frame", type=int, default=None,

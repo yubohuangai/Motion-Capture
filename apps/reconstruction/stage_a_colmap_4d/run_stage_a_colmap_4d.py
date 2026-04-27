@@ -22,17 +22,19 @@ depth bounds from each frame's triangulated SIFT points (essential — a
 single global depth bound across cameras leaves close-near-plane cams with
 hypothesis ranges that miss the surface).
 
-Output layout (rewritten 2026-04-26 to separate human deliverables from
-COLMAP intermediates)::
+Output layout (flattened 2026-04-26 so a single rsync of ``human/`` grabs
+all deliverables — no per-frame subdir spelunking)::
 
-    <out>/frame_<NNNNNN>/
-      human/                       # for human review / downstream
-        fused.ply                  # dense cow point cloud (the deliverable)
-        sparse.ply                 # COLMAP-triangulated SIFT 3D points
-        thumb_<cam>.jpg            # one input view for context
-      work/                        # intermediate; safe to delete to free disk
-        images/  masks/  database.db
-        sparse/0/  dense/...  (~1.5 GB per frame)
+    <out>/
+      human/                                    # rsync this whole dir
+        aggregated_4d.ply                       # color-coded union of frames
+        frame_<NNNNNN>_fused.ply                # dense cow cloud per frame
+        frame_<NNNNNN>_sparse.ply               # SIFT 3D points per frame
+        frame_<NNNNNN>_thumb.jpg                # one input view per frame
+      work/                                     # intermediate, safe to delete
+        frame_<NNNNNN>/
+          images/  masks/  database.db
+          sparse/0/  dense/...                  # ~1.5 GB per frame
 
 Usage
 -----
@@ -109,47 +111,48 @@ def _save_thumbnail(src_jpg: Path, out_jpg: Path, max_side: int = 720) -> None:
     cv2.imwrite(str(out_jpg), img, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
 
 
-def _expose_human_outputs(data_root: Path, frame: int, frame_dir: Path) -> None:
-    """Copy / convert the deliverables from work/ → human/ for easy review."""
-    work = frame_dir / "work"
-    human = frame_dir / "human"
-    human.mkdir(parents=True, exist_ok=True)
+def _expose_human_outputs(data_root: Path, frame: int,
+                          work_frame_dir: Path, human_dir: Path) -> None:
+    """Copy/convert deliverables from work/frame_<N>/ → human/frame_<N>_*."""
+    human_dir.mkdir(parents=True, exist_ok=True)
+    prefix = f"frame_{frame:06d}_"
 
     # Dense cloud
-    fused_src = work / "dense" / "fused.ply"
+    fused_src = work_frame_dir / "dense" / "fused.ply"
     if fused_src.exists() and fused_src.stat().st_size > 1024:
-        shutil.copy2(fused_src, human / "fused.ply")
-        print(f"[stage_a_colmap_4d] frame {frame}: human/fused.ply ({fused_src.stat().st_size/1e6:.1f} MB)")
+        shutil.copy2(fused_src, human_dir / f"{prefix}fused.ply")
+        print(f"[stage_a_colmap_4d] frame {frame}: human/{prefix}fused.ply "
+              f"({fused_src.stat().st_size/1e6:.1f} MB)")
     else:
         print(f"[stage_a_colmap_4d] WARNING: fused.ply missing/empty for frame {frame}")
 
     # Sparse cloud (converted from COLMAP binary → ASCII PLY)
-    sparse_bin = work / "sparse" / "0" / "points3D.bin"
+    sparse_bin = work_frame_dir / "sparse" / "0" / "points3D.bin"
     if sparse_bin.exists():
-        n = _export_sparse_ply(sparse_bin, human / "sparse.ply")
-        print(f"[stage_a_colmap_4d] frame {frame}: human/sparse.ply ({n} pts)")
+        n = _export_sparse_ply(sparse_bin, human_dir / f"{prefix}sparse.ply")
+        print(f"[stage_a_colmap_4d] frame {frame}: human/{prefix}sparse.ply ({n} pts)")
 
-    # Thumbnail of one input view (cam 06 is usually the most central)
+    # Thumbnail of one input view (middle camera in the rig)
     images_root = data_root / "images"
     if images_root.is_dir():
         cam_names = sorted(d.name for d in images_root.iterdir() if d.is_dir())
         if cam_names:
-            anchor = cam_names[len(cam_names) // 2]  # middle of the rig
+            anchor = cam_names[len(cam_names) // 2]
             src = images_root / anchor / f"{frame:06d}.jpg"
             if src.exists():
-                _save_thumbnail(src, human / f"thumb_cam{anchor}.jpg")
+                _save_thumbnail(src, human_dir / f"{prefix}thumb.jpg")
 
 
-def _run_single_frame(data_root: Path, frame: int, frame_dir: Path,
-                      neighbor: int, gpu_index: str, colmap: str) -> None:
-    """Run the single-frame stage_a_colmap driver against one timestamp."""
-    work_dir = frame_dir / "work"
-    work_dir.mkdir(parents=True, exist_ok=True)
+def _run_single_frame(data_root: Path, frame: int, work_frame_dir: Path,
+                      human_dir: Path, neighbor: int, gpu_index: str,
+                      colmap: str) -> None:
+    """Run single-frame stage_a_colmap into work/, then expose into human/."""
+    work_frame_dir.mkdir(parents=True, exist_ok=True)
     cmd = [
         sys.executable, "-m",
         "apps.reconstruction.stage_a_colmap.run_stage_a_colmap",
         str(data_root),
-        "--output", str(work_dir),
+        "--output", str(work_frame_dir),
         "--frame", str(frame),
         "--neighbor", str(neighbor),
         "--gpu_index", gpu_index,
@@ -160,7 +163,7 @@ def _run_single_frame(data_root: Path, frame: int, frame_dir: Path,
         "--no-mask-sparse",
     ]
     _run(cmd)
-    _expose_human_outputs(data_root, frame, frame_dir)
+    _expose_human_outputs(data_root, frame, work_frame_dir, human_dir)
 
 
 def main() -> None:
@@ -190,17 +193,22 @@ def main() -> None:
     print(f"[stage_a_colmap_4d] {len(frames)} frames: "
           f"{frames[:5]}{'...' if len(frames) > 5 else ''}; output={out}")
 
+    human_dir = out / "human"
+    work_root = out / "work"
+    human_dir.mkdir(parents=True, exist_ok=True)
+    work_root.mkdir(parents=True, exist_ok=True)
+
     for i, f in enumerate(frames, start=1):
-        frame_dir = out / f"frame_{f:06d}"
-        fused_human = frame_dir / "human" / "fused.ply"
+        prefix = f"frame_{f:06d}_"
+        fused_human = human_dir / f"{prefix}fused.ply"
         if fused_human.exists() and fused_human.stat().st_size > 1024:
-            print(f"[stage_a_colmap_4d] frame {f}: human/fused.ply present, skipping ({i}/{len(frames)})")
+            print(f"[stage_a_colmap_4d] frame {f}: {fused_human.name} present, skipping ({i}/{len(frames)})")
             continue
         print(f"\n{'='*60}\n[stage_a_colmap_4d] frame {f} ({i}/{len(frames)})\n{'='*60}")
-        _run_single_frame(data_root, f, frame_dir, args.neighbor, args.gpu_index, args.colmap)
+        _run_single_frame(data_root, f, work_root / f"frame_{f:06d}",
+                          human_dir, args.neighbor, args.gpu_index, args.colmap)
 
-    print(f"\n[stage_a_colmap_4d] done; human deliverables at "
-          f"{out}/frame_*/human/{{fused,sparse}}.ply")
+    print(f"\n[stage_a_colmap_4d] done; human deliverables in {human_dir}/")
 
 
 if __name__ == "__main__":
