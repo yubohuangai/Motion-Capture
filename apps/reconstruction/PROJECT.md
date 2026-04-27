@@ -1,6 +1,6 @@
 # Cow Canonical Deformation Model — Project Overview
 
-> Living document. **Last updated: 2026-04-26.**
+> Living document. **Last updated: 2026-04-27.**
 > If you are an AI agent or engineer joining this project, **read this first**.
 > Update the "Update log" at the bottom whenever the plan, repo layout, or
 > decisions change.
@@ -197,6 +197,15 @@ graceful fallback otherwise.
   Possible exception worth considering later: temporally consistent SAM
   masks (SAM2 with track propagation) — that's a *pre-Stage-A input*
   improvement, not Stage A reconstruction.
+- **LocalDyGS env on Narval — two non-obvious patches.**
+  (1) `tinycudann` `setup.py` imports `pkg_resources` → pin
+  `setuptools<81` before install. (2) LocalDyGS's vendored
+  `submodules/simple-knn/simple_knn.cu` uses `FLT_MAX` without
+  `#include <cfloat>` → modern CUDA/gcc no longer transitively pulls it
+  in. The vanilla 3DGS simple-knn fork has the include; only LocalDyGS's
+  doesn't. Patch lives at
+  `apps/reconstruction/stage_b_localdygs/patches/0001-simple_knn-include-cfloat.patch`.
+  Full reproducible recipe: `apps/reconstruction/stage_b_localdygs/SETUP.md`.
 
 ## 6. Stage 2 — design space (foundational only)
 
@@ -219,7 +228,7 @@ becomes a follow-on research direction (§9).
 
 | Method | What it is | Pros | Cons |
 |---|---|---|---|
-| **LocalDyGS** (cloned at `~/github/LocalDyGS`) | Multi-view dynamic 3DGS with seed-anchored local spaces, static-vs-dynamic feature decoupling | Designed for exactly our multi-view sync setup. Handles large motion (basketball-court scale). Repo already present. ICCV 2025. | Output is Gaussians + per-frame state, not a mesh and not a skeleton. Env build is risky on Narval (tinycudann, mmcv 1.6.0 — needs effort). |
+| **LocalDyGS** (cloned at `~/github/LocalDyGS`) | Multi-view dynamic 3DGS with seed-anchored local spaces, static-vs-dynamic feature decoupling | Designed for exactly our multi-view sync setup. Handles large motion (basketball-court scale). Repo already present. ICCV 2025. **Env now built** at `~/envs/localdygs/` (see SETUP.md). | Output is Gaussians + per-frame state, not a mesh and not a skeleton. |
 | **Dynamic 3D Gaussians** (Luiten 3DV 2024) | Per-Gaussian SE(3) trajectory + physics-based local rigidity | Foundational, designed for synchronised multi-view. Per-point trajectories enable later articulation discovery. | Smaller, simpler than LocalDyGS; performance on large-motion sequences unproven on cattle. |
 | **4D Gaussian Splatting** (Wu CVPR 2024) | HexPlane-based decomposition over 3DGS | Active community, fast inference. | Designed for monocular dynamic; multi-view + cow scale less proven than LocalDyGS. |
 
@@ -257,6 +266,9 @@ apps/reconstruction/
 ├── stage_a_colmap_4d/               ← per-frame loop driver — Stage 1 of this project
 ├── stage_b_neus/                    ← NeuS implicit surface
 ├── stage_b_3dgs/                    ← 3D Gaussian Splatting (one-shot, not 4D)
+├── stage_b_localdygs/               ← Stage 2 driver (data-prep + training launcher)
+│   ├── SETUP.md                     ← reproducible env-build recipe on Narval
+│   └── patches/                     ← upstream patches we apply at install time
 ├── tools/                           ← post-processing utilities (clean, mesh)
 └── viz/                             ← visualization scripts
     └── aggregate_4d_clouds.py       ← combined color-coded PLY for 4D output
@@ -290,9 +302,9 @@ External:
   cow at distinct poses?
 - [ ] If Stage 1 looks good: scale up to 60-frame sweep (`0:300:5`) so the
   cow makes a more substantial rotation through the rig.
-- [ ] **Build LocalDyGS env on Narval** (§6 recommendation). Known risks:
-  tinycudann, mmcv 1.6.0, the LocalDyGS-specific diff-gaussian-rasterization
-  fork (different from the vanilla 3DGS one already at `~/envs/3dgs/`).
+- [x] **Build LocalDyGS env on Narval** — done at `~/envs/localdygs/`.
+  Two non-obvious patches needed; see Lesson #8 in §5 and the full
+  recipe at `stage_b_localdygs/SETUP.md`.
 - [ ] Evaluate whether per-frame stride 5 is enough vs stride 1 for Stage 2.
   Smaller stride = less per-frame deformation = easier optimization.
 
@@ -333,6 +345,7 @@ is producing something to discover from.
 | 2026-04-26 | Add §4 masking-semantics clarification: dense always applies masks regardless of sparse policy. Add `auto` sparse policy as default. Add lesson on temporal-at-Stage-A being not worth it. | Claude |
 | 2026-04-27 | Replace "canonical deformable model" with "**canonical articulated model**" throughout: more accurate for cow's skeleton-driven motion. Update Stage 2 recommendation: BANMo/RAC over LocalDyGS since LocalDyGS isn't natively articulated. | Claude |
 | 2026-04-27 | **Reverse the §6 recommendation**: drop "articulated" from the immediate Stage 2 goal and re-add the *foundational* constraint (no category priors). All articulated methods (BANMo / RAC / SMAL / Lab4D) use category-specific priors (CSE features etc.) in their shipped code, conflicting with foundational. Pick **LocalDyGS** as Stage 2; defer articulation discovery to Stage 3 (cluster trajectories into rigid parts → fit skeleton, no priors). | Claude |
+| 2026-04-27 | LocalDyGS env built at `~/envs/localdygs/`. Add two env-build lessons (§5): `setuptools<81` pin for tinycudann; `<cfloat>` patch for LocalDyGS's simple_knn fork. Add `stage_b_localdygs/SETUP.md` with full recipe and `stage_b_localdygs/patches/` with the simple_knn patch. | Claude |
 
 > When you change the pipeline, the layout, or a decision: add a row here
 > with the date and a one-line description of what changed.

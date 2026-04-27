@@ -1,0 +1,12 @@
+diff --git a/submodules/simple-knn/simple_knn.cu b/submodules/simple-knn/simple_knn.cu
+index e72e4c9..d2d3f41 100644
+--- a/submodules/simple-knn/simple_knn.cu
++++ b/submodules/simple-knn/simple_knn.cu
+@@ -11,6 +11,7 @@
+ 
+ #define BOX_SIZE 1024
+ 
++#include <cfloat>
+ #include "cuda_runtime.h"
+ #include "device_launch_parameters.h"
+ #include "simple_knn.h"
