@@ -20,25 +20,29 @@ the first time**, then a smoke-test LocalDyGS training run.
 
 ## Last completed
 
-**Patch 0003 landed** (commit `1e53592`): bounds upstream
-`test_num = [0,10,20,30]` to in-range cam indices. Caught when smoke
-`59960468` reached `Scene.__init__` and crashed on `IndexError` in
-`Colmap_Dataset.load_images_path` (upstream code assumes ≥31 cams;
-our rig has 11). Train dataset successfully loaded 540 images first
-(9 cams × 60 frames) — confirms scene layout is structurally correct.
+**Smoke test PASSED** (job `59960670`, 3:10 wall, COMPLETED). 500 iters
+on the prepared 60-frame cow scene. Loss 0.5326→0.1729, PSNR 6.83→16.87,
+~3.5 it/s on A100. Read 540 train + 120 test images, 73,784-pt init
+pcd loaded. Output: `/scratch/yubo/cow_1/9148_10581_output/stage_b/smoke_20260427_185853/`
+(only outputs.log + cfg_args — no checkpoint, due to upstream ordering
+bug where `save_iterations.append(args.iterations)` runs before config
+merge; harmless for 30K full run since 30000 is in the default save list).
 
-Prior: prep `59959992` succeeded → smoke `59960152` failed (no internet
-for VGG16) → weights pre-cached + fail-fast guard (`b1304d4`) → smoke
-`59960468` failed (test_num index error).
+Stage 2 pipeline now validated end-to-end: env + scene layout + train.py.
 
 ## Next concrete step
 
-**In flight: smoke job 59960670** (resubmission with patch 0003 applied).
-Same config (500 iters, single A100, cow_smoke.py).
-Watcher running.
+**Full 30 K-iteration training run** on the same scene. Estimate ~2.5 h
+training + setup overhead → 4 h walltime. Single A100, rrg-vislearn,
+upstream `arguments/vrugz/basketball.py` config (no smoke override).
+Output: `/scratch/yubo/cow_1/9148_10581_output/stage_b/train_<timestamp>/`.
 
-After smoke succeeds: full 30000-iter training run with upstream
-basketball.py config (separate output dir).
+```bash
+sbatch scripts/slurm/run_localdygs_train.sh   # to be written
+```
+
+**Decision pending**: submit now (the autonomy rule says yes) or pause
+for Yubo's eyeball on smoke-result behavior first?
 
 ## Recent activity
 
@@ -46,6 +50,7 @@ Newest first.
 
 | Date | Event | Detail |
 |---|---|---|
+| 2026-04-27 | **Smoke job 59960670 SUCCEEDED** | 3:10 wall, 500/500 iters, loss 0.53→0.17, PSNR 6.83→16.87. Stage 2 pipeline validated end-to-end. |
 | 2026-04-27 | Smoke job 59960670 resubmitted | with patch 0003 applied |
 | 2026-04-27 | Patch 0003 landed | commit `1e53592` — bounds test_num to in-range indices; SETUP lesson #2c |
 | 2026-04-27 | Smoke job 59960468 FAILED | 25 s, IndexError in Colmap_Dataset.load_images_path — upstream test_num=[0,10,20,30] assumes ≥31 cams; ours has 11 |
