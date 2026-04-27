@@ -1,0 +1,18 @@
+diff --git a/scene/dataset_readers.py b/scene/dataset_readers.py
+index 9017f1c..95a2446 100644
+--- a/scene/dataset_readers.py
++++ b/scene/dataset_readers.py
+@@ -195,7 +195,12 @@ def readColmapSceneInfo(path, images, eval, lod, frames_start_end=[0,300],llffho
+ 
+     from scene.colmap_dataset import Colmap_Dataset
+ 
+-    test_num = [0,10,20,30]
++    # Bound to actual cameras: upstream assumes >=31 cams (so all of
++    # [0,10,20,30] are valid). Smaller rigs (e.g. our 11-cam cow setup)
++    # would otherwise pass length-4 split into Colmap_Dataset whose
++    # self.cameras = len(self.split), then self.poses[idx] runs off
++    # the end during load_images_path. Motion-Capture project rule.
++    test_num = [i for i in [0, 10, 20, 30] if i < len(cam_extrinsics)]
+ 
+     train_num = [i for i in range(len(cam_extrinsics)) if i not in test_num]
+     train_exr = [cam_extrinsics[i] for i in range(len(cam_extrinsics)) if i not in test_num] 

@@ -50,11 +50,12 @@ cd tiny-cuda-nn && \
     TCNN_CUDA_ARCHITECTURES=80 \
     pip install bindings/torch                                  # SM 8.0 = A100
 
-# Apply both patches before installing the LocalDyGS submodules
+# Apply all three patches before installing the LocalDyGS submodules
 cd ~/github/LocalDyGS
 PATCHES=~/github/Motion-Capture/apps/reconstruction/stage_b_localdygs/patches
 git apply $PATCHES/0001-simple_knn-include-cfloat.patch
 git apply $PATCHES/0002-dataset_readers-downsample-1.patch
+git apply $PATCHES/0003-dataset_readers-test_num-bounds.patch
 pip install submodules/diff-gaussian-rasterization
 pip install submodules/simple-knn
 
@@ -112,6 +113,23 @@ cow data (fur texture). Patch is at
 
 If memory becomes a concern at native 4K (660 train images × 4K is a
 lot for Gaussian splatting), reconsider, but only after measuring.
+
+### 2c. `test_num = [0,10,20,30]` assumes >=31 cameras
+
+Upstream `readColmapSceneInfo` hardcodes test cam indices as
+`[0, 10, 20, 30]`. With smaller rigs (our cow setup is 11 cams,
+indices 0..10), only 0 and 10 are valid — the test split has 2
+extrinsics but `Colmap_Dataset.__init__` sets
+`self.cameras = len(self.split) = 4` regardless. The off-by-N then
+crashes during `load_images_path` with
+`IndexError: list index out of range` at `self.poses[idx]`.
+
+Patch is at `patches/0003-dataset_readers-test_num-bounds.patch` —
+filters `test_num` to only valid indices via
+`[i for i in [0, 10, 20, 30] if i < len(cam_extrinsics)]`.
+
+Train/test split for our 11-cam rig: 9 train (cams 1..9), 2 test
+(cams 0, 10). Acceptable for first runs.
 
 ### 3. `tinycudann` must be built for the right SM
 
