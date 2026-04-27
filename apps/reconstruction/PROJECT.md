@@ -9,35 +9,43 @@
 
 ## 1. North Star
 
-Build a **canonical articulated model** of a captured cow:
-> a rest-pose 3D shape  +  a kinematic structure (joints, bones, skinning)
-> +  per-frame joint angles  (and minor non-rigid residuals)
+Build a **canonical deformable model** of a captured cow, **using
+foundational methods (no category-specific priors like SMAL or
+DensePose-CSE)**:
+> a rest-pose 3D shape  +  a per-frame deformation field
 > that together explain every observed video frame from every camera.
 
-A canonical articulated model is what lets you *re-pose* the cow, *retarget*
-its motion, *compare body shape across animals*, and downstream — fit
-body-condition scoring, weight estimation, gait analysis. None of that is
-possible from a sequence of independent per-frame point clouds.
+This canonical model is what lets you *re-pose* the cow, *retarget* its
+motion, *compare body shape across animals*, and downstream — fit
+body-condition scoring, weight estimation, gait analysis. None of that
+is possible from a sequence of independent per-frame point clouds.
 
 **Term notes (since these recur):**
 - *canonical* = one rest-pose reference shape (not N per-frame meshes)
-- *articulated* = motion explained by a skeleton + skinning weights, with
-  small non-rigid residuals on top. The cow's dominant motion is skeletal
-  (legs, head, tail, spine rotations); soft-tissue effects are second
-  order. Supersedes the looser term "deformable", which would also cover
-  cloth, fluid, etc.
+- *deformable* = a general per-frame deformation field; we explicitly
+  allow but do not require this to factor into a skeleton + skinning
+  (i.e., articulation). The cow's dominant motion *is* skeletal, but
+  forcing an explicit skeleton into the model with off-the-shelf methods
+  (BANMo, RAC, SMAL) requires category-specific priors that conflict
+  with the foundational constraint. See §6.
+- *foundational* (constraint) = no priors specific to cattle / animals /
+  humans. Pure geometric + photometric optimization. Outputs whatever
+  the data alone justifies; articulation is then a *discovery* problem,
+  not a *fitting* problem. Discovering articulation is a follow-on
+  research direction (§9).
 
 ## 2. Why this is hard (and why we don't have it yet)
 
 1. **Half-circle rig**: at any instant, only one side of the cow is observed.
    Static reconstruction is fundamentally incomplete per frame.
-2. **The cow articulates**: legs, head, neck, tail rotate around joints;
-   breathing and muscle bulge add small non-rigid residuals. Naive "stack
+2. **The cow articulates** (legs, head, neck, tail rotate around joints)
+   plus small non-rigid residuals (breathing, muscle bulge). Naive "stack
    all per-frame clouds" doesn't merge into one coherent surface because
-   corresponding points have moved.
+   corresponding points have moved. Foundational methods model this as
+   a general deformation field; articulation is left implicit.
 3. **Classical MVS has no notion of time**: each frame is reconstructed
-   independently. To leverage temporal info you need an *articulation +
-   deformation model*, which classical methods don't provide.
+   independently. To leverage temporal info you need a *deformation
+   model*, which classical methods don't provide.
 4. **Holstein fur** has very low contrast in the dark patches — even SIFT +
    ZNCC struggles. Our CLAHE + masking work mitigates this but doesn't fully
    solve it.
@@ -67,16 +75,16 @@ Multi-view 30-fps RGB  +  calibration (intri.yml, extri.yml)
         └─────────────────┬──────────────────┘
                           │
         ┌─────────────────▼──────────────────┐
-        │ STAGE 2: canonical articulated     │  ⚠ NOT YET IMPLEMENTED
-        │ model (method TBD, see §6)         │  Solves skeleton + skinning +
-        │                                    │  per-frame joint angles.
-        │                                    │  Inputs: Stage 1 outputs +
-        │                                    │  optionally SMAL prior.
-        │ Output:                            │  Outputs: canonical mesh +
-        │   canonical_cow.{obj,ply}          │  skeleton + skinning weights +
-        │   skeleton.json                    │  per-frame joint angles
-        │   pose/<frame>.npz                 │  (small non-rigid residuals
-        │                                    │  optional).
+        │ STAGE 2: canonical deformable      │  ⚠ NOT YET IMPLEMENTED
+        │ model (foundational, no priors)    │  Solves a per-frame deformation
+        │ (method TBD, see §6)               │  field + a canonical shape.
+        │                                    │  Inputs: Stage 1 outputs.
+        │ Output:                            │  Outputs: canonical
+        │   canonical_cow.{ply,…}            │  representation +
+        │   per_frame/<frame>.{npz,…}        │  per-frame deformation
+        │                                    │  state (Gaussian positions,
+        │                                    │  warp field, etc — depends
+        │                                    │  on chosen method).
         └────────────────────────────────────┘
 ```
 
@@ -181,35 +189,56 @@ graceful fallback otherwise.
   (does not affect COLMAP MVS, which uses NCC on raw pixels).
 - **Temporal optimization at Stage A is not worth it for a deforming
   subject.** The cow surface deforms, so cross-frame depth smoothing
-  *blurs out* exactly the articulated motion Stage 2 needs to capture.
-  The background, where temporal smoothing would help, is masked out
-  anyway. Stage A produces independent per-frame clouds; all temporal
-  work belongs in Stage 2 (canonical articulated model with explicit
-  skeleton + per-frame joint angles).
+  *blurs out* exactly the deformation Stage 2 needs to capture. The
+  background, where temporal smoothing would help, is masked out anyway.
+  Stage A produces independent per-frame clouds; all temporal work
+  belongs in Stage 2 (canonical deformable model that learns its own
+  per-frame deformation field).
   Possible exception worth considering later: temporally consistent SAM
   masks (SAM2 with track propagation) — that's a *pre-Stage-A input*
   improvement, not Stage A reconstruction.
 
-## 6. Stage 2 — design space (open question)
+## 6. Stage 2 — design space (foundational only)
 
-Three candidates, pick one based on Stage 1 quality + lab priorities.
+We've **dropped explicit articulation** from the immediate Stage 2 goal
+because every off-the-shelf articulated method depends on category
+priors that conflict with the foundational constraint. Articulation
+becomes a follow-on research direction (§9).
+
+### Why we ruled out articulated methods
+
+| Method | Category prior? | Skeleton prior? | Surface features used | Verdict |
+|---|---|---|---|---|
+| **SMAL** (Zuffi 2017) | yes — fixed skeleton + shape PCA over 5 species | yes (predefined) | none | category-specific by design |
+| **BANMo** (Yang 2022) | claims template-free | discovers via neural blend skinning, but `# bones` is a hyperparam | uses **DensePose-CSE** in the official codebase (cat/dog/sheep models exist; cattle isn't one) | **practically category-specific** in shipped code |
+| **RAC** (Yang 2023) | yes — explicitly per-category | yes (per-category) | yes (CSE) | category-specific by design |
+| **3D-Fauna** (Li 2024) | yes — pan-species learned prior | yes | yes | learned prior over 100+ species |
+| **Lab4D** (BANMo successor) | optional | optional | can run without CSE in "no prior" mode | most flexible — keep as a *future* option once foundational baseline is in |
+
+### Foundational candidates (the actual shortlist)
 
 | Method | What it is | Pros | Cons |
 |---|---|---|---|
-| **BANMo / RAC / Lab4D** | Articulated neural body: skeleton + skinning + canonical SDF, fit to images via differentiable rendering | Animal-specific (cats/dogs/horses already shown). Outputs reusable canonical + skinning weights. Skeleton enables intuitive editing/retargeting. | Paper expects monocular casual video; multi-view + known calibration needs adaptation. Training is multi-day. |
-| **LocalDyGS** (cloned at `~/github/LocalDyGS`) | Multi-view dynamic 3DGS with seed-anchored local spaces, static-vs-dynamic feature decoupling | Designed for our exact setup (multi-view sync). Handles large motion. Repo present. | **Not articulated** — outputs Gaussians without a skeleton; "canonical rest pose" isn't a first-class concept. Would need extra work to extract joints. Env build is risky on Narval (tinycudann). |
-| **Deformable 3DGS** | Per-Gaussian time-conditioned deformation MLP over a single static set | Simpler than LocalDyGS. Active community. | Same articulation gap as LocalDyGS. Designed for monocular video. Adapting multi-view + cow scale unproven. |
+| **LocalDyGS** (cloned at `~/github/LocalDyGS`) | Multi-view dynamic 3DGS with seed-anchored local spaces, static-vs-dynamic feature decoupling | Designed for exactly our multi-view sync setup. Handles large motion (basketball-court scale). Repo already present. ICCV 2025. | Output is Gaussians + per-frame state, not a mesh and not a skeleton. Env build is risky on Narval (tinycudann, mmcv 1.6.0 — needs effort). |
+| **Dynamic 3D Gaussians** (Luiten 3DV 2024) | Per-Gaussian SE(3) trajectory + physics-based local rigidity | Foundational, designed for synchronised multi-view. Per-point trajectories enable later articulation discovery. | Smaller, simpler than LocalDyGS; performance on large-motion sequences unproven on cattle. |
+| **4D Gaussian Splatting** (Wu CVPR 2024) | HexPlane-based decomposition over 3DGS | Active community, fast inference. | Designed for monocular dynamic; multi-view + cow scale less proven than LocalDyGS. |
 
-**Recommendation when we get there**: BANMo / RAC is the methodologically
-right answer for the goal as stated — it natively produces the canonical
-articulated model (skeleton + skinning + canonical SDF). LocalDyGS would
-likely be faster to first results since the repo is cloned and the data
-format matches, but its output isn't articulated; we'd then have to fit
-a skeleton on top of its Gaussians, which adds its own research problem.
+### Recommendation
 
-Pragmatic order: try BANMo / Lab4D for the articulated path. Hold
-LocalDyGS as a fallback if BANMo training proves too brittle on our
-data — a non-articulated dense reconstruction is still better than nothing.
+**Try LocalDyGS first.** Repo is cloned, paper-data layout matches our
+multi-view sync rig, Stage 1's per-frame COLMAP outputs slot into its
+seed initialization. Output is a deformable Gaussian representation
+that *can* render any frame and *can* be queried for per-point
+trajectories — enough to call "Stage 2 done" for a foundational
+baseline.
+
+Hold **Dynamic 3D Gaussians** as a fallback if LocalDyGS env build
+proves intractable on Narval (smaller method, easier env).
+
+**Articulation is deferred to research follow-on** (§9, "Stage 3
+candidate"): cluster the per-point trajectories from Stage 2 into
+rigid parts and fit a skeleton graph — no priors needed, all
+discovered from observed motion.
 
 ## 7. Repo layout — what lives where
 
@@ -261,12 +290,27 @@ External:
   cow at distinct poses?
 - [ ] If Stage 1 looks good: scale up to 60-frame sweep (`0:300:5`) so the
   cow makes a more substantial rotation through the rig.
-- [ ] **Decide Stage 2 method** (§6). Likely needs an offline meeting with
-  Yubo before committing.
-- [ ] If LocalDyGS picked: build the env on Narval. Known risks: tinycudann,
-  mmcv 1.6.0, the differing diff-gaussian-rasterization fork.
+- [ ] **Build LocalDyGS env on Narval** (§6 recommendation). Known risks:
+  tinycudann, mmcv 1.6.0, the LocalDyGS-specific diff-gaussian-rasterization
+  fork (different from the vanilla 3DGS one already at `~/envs/3dgs/`).
 - [ ] Evaluate whether per-frame stride 5 is enough vs stride 1 for Stage 2.
-  Smaller stride = less per-frame articulation change = easier registration.
+  Smaller stride = less per-frame deformation = easier optimization.
+
+### Stage 3 (research follow-on, post-Stage 2)
+
+Foundational articulation discovery — turn Stage 2's deformable Gaussians
+into an explicit skeleton + skinning, with no category prior:
+
+- [ ] Track per-point trajectories across frames (Stage 2 output)
+- [ ] Cluster trajectories into rigid parts (e.g., affinity over relative
+  motion; no fixed `# bones` — let the data say)
+- [ ] Fit a skeleton graph over the discovered parts (RANSAC over part
+  pairs that maintain constant offset → joint locations)
+- [ ] Validate by re-rendering with the discovered articulation and
+  comparing photometric error to the unconstrained Stage 2 output
+
+This is research, not engineering. Deliberately deferred until Stage 2
+is producing something to discover from.
 
 ## 10. Constraints to remember
 
@@ -288,6 +332,7 @@ External:
 | 2026-04-26 | Initial draft. Documents Stage 1 (working) + Stage 2 (open). | Claude (under Yubo's direction) |
 | 2026-04-26 | Add §4 masking-semantics clarification: dense always applies masks regardless of sparse policy. Add `auto` sparse policy as default. Add lesson on temporal-at-Stage-A being not worth it. | Claude |
 | 2026-04-27 | Replace "canonical deformable model" with "**canonical articulated model**" throughout: more accurate for cow's skeleton-driven motion. Update Stage 2 recommendation: BANMo/RAC over LocalDyGS since LocalDyGS isn't natively articulated. | Claude |
+| 2026-04-27 | **Reverse the §6 recommendation**: drop "articulated" from the immediate Stage 2 goal and re-add the *foundational* constraint (no category priors). All articulated methods (BANMo / RAC / SMAL / Lab4D) use category-specific priors (CSE features etc.) in their shipped code, conflicting with foundational. Pick **LocalDyGS** as Stage 2; defer articulation discovery to Stage 3 (cluster trajectories into rigid parts → fit skeleton, no priors). | Claude |
 
 > When you change the pipeline, the layout, or a decision: add a row here
 > with the date and a one-line description of what changed.
