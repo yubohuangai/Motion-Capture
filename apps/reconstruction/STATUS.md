@@ -20,26 +20,43 @@ the first time**, then a smoke-test LocalDyGS training run.
 
 ## Last completed
 
-**Round-3 env fix landed** (commit `fbaf6a4`): prep sbatch switched from
-`~/envs/localdygs/` to `~/envs/cleanply/`. Reason: open3d's wheelhouse
-wheel pins torch==2.6, which downgrades from our 2.10 install and
-ABI-breaks the localdygs CUDA extensions. SETUP.md lesson #6 added.
-
-Prior milestones:
-- Visual review of `aggregated_4d.ply` cleared on Mac (Yubo, 2026-04-27).
-- Stage 1 60-frame sweep finished. 60/60 frames, 8.6 M points aggregated, 129 MB. Per-frame point counts 25 K–250 K.
-- LocalDyGS env at `~/envs/localdygs/`. Patches `0001-simple_knn-include-cfloat` + `0002-dataset_readers-downsample-1` applied. Committed (`362781b`, `ec9e3be`).
+**Stage 1 → Stage 2 prep succeeded** (job `59959992`, 17 s wall, cleanply venv):
+`/scratch/yubo/cow_1/9148_10581_output/stage_b/localdygs_scene/` has 60 frame
+dirs × 11 image symlinks, 11 cameras renumbered 0..10 PINHOLE 3840×2160 (4K
+preserved), init pcd `pcds/downsample_0_60.ply` 73,784 pts (3.8 MB) — voxel
+size 0.035 hit the ≤90K target on the 8.6 M-point combined input.
 
 ## Next concrete step
 
-**In flight: prep job 59959992** (resubmission after the open3d-missing failure of `59959671`). Watcher running in background; will dump logs + scene-layout inspection on completion.
+**In flight: smoke-test training job 59960152** (commit `51b985b` —
+`scripts/slurm/run_localdygs_smoke.sh` + `apps/.../configs/cow_smoke.py`).
+500 iterations on a single A100, ~5–10 min wall, output to
+`/scratch/yubo/cow_1/9148_10581_output/stage_b/smoke_<timestamp>/`.
+Watcher running; will dump logs on completion.
 
-After prep succeeds, smoke-test LocalDyGS training on a single A100 (~10–20 min, 500–1000 iters) to verify env + scene layout actually train without errors.
+After smoke succeeds: run full-iteration training (30000 iters with
+upstream basketball.py config) — same scene, separate output dir.
 
-```bash
-# (after smoke test plan exists)
-sbatch scripts/slurm/run_localdygs_smoke.sh   # not yet written
-```
+## Recent activity
+
+Newest first.
+
+| Date | Event | Detail |
+|---|---|---|
+| 2026-04-27 | Smoke job submitted | `59960152` — single A100, 500 iters, cow_smoke.py config |
+| 2026-04-27 | Smoke artifacts committed | `51b985b` — `configs/cow_smoke.py` + `scripts/slurm/run_localdygs_smoke.sh` |
+| 2026-04-27 | Prep job 59959992 SUCCEEDED | 17 s, 60 frames, 73,784-pt init pcd, 4K cameras |
+| 2026-04-27 | Prep resubmitted | job 59959992, uses cleanply venv (no torch deps) |
+| 2026-04-27 | Stale scene wiped | `/scratch/.../localdygs_scene/` from 16:51 (mystery origin) removed |
+| 2026-04-27 | localdygs venv restored | `pip install --force-reinstall torch==2.10.0 torchvision`; simple_knn import OK; tinycudann OK only on GPU node |
+| 2026-04-27 | Prep env fix committed | `fbaf6a4` — prep sbatch uses ~/envs/cleanply/, SETUP.md lesson #6 |
+| 2026-04-27 | Prep job 59959671 FAILED | `ModuleNotFoundError: No module named 'open3d'` in localdygs venv (4 s) |
+| 2026-04-27 | Visual review approved | `aggregated_4d.ply` cleared on Mac; proceed to Stage 2 prep |
+| 2026-04-27 | STATUS.md created + first prep submitted | commit `c2ce86d` |
+| 2026-04-27 | Round-2 patches landed | commit `ec9e3be` — patch 0002 (downsample 2.0→1.0) + finalized SETUP.md |
+| 2026-04-27 | Round-1 stage_b scaffolding landed | commit `362781b` — env recipe + Stage 1→LocalDyGS data prep + simple_knn cfloat patch |
+| 2026-04-27 | Stage 1 60-frame sweep complete | 60/60 frames, 8.6 M aggregated points |
+| 2026-04-27 | LocalDyGS env built | ~/envs/localdygs/, torch 2.10+CUDA 12.9, tinycudann@SM 8.0 |
 
 ## Recent activity
 
