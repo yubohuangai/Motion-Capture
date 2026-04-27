@@ -32,17 +32,17 @@ Stage 2 pipeline now validated end-to-end: env + scene layout + train.py.
 
 ## Next concrete step
 
-**Full 30 K-iteration training run** on the same scene. Estimate ~2.5 h
-training + setup overhead → 4 h walltime. Single A100, rrg-vislearn,
-upstream `arguments/vrugz/basketball.py` config (no smoke override).
-Output: `/scratch/yubo/cow_1/9148_10581_output/stage_b/train_<timestamp>/`.
+**In flight: full training job 59960861** (commit `3838825` —
+`scripts/slurm/run_localdygs_train.sh`). 30 K iters, single A100,
+4 h walltime, upstream basketball.py config. Output to
+`/scratch/yubo/cow_1/9148_10581_output/stage_b/train_<timestamp>/`.
+Watcher running.
 
-```bash
-sbatch scripts/slurm/run_localdygs_train.sh   # to be written
-```
-
-**Decision pending**: submit now (the autonomy rule says yes) or pause
-for Yubo's eyeball on smoke-result behavior first?
+After training succeeds:
+- inspect rendered test-cam outputs (PSNR/LPIPS metrics)
+- copy `point_cloud/iteration_30000/point_cloud.ply` to Mac for review
+- decide whether to run longer (basketball.py supports up to 200 K) or
+  proceed to Stage 3 (articulation discovery from per-Gaussian trajectories)
 
 ## Recent activity
 
@@ -50,6 +50,8 @@ Newest first.
 
 | Date | Event | Detail |
 |---|---|---|
+| 2026-04-27 | Full training job 59960861 submitted | 30K iters, 4h walltime, basketball.py config, A100 |
+| 2026-04-27 | Full training sbatch committed | `3838825` — `scripts/slurm/run_localdygs_train.sh` |
 | 2026-04-27 | **Smoke job 59960670 SUCCEEDED** | 3:10 wall, 500/500 iters, loss 0.53→0.17, PSNR 6.83→16.87. Stage 2 pipeline validated end-to-end. |
 | 2026-04-27 | Smoke job 59960670 resubmitted | with patch 0003 applied |
 | 2026-04-27 | Patch 0003 landed | commit `1e53592` — bounds test_num to in-range indices; SETUP lesson #2c |
