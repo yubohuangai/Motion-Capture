@@ -28,6 +28,8 @@ SCENE="${SCENE:-/scratch/yubo/cow_1/9148_10581_output/stage_b/localdygs_scene}"
 OUT_NAME="${OUT_NAME:-train_$(date +%Y%m%d_%H%M%S)}"
 OUT_DIR="/scratch/yubo/cow_1/9148_10581_output/stage_b/$OUT_NAME"
 CONFIG="${CONFIG:-/home/yubo/github/LocalDyGS/arguments/vrugz/basketball.py}"
+FRAMES_START="${FRAMES_START:-0}"
+FRAMES_END="${FRAMES_END:-60}"
 
 echo "=== localdygs full training starting at $(date) ==="
 echo "scene:  $SCENE"
@@ -67,7 +69,7 @@ cd ~/github/LocalDyGS
 time python train.py \
     -s "$SCENE" \
     -m "$OUT_DIR" \
-    --frames_start_end 0 60 \
+    --frames_start_end "$FRAMES_START" "$FRAMES_END" \
     --configs "$CONFIG"
 
 echo
