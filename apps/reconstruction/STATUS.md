@@ -47,29 +47,33 @@ The model has zero pressure to learn the cow — "render black" is the
 trivial-minimum solution. The plateau in metrics across 15K iters
 confirms convergence to this minimum.
 
-## Plan A — chosen and in flight
+## Plan A — chained execution
 
-Yubo confirmed Plan A and gave permission to use more resources for speed.
-
-**Chained execution (~2 h 15 min wall total)**:
-
-| # | Step | Status | Job ID | Details |
+| # | Step | Status | Job ID | Result / details |
 |---|---|---|---|---|
-| 1 | Undistort 60 unmasked frames | **in flight** | `59967114` | xargs -P 16, ~3 min wall |
-| 2 | Re-prep LocalDyGS scene | pending | — | `--image-subdir dense_unmasked/images` |
-| 3 | Re-train (30K iters) | pending | — | same sbatch as before |
-| 4 | Re-render iter 30000 | pending | — | same sbatch |
+| 1 | Undistort 60 unmasked frames | ✓ DONE | `59967114` | 12 s wall (xargs -P 16). 60×11 = 660 unmasked images at `work/frame_*/dense_unmasked/images/`. |
+| 2 | Re-prep LocalDyGS scene | ✓ DONE | (in-watcher) | 73,784-pt init pcd; symlinked from `dense_unmasked/images/`. |
+| 3 | Re-train (30K iters) | **in flight** | `59967435` | full A100 / 4 h walltime. Output: `train_<timestamp>` |
+| 4 | Re-render | pending | — | submit after train succeeds |
 
-**Stage 1 outputs version-mismatch question**: not a blocker. The fused.ply
-files (used only for init pcd via voxel-downsample to 73K from 8.6 M
-points) wash out any small per-frame variation. Plan A produces a *new*
-artifact (`work/frame_*/dense_unmasked/images/`) that doesn't depend on
-the existing per-frame outputs.
+**Validation: Plan A is materially different** (sampled across 4 frames × 3 cams):
+
+| Frame | Cam | Masked mean / black% | Unmasked mean / black% |
+|---|---|---|---|
+| 0 | 01/05/11 | ~144-165 / 0% | ~144-165 / 0% (frame 0 was already unmasked — coincidence; cow filled frame) |
+| 100 | 01/05/11 | 7-16 / **84-95%** | 158-170 / 0% |
+| 200 | 01/05/11 | 6-17 / **87-95%** | 162-170 / 0% |
+| 295 | 01/05/11 | 4-13 / **89-97%** | 161-170 / 0% |
+
+Confirms: the previous training was seeing 87-97% black images for
+most frames, drove the model to "render zero" minimum. With unmasked
+images, the loss landscape now has the cow + background actually
+visible — model has a normal multi-view scene to fit.
 
 ## Next concrete step
 
-Watcher will fire on undistort completion → I'll run prep with
-`--image-subdir dense_unmasked/images`, then submit the retrain.
+Watcher will fire on retrain completion → submit render → inspect rendered
+PNGs (expecting actual cow content this time).
 
 ## Recent activity
 
@@ -77,6 +81,9 @@ Newest first.
 
 | Date | Event | Detail |
 |---|---|---|
+| 2026-04-27 | Plan A retrain 59967435 submitted | with unmasked images |
+| 2026-04-27 | Plan A prep DONE | scene rebuilt with `--image-subdir dense_unmasked/images` |
+| 2026-04-27 | Plan A undistort 59967114 DONE | 12 s wall, 60×11 unmasked images, validated cross-frame |
 | 2026-04-27 | Plan A undistort job 59967114 submitted | xargs -P 16 over 60 frames |
 | 2026-04-27 | Plan A landed | `32b2379` — `run_undistort_unmasked.sh` + `--image-subdir` flag in prep |
 | 2026-04-27 | **Render diagnosis: renders are pure black** | Pixel mean 0.0 vs GT 174.7. Root cause: training fed masked images (95% black bg) → trivial minimum. Decision needed before retraining. |
