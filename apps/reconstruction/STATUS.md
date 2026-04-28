@@ -58,51 +58,78 @@ first 60 frames means the model didn't see meaningful 360° rotation.
 **Goal**: span the cow's full 48-second rotation AND make loss/metrics
 cow-only (so background pixels don't dominate).
 
-### Phase 1: Stage 1 on missing frames (in flight)
+### All 12 jobs submitted with SLURM dependencies — autonomous chain
 
-Job array `59976202` — 76 frames at stride 15 over 0..1425 (the gap not
-covered by existing stride-5 over 0..295). ~30 min wall expected.
+```
+STAGE1=59976202  (Stage 1 array, 76 frames in flight)
+U1=59976487      (undistort_unmasked new 76 frames)         deps: STAGE1
+M1=59976488      (undistort_masks all 136 frames)           deps: STAGE1
 
-Output: `/scratch/yubo/cow_1/9148_10581_output/stage_a/colmap_4d/work/frame_<NNNNNN>/`
-for each new frame.
+# Exp 2 chain — 136 frames, NO mask (control)
+P2=59976489      (prep)                                      deps: U1
+T2=59976490      (train, 5h walltime)                        deps: P2
+R2=59976491      (render iter-30000)                         deps: T2
 
-### Phase 2: prep + train (chained after Phase 1)
+# Exp 1 chain — 136 frames + mask-aware loss (MAIN experiment)
+P1=59976492      (prep)                                      deps: U1, M1
+T1=59976496      (train, 5h walltime)                        deps: P1
+R1=59976508      (render iter-30000)                         deps: T1
 
-Three parallel training experiments on rrg-vislearn:
-
-| Exp | Frames | Loss | Output dir | Notes |
-|---|---|---|---|---|
-| 1 | 96 (stride-15 over 0..1425) | mask-aware | `train_planB_e1_<ts>/` | The recommended setup |
-| 2 | 96 same frames | standard (no mask) | `train_planB_e2_<ts>/` | Control: does mask-aware loss help? |
-| 3 | 60 (existing stride-5 over 0..295) | mask-aware | `train_planB_e3_<ts>/` | Control: does the wider time range help, or is mask-aware loss alone enough? |
-
-Each ~3-4 h wall on A100. All run in parallel.
-
-### Phase 3: render (chained after each train)
-
-Three render jobs, ~1 h each.
-
-## How a fresh session resumes if Claude dies overnight
-
-Step 1: check what's still running:
-```bash
-squeue -u yubo                            # active jobs
-sacct -u yubo -S today --format=JobID,JobName,State,Elapsed,End  # completed today
+# Exp 3 chain — 60 frames (existing) + mask-aware loss
+P3=59976511      (prep)                                      deps: M1
+T3=59976512      (train)                                      deps: P3
+R3=59976514      (render iter-30000)                         deps: T3
 ```
 
-Step 2: read this STATUS.md for job IDs and expected output paths.
+Chain state file: `/scratch/yubo/jobs/planB_chain.txt` (env-var format).
 
-Step 3: continue the chain. If Phase 1 is done but Phase 2 not started,
-prep + submit. If Phase 2 done but Phase 3 not started, submit renders.
-Each phase is independent given the previous's output exists.
+### Output paths (predictable, no timestamps in dir names)
 
-Job IDs to track (will update as I submit them):
-- Stage 1 array: `59976202` ← in flight
-- Mask undistort: TBD (after Stage 1)
-- Train Exp 1 (96fr+mask): TBD
-- Train Exp 2 (96fr+nomask): TBD
-- Train Exp 3 (60fr+mask): TBD
-- Render Exp 1/2/3: TBD
+| Exp | Scene dir | Train output dir |
+|---|---|---|
+| 1 | `stage_b/scene_planB_e1/` | `stage_b/train_planB_e1/` |
+| 2 | `stage_b/scene_planB_e2/` | `stage_b/train_planB_e2/` |
+| 3 | `stage_b/scene_planB_e3/` | `stage_b/train_planB_e3/` |
+
+All under `/scratch/yubo/cow_1/9148_10581_output/`.
+
+Each `train_planB_e?/` will end up with:
+- `point_cloud/iteration_30000/` — the trained model checkpoints
+- `train/ours_30000/{renders,gt}/` — training-cam renders (~540-1224 imgs)
+- `test/ours_30000/{renders,gt}/` — held-out cam renders (~120-272 imgs)
+- `outputs.log` — train/test L1+PSNR at every eval iteration
+
+### Expected timeline (rough)
+
+```
+NOW (00:54)  Stage 1 array running (~30 min total, 30 tasks running parallel)
++30 min      Stage 1 done → U1 + M1 start (parallel, ~2 min each)
++35 min      Both undistorts done → P1, P2, P3 start (parallel, ~30 s each)
++36 min      All preps done → T1, T2, T3 start (parallel, on 3 A100s)
++~5 hr       Trainings finish → R1, R2, R3 start (parallel renders)
++~6 hr       Renders done — wake-up state, all results ready
+```
+
+So you should see results by ~07:00 EDT. May vary based on rrg-vislearn
+queue depth.
+
+## Wake-up checklist (for fresh session tomorrow)
+
+Run this single command:
+```bash
+bash /home/yubo/github/Motion-Capture/scripts/check_planB_status.sh
+```
+
+It prints state of every job, current train metrics, and render output counts.
+
+If any job FAILED/CANCELLED, the script prints them under "Failed/cancelled".
+Investigate via `cat /scratch/yubo/jobs/logs/<jobname>_<jobid>.{out,err}`.
+
+If everything succeeded:
+- Compare `outputs.log` final-iter PSNR across the 3 experiments
+- `train_planB_e?/test/ours_30000/renders/` are 4K PNGs to inspect on Mac
+- Render naming: see `apps/reconstruction/STATUS.md` index→cam mapping
+- Best experiment by metric is your "real Stage 2 baseline" going forward
 
 ## Quick-win utilities (running tonight, low priority)
 
@@ -150,6 +177,8 @@ Newest first.
 
 | Date | Event | Detail |
 |---|---|---|
+| 2026-04-28 | **Plan B chain submitted (12 jobs total)** | All deps queued: U1=59976487, M1=59976488, P/T/R for e1/e2/e3 (see Plan B section) |
+| 2026-04-28 | Patch 0006 + mask undistort + prep flag landed | `f58b13e` — mask-aware loss, scripts/run_undistort_masks.sh, --mask-subdir flag |
 | 2026-04-28 | **Plan B Stage 1 array `59976202` submitted** | 76 frames stride-15 over 300..1425, ~30 min wall expected |
 | 2026-04-28 | PROJECT.md rig correction | `4e4531f` — L-shaped rig (not half-circle); cow rotates over full 48s |
 | 2026-04-28 | **Plan A render 59972470 DONE** | 57 min wall, all 660 PNGs (5.7-8.7 MB each). Train L1 ~0.05, test L1 ~0.20. Model produces real cow renders. |
