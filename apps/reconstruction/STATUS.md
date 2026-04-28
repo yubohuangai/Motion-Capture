@@ -58,27 +58,28 @@ first 60 frames means the model didn't see meaningful 360° rotation.
 **Goal**: span the cow's full 48-second rotation AND make loss/metrics
 cow-only (so background pixels don't dominate).
 
-### All 12 jobs submitted with SLURM dependencies — autonomous chain
+### Overnight chain results (2026-04-28 morning)
 
 ```
-STAGE1=59976202  (Stage 1 array, 76 frames in flight)
-U1=59976487      (undistort_unmasked new 76 frames)         deps: STAGE1
-M1=59976488      (undistort_masks all 136 frames)           deps: STAGE1
+STAGE1=59976202   COMPLETED ✓  10 min
+U1=59976487       COMPLETED ✓  10 sec
+M1=59976488       COMPLETED ✓  11 sec
 
-# Exp 2 chain — 136 frames, NO mask (control)
-P2=59976489      (prep)                                      deps: U1
-T2=59976490      (train, 5h walltime)                        deps: P2
-R2=59976491      (render iter-30000)                         deps: T2
+# Exp 3 — 60fr + mask-aware                  ← FULLY COMPLETE
+P3=59976511       COMPLETED ✓  24 sec
+T3=59976512       COMPLETED ✓  1:55:47   train PSNR 23.09, test PSNR 11.82
+R3=59976514       COMPLETED ✓  57 min    (exit 13 = SIGPIPE; all 660 PNGs OK)
 
-# Exp 1 chain — 136 frames + mask-aware loss (MAIN experiment)
-P1=59976492      (prep)                                      deps: U1, M1
-T1=59976496      (train, 5h walltime)                        deps: P1
-R1=59976508      (render iter-30000)                         deps: T1
-
-# Exp 3 chain — 60 frames (existing) + mask-aware loss
-P3=59976511      (prep)                                      deps: M1
-T3=59976512      (train)                                      deps: P3
-R3=59976514      (render iter-30000)                         deps: T3
+# Exp 1/2 — 136 frames                       ← FAILED & FIXED, re-running
+P1=59976492       COMPLETED ✓
+P2=59976489       COMPLETED ✓
+T1=59976496       FAILED 20s    bug: train sbatch hardcoded `--frames_start_end 0 60`
+T2=59976490       FAILED 20s    bug: same
+                  Fix in commit 37ec5f2 — sbatch now takes FRAMES_END env var
+T1 RESUBMIT=60009011  RUNNING (eta ~5h, started ~15:32 EDT)
+R1 RESUBMIT=60009012  PENDING (depends on T1)
+T2 RESUBMIT=60009013  RUNNING (eta ~5h)
+R2 RESUBMIT=60009014  PENDING (depends on T2)
 ```
 
 Chain state file: `/scratch/yubo/jobs/planB_chain.txt` (env-var format).
@@ -112,6 +113,28 @@ NOW (00:54)  Stage 1 array running (~30 min total, 30 tasks running parallel)
 
 So you should see results by ~07:00 EDT. May vary based on rrg-vislearn
 queue depth.
+
+## Exp 3 results — viewable now
+
+**Path**: `/scratch/yubo/cow_1/9148_10581_output/stage_b/train_planB_e3/`
+
+| | Plan A (60fr, no mask) | Exp 3 (60fr, mask-aware) | Δ |
+|---|---|---|---|
+| Train PSNR | 22.94 | **23.09** | +0.15 |
+| Test PSNR | 11.46 | **11.82** | +0.36 |
+
+Mask-aware loss alone gave a marginal ~0.4 dB test improvement on the
+60-frame setup. The interesting comparison is whether the 136-frame
+runs (T1/T2 in flight) do dramatically better — they're the ones with
+the cow's full rotation in view.
+
+Postprocess running on Exp 3: adds `renamed/cam<NN>_frame_<NNNNNN>.png`
+symlinks + compresses GTs PNG → JPEG (saves ~4 GB).
+
+Pull renders to Mac:
+```bash
+rsync -avz narval2:/scratch/yubo/cow_1/9148_10581_output/stage_b/train_planB_e3/{train,test}/ours_30000/renamed/ ~/cow_e3/
+```
 
 ## Wake-up checklist (for fresh session tomorrow)
 
@@ -177,6 +200,11 @@ Newest first.
 
 | Date | Event | Detail |
 |---|---|---|
+| 2026-04-28 | T1+T2 RESUBMITTED with FRAMES_END=136 | T1=60009011, T2=60009013, RUNNING |
+| 2026-04-28 | Train sbatch FRAMES_END parametric | `37ec5f2` — fixes the hardcoded `--frames_start_end 0 60` that broke 136-frame runs |
+| 2026-04-28 | T1+T2 (136fr) FAILED at startup | bug: pcds/downsample_0_60.ply mismatch; both crashed in 20 sec |
+| 2026-04-28 | Postprocess utility committed | `d2451f8` — rename + GT compress for human review |
+| 2026-04-28 | **Exp 3 fully complete overnight** | T3+R3 both done; train PSNR 23.09, test PSNR 11.82, 660 4K renders at train_planB_e3/ |
 | 2026-04-28 | **Plan B chain submitted (12 jobs total)** | All deps queued: U1=59976487, M1=59976488, P/T/R for e1/e2/e3 (see Plan B section) |
 | 2026-04-28 | Patch 0006 + mask undistort + prep flag landed | `f58b13e` — mask-aware loss, scripts/run_undistort_masks.sh, --mask-subdir flag |
 | 2026-04-28 | **Plan B Stage 1 array `59976202` submitted** | 76 frames stride-15 over 300..1425, ~30 min wall expected |
