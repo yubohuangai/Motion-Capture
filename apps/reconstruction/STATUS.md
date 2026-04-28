@@ -51,10 +51,26 @@ confirms convergence to this minimum.
 
 | # | Step | Status | Job ID | Result / details |
 |---|---|---|---|---|
-| 1 | Undistort 60 unmasked frames | ✓ DONE | `59967114` | 12 s wall (xargs -P 16). 60×11 = 660 unmasked images at `work/frame_*/dense_unmasked/images/`. |
-| 2 | Re-prep LocalDyGS scene | ✓ DONE | (in-watcher) | 73,784-pt init pcd; symlinked from `dense_unmasked/images/`. |
-| 3 | Re-train (30K iters) | **in flight** | `59967435` | full A100 / 4 h walltime. Output: `train_<timestamp>` |
-| 4 | Re-render | pending | — | submit after train succeeds |
+| 1 | Undistort 60 unmasked frames | ✓ DONE | `59967114` | 12 s wall (xargs -P 16). 60×11 = 660 unmasked images. |
+| 2 | Re-prep LocalDyGS scene | ✓ DONE | (in-watcher) | 73,784-pt init pcd; symlinks `dense_unmasked/images/`. |
+| 3 | Re-train (30K iters) | ✓ DONE | `59967435` | 1:59:18 wall. Output: `train_20260427_220326/`. **Train PSNR 22.94** (was 8.94), test PSNR 11.46. |
+| 4 | Re-render | **in flight** | `59971560` | iter 30000, with patch 0005 incremental save |
+
+**Plan A worked** — model now actually learns training views.
+
+| Metric | Iter 30000, before (masked) | Iter 30000, after (unmasked) |
+|---|---|---|
+| Train L1 | 0.391 | **0.047** (8× better) |
+| Train PSNR | 8.94 | **22.94** (+14 dB) |
+| Test L1 | 0.143 | 0.217 |
+| Test PSNR | 13.66 | 11.46 |
+
+Train metrics now make sense (train < test L1, train > test PSNR — normal
+overfitting). Test PSNR dropped because the previous "render all black"
+scored coincidentally well against masked GT; with unmasked GT, all-black
+gets 0 PSNR. Generalization to held-out cams 0/10 is genuinely hard
+(half-circle rig, novel viewpoints), but that's a model-quality issue
+not a pipeline-broken issue.
 
 **Validation: Plan A is materially different** (sampled across 4 frames × 3 cams):
 
@@ -81,6 +97,8 @@ Newest first.
 
 | Date | Event | Detail |
 |---|---|---|
+| 2026-04-28 | Plan A render 59971560 submitted | for the new train output dir |
+| 2026-04-28 | **Plan A retrain 59967435 DONE** | 1:59:18 wall. Train PSNR 22.94 (vs 8.94 before). Pipeline works. |
 | 2026-04-27 | Plan A retrain 59967435 submitted | with unmasked images |
 | 2026-04-27 | Plan A prep DONE | scene rebuilt with `--image-subdir dense_unmasked/images` |
 | 2026-04-27 | Plan A undistort 59967114 DONE | 12 s wall, 60×11 unmasked images, validated cross-frame |
