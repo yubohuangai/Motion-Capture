@@ -39,18 +39,19 @@ can't move; learning is stuck on the offset/MLP/hash params alone);
 
 ## Next concrete step
 
-**In flight: render job 59964986** (commit `bc0f4f8` — patch 0004 +
-render sbatch). Renders the iter-30000 model on both train and test
-cams. Output goes into the existing `train_20260427_190608/{train,test}/ours_30000/`
-subdirs. ~30 min walltime; expect ~10 min real time for 660 images.
+**In flight: render job 59965124** (commit `2a8fa30` — patch 0005 fixes
+render OOM). Same model dir, iter 30000. 32 GB CPU, single A100, 30 min
+walltime. With patch 0005 each view saves to disk immediately instead of
+buffering all 540 in memory.
+
+Prior render attempt (`59964986`, no patch 0005) OOM-killed at 191/540
+views (CPU peaked 25 GB / 24 GB). Root cause: render_set accumulated
+~13.5 GB CPU (numpy dead code) + ~53.5 GB GPU before the post-loop write.
 
 After render completes:
 - visually inspect a few train/test cam renders
-- if "looks like a cow but blurry" → next move is more iterations
-  (basketball.py supports up to 200K) or denser init pcd (re-prep with
-  `--target-points 250000`)
-- if "complete garbage / not a cow" → hyperparams likely wrong; revisit
-  basketball.py choice or LocalDyGS preset
+- "looks like a cow but blurry" → more iters or denser init pcd
+- "complete garbage / not a cow" → hyperparams likely wrong
 
 ## Recent activity
 
@@ -58,6 +59,9 @@ Newest first.
 
 | Date | Event | Detail |
 |---|---|---|
+| 2026-04-27 | Render job 59965124 resubmitted | with patch 0005, mem=32G |
+| 2026-04-27 | Patch 0005 + render OOM lesson | `2a8fa30` — incremental save in render.py; SETUP #6c |
+| 2026-04-27 | Render job 59964986 OOM-killed | 191/540 train views, CPU 25 GB / 24 GB. Render buffers all tensors before writing. |
 | 2026-04-27 | Render job 59964986 submitted | iter 30000, MODEL_DIR env override |
 | 2026-04-27 | Patch 0004 + render sbatch landed | `bc0f4f8` — render.py hardcoded CUDA_VISIBLE_DEVICES=2; SETUP lesson #6b |
 | 2026-04-27 | **Full training 59960861 COMPLETED** | 1:46:01, 30K iters @ 4.75 it/s. Test PSNR 13.66, train PSNR 8.94 — flat across iters, concerning |
