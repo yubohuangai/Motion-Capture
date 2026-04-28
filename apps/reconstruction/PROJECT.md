@@ -36,8 +36,17 @@ is possible from a sequence of independent per-frame point clouds.
 
 ## 2. Why this is hard (and why we don't have it yet)
 
-1. **Half-circle rig**: at any instant, only one side of the cow is observed.
-   Static reconstruction is fundamentally incomplete per frame.
+1. **L-shaped rig**: 11 cameras placed along two perpendicular edges of a
+   rectangle (cams 01–06 along one edge, 07–11 along the perpendicular
+   edge; the corner where the edges meet is empty). At any instant, only
+   ~two adjacent sides of the cow are observed (the other two sides are
+   invisible). Static reconstruction is fundamentally incomplete per
+   frame. **However**, the cow rotates and walks through the rig over
+   the full 1434-frame (~48 s @ 30 fps) sequence — so over time, every
+   camera eventually sees all sides of the cow. Motion is non-uniform:
+   the cow stops, walks, and rotates at varying speeds, so a frame
+   subset must span the full sequence (not just the first 10 s) to
+   leverage this temporal 360°-coverage property.
 2. **The cow articulates** (legs, head, neck, tail rotate around joints)
    plus small non-rigid residuals (breathing, muscle bulge). Naive "stack
    all per-frame clouds" doesn't merge into one coherent surface because
