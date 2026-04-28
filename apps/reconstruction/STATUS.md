@@ -47,41 +47,29 @@ The model has zero pressure to learn the cow — "render black" is the
 trivial-minimum solution. The plateau in metrics across 15K iters
 confirms convergence to this minimum.
 
-## Decision needed (paused for Yubo)
+## Plan A — chosen and in flight
 
-Three repair paths, listed in increasing complexity:
+Yubo confirmed Plan A and gave permission to use more resources for speed.
 
-**A. Use unmasked images.** Re-prep with the original (background-visible)
-undistorted images instead of the masked ones. Need to re-run COLMAP's
-`image_undistorter` on the unmasked originals (Stage 1 currently masks
-them in-place inside the dense workspace).
+**Chained execution (~2 h 15 min wall total)**:
 
-  - Pro: simplest fix; LocalDyGS sees a normal multi-view scene
-  - Con: model wastes capacity on background; needs re-running Stage 1's
-    undistort step
+| # | Step | Status | Job ID | Details |
+|---|---|---|---|---|
+| 1 | Undistort 60 unmasked frames | **in flight** | `59967114` | xargs -P 16, ~3 min wall |
+| 2 | Re-prep LocalDyGS scene | pending | — | `--image-subdir dense_unmasked/images` |
+| 3 | Re-train (30K iters) | pending | — | same sbatch as before |
+| 4 | Re-render iter 30000 | pending | — | same sbatch |
 
-**B. Train with the masked images but make the loss mask-aware.**
-Patch LocalDyGS to multiply the L1/SSIM loss by the mask before
-reduction so background pixels don't contribute.
-
-  - Pro: keeps cow-only output, no Stage 1 rework
-  - Con: structural patch to upstream loss code; risk of more bugs
-
-**C. Use white-background masks (background = 255 instead of 0).**
-Re-prep flips the masked-out background to white. Less trivial than
-black for the model to predict.
-
-  - Pro: trivial change to prep script
-  - Con: still has degenerate "predict mostly-white" minimum, just
-    slightly less attractive
-
-Recommendation: **(A)** — most aligned with how LocalDyGS expects to
-work, even if it means re-doing Stage 1's undistort step.
+**Stage 1 outputs version-mismatch question**: not a blocker. The fused.ply
+files (used only for init pcd via voxel-downsample to 73K from 8.6 M
+points) wash out any small per-frame variation. Plan A produces a *new*
+artifact (`work/frame_*/dense_unmasked/images/`) that doesn't depend on
+the existing per-frame outputs.
 
 ## Next concrete step
 
-Awaiting Yubo's call on (A), (B), or (C). When chosen, implement +
-re-prep + retrain (probably another ~2 h training run).
+Watcher will fire on undistort completion → I'll run prep with
+`--image-subdir dense_unmasked/images`, then submit the retrain.
 
 ## Recent activity
 
@@ -89,6 +77,8 @@ Newest first.
 
 | Date | Event | Detail |
 |---|---|---|
+| 2026-04-27 | Plan A undistort job 59967114 submitted | xargs -P 16 over 60 frames |
+| 2026-04-27 | Plan A landed | `32b2379` — `run_undistort_unmasked.sh` + `--image-subdir` flag in prep |
 | 2026-04-27 | **Render diagnosis: renders are pure black** | Pixel mean 0.0 vs GT 174.7. Root cause: training fed masked images (95% black bg) → trivial minimum. Decision needed before retraining. |
 | 2026-04-27 | Render job 59965124 completed | 540+120 PNGs at 3840×2160, but pixel content all-zero |
 | 2026-04-27 | Render job 59965124 resubmitted | with patch 0005, mem=32G |
