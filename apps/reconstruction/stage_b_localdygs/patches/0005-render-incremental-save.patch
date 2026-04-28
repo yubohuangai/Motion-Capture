@@ -1,0 +1,51 @@
+diff --git a/render.py b/render.py
+index 471a805..5e55262 100644
+--- a/render.py
++++ b/render.py
+@@ -60,40 +60,31 @@ def render_set(opt,model_path, name, iteration, views, gaussians, pipeline, back
+ 
+     makedirs(render_path, exist_ok=True)
+     makedirs(gts_path, exist_ok=True)
+-    render_images = []
+-    gt_list = []
+-    render_list = []
+-    # breakpoint()
+     print("point nums:",gaussians._anchor.shape[0])
+     all_time = 0
+ 
+- 
++    # Patched: save each view incrementally to disk instead of buffering
++    # 540 4K tensors (~13 GB CPU + 53 GB GPU) — would OOM both. The
++    # original render_images numpy list was dead code (never read).
+     for idx, view in enumerate(tqdm(views, desc="Rendering progress")):
+ 
+         time1 = time()
+-        voxel_visible_mask = prefilter_voxel(view, gaussians, pipeline, background)  # 判断是否可见 
++        voxel_visible_mask = prefilter_voxel(view, gaussians, pipeline, background)  # 判断是否可见
+         retain_grad = (iteration < opt.update_until and iteration >= 0)
+         rendering = render(view, gaussians, pipeline, background, stage="fine", visible_mask = voxel_visible_mask, retain_grad=retain_grad)["render"]
+         time2 = time()
+         all_time += (time2-time1)
+ 
+-        render_images.append(to8b(rendering).transpose(1,2,0))
+-        render_list.append(rendering)
++        torchvision.utils.save_image(rendering, os.path.join(render_path, '{0:05d}.png'.format(idx)))
+         if name in ["train", "test"]:
+             if cam_type != "PanopticSports":
+                 gt = view.original_image[0:3, :, :]
+             else:
+                 gt  = view['image'].cuda()
+-            gt_list.append(gt)
++            torchvision.utils.save_image(gt, os.path.join(gts_path, '{0:05d}.png'.format(idx)))
+ 
+-    # time2=time()
+     print("FPS:",(len(views)-1)/all_time)
+ 
+-    print("writing training images.") 
+-    multithread_write(gt_list, gts_path) 
+-    print("writing rendering images.") 
+-    multithread_write(render_list, render_path) 
+-
+ 
+ 
+     

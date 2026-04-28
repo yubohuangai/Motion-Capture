@@ -14,7 +14,7 @@
 #SBATCH --account=rrg-vislearn
 #SBATCH --gres=gpu:a100:1
 #SBATCH --cpus-per-task=4
-#SBATCH --mem=24G
+#SBATCH --mem=32G
 #SBATCH --time=0:30:00
 #SBATCH --job-name=localdygs_render
 #SBATCH --output=/scratch/yubo/jobs/logs/%x_%j.out

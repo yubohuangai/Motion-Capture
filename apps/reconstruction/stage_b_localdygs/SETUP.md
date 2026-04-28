@@ -50,13 +50,14 @@ cd tiny-cuda-nn && \
     TCNN_CUDA_ARCHITECTURES=80 \
     pip install bindings/torch                                  # SM 8.0 = A100
 
-# Apply all four patches before installing the LocalDyGS submodules
+# Apply all five patches before installing the LocalDyGS submodules
 cd ~/github/LocalDyGS
 PATCHES=~/github/Motion-Capture/apps/reconstruction/stage_b_localdygs/patches
 git apply $PATCHES/0001-simple_knn-include-cfloat.patch
 git apply $PATCHES/0002-dataset_readers-downsample-1.patch
 git apply $PATCHES/0003-dataset_readers-test_num-bounds.patch
 git apply $PATCHES/0004-render-no-hardcoded-gpu.patch
+git apply $PATCHES/0005-render-incremental-save.patch
 pip install submodules/diff-gaussian-rasterization
 pip install submodules/simple-knn
 
@@ -181,6 +182,28 @@ exist → CUDA initialization fails.
 
 Patch is at `patches/0004-render-no-hardcoded-gpu.patch` — comments
 out the line.
+
+### 6c. `render.py` OOMs at 4K — buffers all rendered tensors before writing
+
+Upstream `render_set` accumulates rendered tensors in three lists
+(`render_images` numpy uint8, `render_list` cuda float32, `gt_list`
+cuda float32) and only writes after the loop ends. At our 4K
+resolution × 540 train views, that's:
+
+- `render_images` numpy: 540 × 25 MB = ~13.5 GB CPU (and **never read**
+  by anything — pure dead code)
+- `render_list` cuda float32: 540 × 99 MB = ~53.5 GB GPU memory
+- `gt_list` cuda float32: another ~53.5 GB GPU memory
+
+The CPU OOM hits first (~iter 191 of 540 in our case). Even if you
+bumped CPU RAM, the GPU side would OOM too on a 40 GB A100.
+
+Patch is at `patches/0005-render-incremental-save.patch` — saves each
+view via `torchvision.utils.save_image` immediately as it's rendered,
+removes the accumulating lists and the post-loop `multithread_write`
+calls. Net memory after patch: ~13.5 GB CPU baseline (the preloaded
+`view.original_image` GTs that Scene keeps in memory) + small per-iter
+overhead. 32 GB CPU allocation is plenty.
 
 ### 7. Pre-cache pretrained model weights on a login node
 
