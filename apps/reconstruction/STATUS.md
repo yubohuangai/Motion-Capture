@@ -54,7 +54,7 @@ confirms convergence to this minimum.
 | 1 | Undistort 60 unmasked frames | ✓ DONE | `59967114` | 12 s wall (xargs -P 16). 60×11 = 660 unmasked images. |
 | 2 | Re-prep LocalDyGS scene | ✓ DONE | (in-watcher) | 73,784-pt init pcd; symlinks `dense_unmasked/images/`. |
 | 3 | Re-train (30K iters) | ✓ DONE | `59967435` | 1:59:18 wall. Output: `train_20260427_220326/`. **Train PSNR 22.94** (was 8.94), test PSNR 11.46. |
-| 4 | Re-render | **in flight** | `59971560` | iter 30000, with patch 0005 incremental save |
+| 4 | Re-render | **in flight** | `59972470` | walltime bumped 30 → 90 min (job 59971560 timed out at 372/540) |
 
 **Plan A worked** — model now actually learns training views.
 
@@ -97,6 +97,8 @@ Newest first.
 
 | Date | Event | Detail |
 |---|---|---|
+| 2026-04-28 | Render 59972470 resubmitted | walltime 90 min |
+| 2026-04-28 | Render 59971560 timed out @ 30 min | 372/540 train rendered before kill. **Renders contain real cow content** (mean ~175 matches GT, vs old all-black mean 0). Slower because non-trivial Gaussian splat work. |
 | 2026-04-28 | Plan A render 59971560 submitted | for the new train output dir |
 | 2026-04-28 | **Plan A retrain 59967435 DONE** | 1:59:18 wall. Train PSNR 22.94 (vs 8.94 before). Pipeline works. |
 | 2026-04-27 | Plan A retrain 59967435 submitted | with unmasked images |
