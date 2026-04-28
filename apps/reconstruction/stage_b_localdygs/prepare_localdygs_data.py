@@ -259,6 +259,11 @@ def main() -> None:
                    help="copy images instead of symlinking (default: symlink)")
     p.add_argument("--target-points", type=int, default=90_000,
                    help="voxel-downsample target for init pcd (default: 90000)")
+    p.add_argument("--image-subdir", default="dense/images",
+                   help="per-frame subdir under work/frame_<NNNNNN>/ to source "
+                        "images from (default: 'dense/images' — masked, "
+                        "cow-only). Use 'dense_unmasked/images' for unmasked "
+                        "undistorted images.")
     args = p.parse_args()
 
     stage_a_root = Path(args.stage_a_root).resolve()
@@ -313,10 +318,11 @@ def main() -> None:
     print(f"[prepare] wrote sparse/0/ "
           f"({len(cam_lines)} cams, {len(img_pairs)} images, ids 0..{len(cam_lines) - 1})")
 
-    # 2. Symlink per-frame images
+    # 2. Symlink per-frame images (source dir is configurable via --image-subdir)
+    image_subdir = Path(args.image_subdir)
     n_linked = 0
     for new_idx, orig_frame in enumerate(frames):
-        src_img_dir = work_root / f"frame_{orig_frame:06d}" / "dense" / "images"
+        src_img_dir = work_root / f"frame_{orig_frame:06d}" / image_subdir
         if not src_img_dir.is_dir():
             raise SystemExit(f"[prepare] missing {src_img_dir}")
         dst_img_dir = out / f"frame{new_idx:06d}" / "images"
@@ -326,7 +332,8 @@ def main() -> None:
                 _link_or_copy(src, dst_img_dir / src.name, args.copy)
                 n_linked += 1
     print(f"[prepare] {'copied' if args.copy else 'symlinked'} "
-          f"{n_linked} images across {len(frames)} frames")
+          f"{n_linked} images across {len(frames)} frames "
+          f"(from <frame>/{image_subdir})")
 
     # 3. Build init pcd matching the [start, end) the user will train on
     pcd_name = f"downsample_{start_idx}_{end_idx}.ply"
