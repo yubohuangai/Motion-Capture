@@ -7,9 +7,13 @@
 #   sbatch /home/yubo/github/Motion-Capture/scripts/slurm/run_localdygs_prep.sh
 #
 # Override defaults via env vars:
-#   STAGE_A_ROOT  path to stage_a/colmap_4d (default: cow_1/9148_10581 60-frame)
-#   FRAMES_START  start index into discovered frames (default: 0)
-#   FRAMES_END    end index, exclusive (default: 60)
+#   STAGE_A_ROOT   path to stage_a/colmap_4d (default: cow_1/9148_10581 60-frame)
+#   FRAMES_START   start index into discovered frames (default: 0)
+#   FRAMES_END     end index, exclusive (default: 60)
+#   OUT            output scene dir (default: <data>_output/stage_b/localdygs_scene/)
+#   IMAGE_SUBDIR   per-frame image source (default: 'dense/images' = masked)
+#   MASK_SUBDIR    per-frame mask source for patch-0006 mask-aware loss
+#                  (default: empty = no mask symlinks)
 
 #SBATCH --account=def-vislearn
 #SBATCH --cpus-per-task=4
@@ -25,10 +29,16 @@ mkdir -p /scratch/yubo/jobs/logs
 STAGE_A_ROOT="${STAGE_A_ROOT:-/scratch/yubo/cow_1/9148_10581_output/stage_a/colmap_4d}"
 FRAMES_START="${FRAMES_START:-0}"
 FRAMES_END="${FRAMES_END:-60}"
+OUT="${OUT:-}"
+IMAGE_SUBDIR="${IMAGE_SUBDIR:-dense/images}"
+MASK_SUBDIR="${MASK_SUBDIR:-}"
 
 echo "=== localdygs prep starting at $(date) ==="
 echo "stage_a_root: $STAGE_A_ROOT"
 echo "frames:       [$FRAMES_START, $FRAMES_END)"
+echo "out:          ${OUT:-<default>}"
+echo "image_subdir: $IMAGE_SUBDIR"
+echo "mask_subdir:  ${MASK_SUBDIR:-<none>}"
 echo
 
 # Use cleanply venv (numpy + open3d + plyfile) — NOT localdygs.
@@ -44,9 +54,10 @@ source ~/envs/cleanply/bin/activate
 python -c "import open3d, plyfile, numpy; print('prep imports OK — open3d', open3d.__version__)"
 
 cd /home/yubo/github/Motion-Capture
-time python -m apps.reconstruction.stage_b_localdygs.prepare_localdygs_data \
-    "$STAGE_A_ROOT" \
-    --frames-start-end "$FRAMES_START" "$FRAMES_END"
+ARGS=("$STAGE_A_ROOT" --frames-start-end "$FRAMES_START" "$FRAMES_END" --image-subdir "$IMAGE_SUBDIR")
+[ -n "$OUT" ] && ARGS+=(--output "$OUT")
+[ -n "$MASK_SUBDIR" ] && ARGS+=(--mask-subdir "$MASK_SUBDIR")
+time python -m apps.reconstruction.stage_b_localdygs.prepare_localdygs_data "${ARGS[@]}"
 
 echo
 echo "=== localdygs prep finished at $(date) ==="
