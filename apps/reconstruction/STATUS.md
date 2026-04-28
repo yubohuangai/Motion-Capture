@@ -20,29 +20,37 @@ the first time**, then a smoke-test LocalDyGS training run.
 
 ## Last completed
 
-**Smoke test PASSED** (job `59960670`, 3:10 wall, COMPLETED). 500 iters
-on the prepared 60-frame cow scene. Loss 0.5326→0.1729, PSNR 6.83→16.87,
-~3.5 it/s on A100. Read 540 train + 120 test images, 73,784-pt init
-pcd loaded. Output: `/scratch/yubo/cow_1/9148_10581_output/stage_b/smoke_20260427_185853/`
-(only outputs.log + cfg_args — no checkpoint, due to upstream ordering
-bug where `save_iterations.append(args.iterations)` runs before config
-merge; harmless for 30K full run since 30000 is in the default save list).
+**Full training COMPLETED** (job `59960861`, 1:46:01 wall, exit 0).
+30K iters at 4.75 it/s on A100, peak 36.96 GB RAM. Output:
+`/scratch/yubo/cow_1/9148_10581_output/stage_b/train_20260427_190608/`
+(1.0 GB, both `point_cloud/iteration_15000/` and `iteration_30000/`).
 
-Stage 2 pipeline now validated end-to-end: env + scene layout + train.py.
+**Metrics are concerning** (need investigation):
+| Iter | Test L1 | Test PSNR | Train L1 | Train PSNR |
+|---|---|---|---|---|
+| 15000 | 0.143 | 13.66 | 0.391 | 8.94 |
+| 30000 | 0.143 | 13.66 | 0.391 | 8.94 |
+
+Three flags: (1) test PSNR > train PSNR (unusual — typically train
+overfits first); (2) metrics flat across 15K iters (model has
+plateaued — `position_lr=0` by LocalDyGS scaffold design means anchors
+can't move; learning is stuck on the offset/MLP/hash params alone);
+(3) PSNR 13-14 is low — well-conditioned 3DGS gets 25-30+.
 
 ## Next concrete step
 
-**In flight: full training job 59960861** (commit `3838825` —
-`scripts/slurm/run_localdygs_train.sh`). 30 K iters, single A100,
-4 h walltime, upstream basketball.py config. Output to
-`/scratch/yubo/cow_1/9148_10581_output/stage_b/train_<timestamp>/`.
-Watcher running.
+**In flight: render job 59964986** (commit `bc0f4f8` — patch 0004 +
+render sbatch). Renders the iter-30000 model on both train and test
+cams. Output goes into the existing `train_20260427_190608/{train,test}/ours_30000/`
+subdirs. ~30 min walltime; expect ~10 min real time for 660 images.
 
-After training succeeds:
-- inspect rendered test-cam outputs (PSNR/LPIPS metrics)
-- copy `point_cloud/iteration_30000/point_cloud.ply` to Mac for review
-- decide whether to run longer (basketball.py supports up to 200 K) or
-  proceed to Stage 3 (articulation discovery from per-Gaussian trajectories)
+After render completes:
+- visually inspect a few train/test cam renders
+- if "looks like a cow but blurry" → next move is more iterations
+  (basketball.py supports up to 200K) or denser init pcd (re-prep with
+  `--target-points 250000`)
+- if "complete garbage / not a cow" → hyperparams likely wrong; revisit
+  basketball.py choice or LocalDyGS preset
 
 ## Recent activity
 
@@ -50,6 +58,9 @@ Newest first.
 
 | Date | Event | Detail |
 |---|---|---|
+| 2026-04-27 | Render job 59964986 submitted | iter 30000, MODEL_DIR env override |
+| 2026-04-27 | Patch 0004 + render sbatch landed | `bc0f4f8` — render.py hardcoded CUDA_VISIBLE_DEVICES=2; SETUP lesson #6b |
+| 2026-04-27 | **Full training 59960861 COMPLETED** | 1:46:01, 30K iters @ 4.75 it/s. Test PSNR 13.66, train PSNR 8.94 — flat across iters, concerning |
 | 2026-04-27 | Full training job 59960861 submitted | 30K iters, 4h walltime, basketball.py config, A100 |
 | 2026-04-27 | Full training sbatch committed | `3838825` — `scripts/slurm/run_localdygs_train.sh` |
 | 2026-04-27 | **Smoke job 59960670 SUCCEEDED** | 3:10 wall, 500/500 iters, loss 0.53→0.17, PSNR 6.83→16.87. Stage 2 pipeline validated end-to-end. |
