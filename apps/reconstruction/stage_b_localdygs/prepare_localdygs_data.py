@@ -264,6 +264,13 @@ def main() -> None:
                         "images from (default: 'dense/images' — masked, "
                         "cow-only). Use 'dense_unmasked/images' for unmasked "
                         "undistorted images.")
+    p.add_argument("--mask-subdir", default=None,
+                   help="per-frame subdir under work/frame_<NNNNNN>/ to "
+                        "source binary masks from (e.g. "
+                        "'dense_masks/images'). When set, prep also "
+                        "symlinks <scene>/frame<N>/masks/<cam>.{ext} so "
+                        "LocalDyGS's patch-0006 mask-aware loss can use "
+                        "them. When None (default), no masks are linked.")
     args = p.parse_args()
 
     stage_a_root = Path(args.stage_a_root).resolve()
@@ -320,7 +327,9 @@ def main() -> None:
 
     # 2. Symlink per-frame images (source dir is configurable via --image-subdir)
     image_subdir = Path(args.image_subdir)
+    mask_subdir = Path(args.mask_subdir) if args.mask_subdir else None
     n_linked = 0
+    n_masks = 0
     for new_idx, orig_frame in enumerate(frames):
         src_img_dir = work_root / f"frame_{orig_frame:06d}" / image_subdir
         if not src_img_dir.is_dir():
@@ -331,9 +340,25 @@ def main() -> None:
             if src.suffix.lower() in (".jpg", ".jpeg", ".png"):
                 _link_or_copy(src, dst_img_dir / src.name, args.copy)
                 n_linked += 1
+
+        # Optional: symlink masks alongside images for patch-0006 mask-aware loss
+        if mask_subdir is not None:
+            src_mask_dir = work_root / f"frame_{orig_frame:06d}" / mask_subdir
+            if not src_mask_dir.is_dir():
+                raise SystemExit(f"[prepare] missing {src_mask_dir}")
+            dst_mask_dir = out / f"frame{new_idx:06d}" / "masks"
+            dst_mask_dir.mkdir(parents=True, exist_ok=True)
+            for src in sorted(src_mask_dir.iterdir()):
+                if src.suffix.lower() in (".jpg", ".jpeg", ".png"):
+                    _link_or_copy(src, dst_mask_dir / src.name, args.copy)
+                    n_masks += 1
+
     print(f"[prepare] {'copied' if args.copy else 'symlinked'} "
           f"{n_linked} images across {len(frames)} frames "
           f"(from <frame>/{image_subdir})")
+    if mask_subdir is not None:
+        print(f"[prepare] {'copied' if args.copy else 'symlinked'} "
+              f"{n_masks} masks (from <frame>/{mask_subdir})")
 
     # 3. Build init pcd matching the [start, end) the user will train on
     pcd_name = f"downsample_{start_idx}_{end_idx}.ply"

@@ -1,0 +1,101 @@
+diff --git a/scene/colmap_dataset.py b/scene/colmap_dataset.py
+index 38867c5..c102975 100644
+--- a/scene/colmap_dataset.py
++++ b/scene/colmap_dataset.py
+@@ -348,7 +348,31 @@ class Colmap_Dataset(Dataset):
+             img = img.resize(self.img_whs[int(index / (self.N_frames))], Image.LANCZOS)
+         img = self.transform(img)
+ 
+-        return img, self.image_poses[index], self.image_times[index] 
++        # Try to load mask from sibling masks/ dir.
++        # image_paths[index] is like <scene>/frame<N>/images/<cam>.jpg;
++        # mask is at <scene>/frame<N>/masks/<cam>.{jpg,png}.
++        # If no masks/ dir, mask stays None and the loss is computed
++        # over the whole image (standard 3DGS behavior).
++        mask = None
++        ip = self.image_paths[index]
++        mask_dir = os.path.dirname(os.path.dirname(ip)) + "/masks"
++        if os.path.isdir(mask_dir):
++            stem = os.path.splitext(os.path.basename(ip))[0]
++            for ext in (".png", ".jpg", ".jpeg"):
++                mp = os.path.join(mask_dir, stem + ext)
++                if os.path.exists(mp):
++                    mask_img = Image.open(mp).convert("L")
++                    if self.downsample != 1.0:
++                        mask_img = mask_img.resize(
++                            self.img_whs[int(index / self.N_frames)],
++                            Image.NEAREST,
++                        )
++                    mask = self.transform(mask_img)  # (1, H, W) in [0,1]
++                    # Threshold to binary so JPEG artifacts don't leak in
++                    mask = (mask > 0.5).float()
++                    break
++
++        return img, self.image_poses[index], self.image_times[index], mask
+     
+ 
+     def load_pose(self,index):
+diff --git a/scene/spacetime_dataset.py b/scene/spacetime_dataset.py
+index 71c5096..7f4ccb7 100644
+--- a/scene/spacetime_dataset.py
++++ b/scene/spacetime_dataset.py
+@@ -26,15 +26,21 @@ class FourDGSdataset(Dataset):
+ 
+         if self.dataset_type != "PanopticSports":
+             try:
+-                image, w2c, time = self.dataset[index]
++                # Patched: Colmap_Dataset now returns (img, w2c, time, mask).
++                # Older datasets returning 3-tuple still work via fallback below.
++                ds_out = self.dataset[index]
++                if len(ds_out) == 4:
++                    image, w2c, time, mask = ds_out
++                else:
++                    image, w2c, time = ds_out
++                    mask = None
+                 R,T = w2c
+-                mask=None
+                 try:
+                     FovX = focal2fov(self.dataset.focal[0], image.shape[2])
+-                    FovY = focal2fov(self.dataset.focal[0], image.shape[1])  
+-                except:  # for colmap 
++                    FovY = focal2fov(self.dataset.focal[0], image.shape[1])
++                except:  # for colmap
+                     FovX = focal2fov(self.dataset.focal[index//self.dataset.N_frames][0], image.shape[2])
+-                    FovY = focal2fov(self.dataset.focal[index//self.dataset.N_frames][1], image.shape[1])  #  colmap 
++                    FovY = focal2fov(self.dataset.focal[index//self.dataset.N_frames][1], image.shape[1])  #  colmap
+ 
+             except:
+                 caminfo = self.dataset[index]
+diff --git a/train.py b/train.py
+index 3c91793..4eb1c2e 100644
+--- a/train.py
++++ b/train.py
+@@ -213,10 +213,24 @@ def scene_reconstruction(dataset, hyper, opt,  pipe, testing_iterations, saving_
+                 render_pkg["render"], render_pkg["depth_map"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["selection_mask"], \
+                     render_pkg["scaling"], render_pkg["neural_opacity"], render_pkg["neural_points"]
+ 
+-        gt_image = viewpoint_cam.original_image.cuda()   
+-        Ll1 = l1_loss(image, gt_image)   
+-
+-        ssim_loss = (1.0 - ssim(image, gt_image)[0])  
++        gt_image = viewpoint_cam.original_image.cuda()
++        # Patched: mask-aware loss. If the camera has a mask (e.g. cow
++        # segmentation), restrict L1 + SSIM to mask-positive pixels so
++        # the model isn't pulled by background. Falls back to standard
++        # full-image loss when mask is None.
++        cam_mask = getattr(viewpoint_cam, 'mask', None)
++        if cam_mask is not None:
++            cam_mask = cam_mask.cuda()
++            # Weighted L1 over mask region only
++            diff = (image - gt_image).abs() * cam_mask
++            n_valid = cam_mask.sum() * image.shape[0] + 1e-8
++            Ll1 = diff.sum() / n_valid
++            # Masked SSIM: use the per-pixel ssim_map and average over mask
++            _ssim_mean, ssim_map = ssim(image, gt_image)
++            ssim_loss = 1.0 - (ssim_map * cam_mask).sum() / n_valid
++        else:
++            Ll1 = l1_loss(image, gt_image)
++            ssim_loss = (1.0 - ssim(image, gt_image)[0])
+ 
+         scaling_reg =  scaling.prod(dim=1).mean()    
+         psnr_ = psnr(image, gt_image).mean().double()    
