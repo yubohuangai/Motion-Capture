@@ -50,12 +50,13 @@ cd tiny-cuda-nn && \
     TCNN_CUDA_ARCHITECTURES=80 \
     pip install bindings/torch                                  # SM 8.0 = A100
 
-# Apply all three patches before installing the LocalDyGS submodules
+# Apply all four patches before installing the LocalDyGS submodules
 cd ~/github/LocalDyGS
 PATCHES=~/github/Motion-Capture/apps/reconstruction/stage_b_localdygs/patches
 git apply $PATCHES/0001-simple_knn-include-cfloat.patch
 git apply $PATCHES/0002-dataset_readers-downsample-1.patch
 git apply $PATCHES/0003-dataset_readers-test_num-bounds.patch
+git apply $PATCHES/0004-render-no-hardcoded-gpu.patch
 pip install submodules/diff-gaussian-rasterization
 pip install submodules/simple-knn
 
@@ -170,6 +171,16 @@ Instead, run the prep script under the dedicated lightweight
 `~/envs/cleanply/` venv (numpy + open3d + plyfile, no torch). The
 `run_localdygs_prep.sh` SLURM script already does this. Training and
 rendering still use `~/envs/localdygs/`.
+
+### 6b. `render.py` hardcodes `CUDA_VISIBLE_DEVICES = '2'`
+
+Upstream `render.py:12` does `os.environ['CUDA_VISIBLE_DEVICES'] = '2'`
+at module-import time, before any of the GPU-using imports. SLURM
+allocations on Narval expose a single GPU at index 0; index 2 doesn't
+exist → CUDA initialization fails.
+
+Patch is at `patches/0004-render-no-hardcoded-gpu.patch` — comments
+out the line.
 
 ### 7. Pre-cache pretrained model weights on a login node
 

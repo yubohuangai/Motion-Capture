@@ -1,0 +1,13 @@
+diff --git a/render.py b/render.py
+index 471a805..6422447 100644
+--- a/render.py
++++ b/render.py
+@@ -9,7 +9,7 @@
+ # For inquiries contact  george.drettakis@inria.fr
+ #
+ import os
+-os.environ['CUDA_VISIBLE_DEVICES'] = '2'
++# os.environ['CUDA_VISIBLE_DEVICES'] = '2'  # patched: SLURM gives one GPU at index 0
+ import imageio
+ import numpy as np
+ import torch
