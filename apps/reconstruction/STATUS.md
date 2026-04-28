@@ -20,38 +20,68 @@ the first time**, then a smoke-test LocalDyGS training run.
 
 ## Last completed
 
-**Full training COMPLETED** (job `59960861`, 1:46:01 wall, exit 0).
-30K iters at 4.75 it/s on A100, peak 36.96 GB RAM. Output:
-`/scratch/yubo/cow_1/9148_10581_output/stage_b/train_20260427_190608/`
-(1.0 GB, both `point_cloud/iteration_15000/` and `iteration_30000/`).
+**Render job `59965124` completed** (12:27 wall, with patch 0005 OOM
+fix). All 660 PNGs written to `train_20260427_190608/{train,test}/ours_30000/`
+(540 train + 120 test). Job exit was SIGPIPE (13:0) from a post-render
+shell pipe, but the render itself succeeded.
 
-**Metrics are concerning** (need investigation):
-| Iter | Test L1 | Test PSNR | Train L1 | Train PSNR |
-|---|---|---|---|---|
-| 15000 | 0.143 | 13.66 | 0.391 | 8.94 |
-| 30000 | 0.143 | 13.66 | 0.391 | 8.94 |
+**Critical finding from inspection**: renders are **completely black**.
+- GT images: 3840×2160, 7.7 MB, pixel mean 174.7 (cow on background)
+- Renders: 3840×2160 ✓, 25 KB, pixel min=0 max=1 mean=0.0
 
-Three flags: (1) test PSNR > train PSNR (unusual — typically train
-overfits first); (2) metrics flat across 15K iters (model has
-plateaued — `position_lr=0` by LocalDyGS scaffold design means anchors
-can't move; learning is stuck on the offset/MLP/hash params alone);
-(3) PSNR 13-14 is low — well-conditioned 3DGS gets 25-30+.
+The model converged to render-pure-black for every view and frame.
+
+## Root cause (high confidence)
+
+Stage 1's `dense/images/` are **mask-blackened** (post-`apply_masks`,
+the COLMAP image_undistorter input has cow regions only; background
+pixels are zeroed). Our prep script symlinked these into the LocalDyGS
+scene. So LocalDyGS sees images that are ~95% black background + ~5%
+cow.
+
+L1+SSIM loss treats every pixel equally. With 95% of pixels at value 0,
+a model rendering all-zeros achieves MSE = (cow_region_area) × (cow_pixel_variance)
+≈ 0.05 × 150² ≈ 1125 → PSNR ≈ 17, matching observed test PSNR 13.66.
+
+The model has zero pressure to learn the cow — "render black" is the
+trivial-minimum solution. The plateau in metrics across 15K iters
+confirms convergence to this minimum.
+
+## Decision needed (paused for Yubo)
+
+Three repair paths, listed in increasing complexity:
+
+**A. Use unmasked images.** Re-prep with the original (background-visible)
+undistorted images instead of the masked ones. Need to re-run COLMAP's
+`image_undistorter` on the unmasked originals (Stage 1 currently masks
+them in-place inside the dense workspace).
+
+  - Pro: simplest fix; LocalDyGS sees a normal multi-view scene
+  - Con: model wastes capacity on background; needs re-running Stage 1's
+    undistort step
+
+**B. Train with the masked images but make the loss mask-aware.**
+Patch LocalDyGS to multiply the L1/SSIM loss by the mask before
+reduction so background pixels don't contribute.
+
+  - Pro: keeps cow-only output, no Stage 1 rework
+  - Con: structural patch to upstream loss code; risk of more bugs
+
+**C. Use white-background masks (background = 255 instead of 0).**
+Re-prep flips the masked-out background to white. Less trivial than
+black for the model to predict.
+
+  - Pro: trivial change to prep script
+  - Con: still has degenerate "predict mostly-white" minimum, just
+    slightly less attractive
+
+Recommendation: **(A)** — most aligned with how LocalDyGS expects to
+work, even if it means re-doing Stage 1's undistort step.
 
 ## Next concrete step
 
-**In flight: render job 59965124** (commit `2a8fa30` — patch 0005 fixes
-render OOM). Same model dir, iter 30000. 32 GB CPU, single A100, 30 min
-walltime. With patch 0005 each view saves to disk immediately instead of
-buffering all 540 in memory.
-
-Prior render attempt (`59964986`, no patch 0005) OOM-killed at 191/540
-views (CPU peaked 25 GB / 24 GB). Root cause: render_set accumulated
-~13.5 GB CPU (numpy dead code) + ~53.5 GB GPU before the post-loop write.
-
-After render completes:
-- visually inspect a few train/test cam renders
-- "looks like a cow but blurry" → more iters or denser init pcd
-- "complete garbage / not a cow" → hyperparams likely wrong
+Awaiting Yubo's call on (A), (B), or (C). When chosen, implement +
+re-prep + retrain (probably another ~2 h training run).
 
 ## Recent activity
 
@@ -59,6 +89,8 @@ Newest first.
 
 | Date | Event | Detail |
 |---|---|---|
+| 2026-04-27 | **Render diagnosis: renders are pure black** | Pixel mean 0.0 vs GT 174.7. Root cause: training fed masked images (95% black bg) → trivial minimum. Decision needed before retraining. |
+| 2026-04-27 | Render job 59965124 completed | 540+120 PNGs at 3840×2160, but pixel content all-zero |
 | 2026-04-27 | Render job 59965124 resubmitted | with patch 0005, mem=32G |
 | 2026-04-27 | Patch 0005 + render OOM lesson | `2a8fa30` — incremental save in render.py; SETUP #6c |
 | 2026-04-27 | Render job 59964986 OOM-killed | 191/540 train views, CPU 25 GB / 24 GB. Render buffers all tensors before writing. |
