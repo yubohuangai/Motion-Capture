@@ -47,50 +47,67 @@ The model has zero pressure to learn the cow — "render black" is the
 trivial-minimum solution. The plateau in metrics across 15K iters
 confirms convergence to this minimum.
 
-## Plan A — COMPLETE end-to-end ✓
+## Plan A — COMPLETE ✓ (model exists at `train_20260427_220326/`)
 
-| # | Step | Wall | Job ID | Result |
+Train PSNR 22.94 / Test PSNR 11.46. Renders match GT closely on train cams,
+fuzzy on test cams. The L-shape rig + cow-stays-still-or-walks-only in the
+first 60 frames means the model didn't see meaningful 360° rotation.
+
+## Plan B/C — overnight 3-way parallel experiment (in flight)
+
+**Goal**: span the cow's full 48-second rotation AND make loss/metrics
+cow-only (so background pixels don't dominate).
+
+### Phase 1: Stage 1 on missing frames (in flight)
+
+Job array `59976202` — 76 frames at stride 15 over 0..1425 (the gap not
+covered by existing stride-5 over 0..295). ~30 min wall expected.
+
+Output: `/scratch/yubo/cow_1/9148_10581_output/stage_a/colmap_4d/work/frame_<NNNNNN>/`
+for each new frame.
+
+### Phase 2: prep + train (chained after Phase 1)
+
+Three parallel training experiments on rrg-vislearn:
+
+| Exp | Frames | Loss | Output dir | Notes |
 |---|---|---|---|---|
-| 1 | Undistort 60 unmasked frames | 12 s | `59967114` | 60×11 = 660 unmasked images at `dense_unmasked/images/` |
-| 2 | Re-prep LocalDyGS scene | 30 s | (in-watcher) | 73,784-pt init pcd, scene at `localdygs_scene/` |
-| 3 | Re-train (30K iters) | 1:59:18 | `59967435` | Train PSNR **22.94** (was 8.94 with masked imgs) |
-| 4 | Re-render iter-30000 | 57 min | `59972470` | All 660 PNGs at `train/test/ours_30000/` (5.7-8.7 MB each) |
+| 1 | 96 (stride-15 over 0..1425) | mask-aware | `train_planB_e1_<ts>/` | The recommended setup |
+| 2 | 96 same frames | standard (no mask) | `train_planB_e2_<ts>/` | Control: does mask-aware loss help? |
+| 3 | 60 (existing stride-5 over 0..295) | mask-aware | `train_planB_e3_<ts>/` | Control: does the wider time range help, or is mask-aware loss alone enough? |
 
-**Total Plan A wall time**: ~3.5 h.
+Each ~3-4 h wall on A100. All run in parallel.
 
-**Output**: `/scratch/yubo/cow_1/9148_10581_output/stage_b/train_20260427_220326/`
-(12 GB — 1 GB model + 11 GB rendered PNGs).
+### Phase 3: render (chained after each train)
 
-## Result quality
+Three render jobs, ~1 h each.
 
-**Train views** (5 samples, 540 total): render mean matches GT within
-<1%, L1 ~0.04-0.06. Model has memorized training views.
+## How a fresh session resumes if Claude dies overnight
 
-**Test views** (5 samples, 120 total): render mean roughly matches
-GT (within ~10%), but L1 ~0.16-0.27 — 4-5× higher than train. The
-model produces cow-shaped renders but not pixel-aligned with held-out
-GT. This is the half-circle rig limitation: cams 0 and 10 view angles
-the model never trained on, with no articulation prior to interpolate.
+Step 1: check what's still running:
+```bash
+squeue -u yubo                            # active jobs
+sacct -u yubo -S today --format=JobID,JobName,State,Elapsed,End  # completed today
+```
 
-## Next concrete step
+Step 2: read this STATUS.md for job IDs and expected output paths.
 
-**Decision pending — Yubo's call**:
+Step 3: continue the chain. If Phase 1 is done but Phase 2 not started,
+prep + submit. If Phase 2 done but Phase 3 not started, submit renders.
+Each phase is independent given the previous's output exists.
 
-1. **Visually inspect renders on Mac.** Path:
-   `/scratch/yubo/cow_1/9148_10581_output/stage_b/train_20260427_220326/{train,test}/ours_30000/{renders,gt}/`
-   (rsync or scp). The numerical metrics say "cow-shaped, not pixel-perfect" — eyeballing tells us if "cow-shaped" is good enough.
+Job IDs to track (will update as I submit them):
+- Stage 1 array: `59976202` ← in flight
+- Mask undistort: TBD (after Stage 1)
+- Train Exp 1 (96fr+mask): TBD
+- Train Exp 2 (96fr+nomask): TBD
+- Train Exp 3 (60fr+mask): TBD
+- Render Exp 1/2/3: TBD
 
-2. **If visually good**: Stage 2 is done for `cow_1/9148_10581`. Can pivot to
-   Stage 3 (articulation discovery from per-Gaussian trajectories) or to
-   another dataset.
+## Quick-win utilities (running tonight, low priority)
 
-3. **If not good enough**: options to consider —
-   - longer training (basketball.py supports up to 200K iters; another ~10 h)
-   - denser init pcd (re-prep with `--target-points 250000`)
-   - tune hyperparams (basketball.py is for outdoor sport, not cattle)
-   - SAM2-tracked masks → mask-aware loss (combine A + B for cow-only output without loss collapse)
-
-Ready to commit Plan A as a milestone and pause for Yubo's review.
+- Render rename + GT compression for the existing `train_20260427_220326/`
+  model — add cam/frame names + JPEG-compress GTs to save ~10 GB.
 
 **Plan A worked** — model now actually learns training views.
 
@@ -133,6 +150,8 @@ Newest first.
 
 | Date | Event | Detail |
 |---|---|---|
+| 2026-04-28 | **Plan B Stage 1 array `59976202` submitted** | 76 frames stride-15 over 300..1425, ~30 min wall expected |
+| 2026-04-28 | PROJECT.md rig correction | `4e4531f` — L-shaped rig (not half-circle); cow rotates over full 48s |
 | 2026-04-28 | **Plan A render 59972470 DONE** | 57 min wall, all 660 PNGs (5.7-8.7 MB each). Train L1 ~0.05, test L1 ~0.20. Model produces real cow renders. |
 | 2026-04-28 | Render 59972470 resubmitted | walltime 90 min |
 | 2026-04-28 | Render 59971560 timed out @ 30 min | 372/540 train rendered before kill. **Renders contain real cow content** (mean ~175 matches GT, vs old all-black mean 0). Slower because non-trivial Gaussian splat work. |
