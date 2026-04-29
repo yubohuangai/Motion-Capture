@@ -30,10 +30,12 @@ complete. As of 2026-04-29 morning:
 | Phase 2 — Globus transfer e1 (best model) | ✅ landed; PLY export auto-triggered (`11098033`) |
 | Phase 2 — Globus transfer e2 | 🔄 in flight |
 | Phase 4a (Exp 4) — bigger init pcd 250K, **no** mask-aware, 136 fr | ⏳ prep `11098010` ✅ → train `11098011` PD |
-| Phase 4a' (Exp 5) — bigger init pcd 250K + **mask-aware**, 136 fr | ⏳ chained on fixed undistort_masks `11098045` → prep `11098046` → train `11098047` |
-| Phase 4b (Exp 6) — stride-5 over full seq (286 fr), mask-aware, 60K iters | ⏳ Stage 1 array `11097995` (150 missing fr) → orchestrator chains undistort_unmasked + undistort_masks + prep + train |
-| Phase 5 — trajectory extractor (`extract_trajectories.py`) | ⏳ test on e3 `11098019` PD |
-| Bug — undistort_masks symlinks `.png` instead of `.jpg` | 🐛 → ✅ fixed in `38159ca` and resubmitted (`11098045`) |
+| Phase 4a' (Exp 5) — bigger init pcd 250K + **mask-aware**, 136 fr | ❌ skipped tonight — index-collision with Stage 1 partials made apples-to-apples-with-Exp1 prep impractical; user can run later |
+| Phase 4b (Exp 6) — stride-5 over full seq (286 fr), mask-aware, 60K iters | ⏳ Stage 1 array `11098093` (150 missing fr; 2 running, 148 pending; orchestrator waits) → undistort + prep_e6 + train_e6 chained |
+| Phase 5 — trajectory extractor on e3 (test) | ⏳ `11098019` PD |
+| Phase 5 — trajectory extractor on **e1 (best model)** + cluster PLYs at K∈{4,8,16} | ⏳ `11098174` extract → `11098175` cluster |
+| Bug — undistort_masks symlinks `.png` instead of `.jpg` | 🐛 → ✅ fixed in `38159ca`; verified `dense_masks/images/` populated with 11 files for all 136 frames |
+| Bug — calibration `intri.yml`/`extri.yml` symlinks broken on Rorqual (point to `cow_1/10465/`) | 🐛 → ✅ transferred `cow_1/10465/` (task `cfb586ba-...`); recreated symlinks; Stage 1 array re-submitted as `11098093` |
 
 What's NOT on Rorqual yet (deliberate, for now):
 - `train_planB_e1` (best 136-fr mask-aware model; test PSNR 12.14) and `train_planB_e2`
@@ -247,7 +249,7 @@ help.
 
 | Date | Event |
 |---|---|
-| 2026-04-29 | **Overnight push** — 4 experiments in flight: e4 (bigger pcd, no-mask, 136fr), e5 (bigger pcd + mask, 136fr), e6 (stride-5 + mask, 286fr, 60K iters); plus Phase 5 trajectory extractor + e1 PLY export. Found + fixed long-standing undistort_masks bug (symlinked masks as `.png` but COLMAP looks for `.jpg`; result: `dense_masks/images/` empty for all 136 frames since the original Narval run, mask-aware loss silently fell back to standard L1+SSIM). Fix in `38159ca`. |
+| 2026-04-29 | **Overnight push** — chained pipelines for e4 (bigger pcd no-mask 136fr) and e6 (stride-5 + mask, 286fr, 60K iters); plus Phase 5 trajectory extraction + cluster baseline on best model e1; e1 PLY export auto-fired. **Two latent bugs found + fixed**: (1) undistort_masks symlinked masks as `.png` but COLMAP looks for `.jpg` → `dense_masks/images/` empty for ALL 136 frames since the original Narval run → mask-aware loss silently fell back to standard L1+SSIM (suspected to invalidate the +0.36/+0.68 dB attributed to Exp 1/3 vs Plan A — see warning section below). Fix in `38159ca`. (2) `intri.yml`/`extri.yml` were symlinks to `cow_1/10465/` which wasn't transferred → Stage 1 array crashed at `assert os.path.exists(intri_name)`. Fix: Globus-transferred `cow_1/10465/` and recreated the calibration symlinks. New `extract_trajectories.py` (per-Gaussian center over t∈[0,1]) and `cluster_trajectories.py` (k-means baseline, colored static PLY) added as Stage 3 starters. |
 | 2026-04-29 | **Phase 3 deliverable shipped** — `cow_t{000,050,100}.ply` (115–133 MB each, 487K–561K Gaussians) at `train_planB_e3/exported/`, ready for SuperSplat. PLYs verified with plyfile, schema is standard 3DGS SH-deg-3, opacity/scale ranges sane. |
 | 2026-04-29 | Phase 1 verified on Rorqual: data sizes correct (27 / 189 / 6.1 GB), localdygs venv imports OK on H100 (job `11093921`, last session), all 3 Globus transfers SUCCEEDED. Phase 3 exporter `apps/reconstruction/stage_b_localdygs/export_3dgs_ply.py` written; submitted as job `11097919` for first test (cow_t000/050/100.ply at iter 30000). |
 | 2026-04-28 | PROJECT.md cleanup: stage naming consistency (Stage 0 / 1.x / 2.x), sparse-masking description corrected (`auto` policy default, not always-unmasked) |
