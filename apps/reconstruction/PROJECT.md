@@ -66,65 +66,94 @@ is possible from a sequence of independent per-frame point clouds.
 
 ## 3. Pipeline
 
+Numbered stages (1, 2, 3) with sub-stages (1.1, 1.2, …). The directory
+names in this repo use `_a` / `_b` suffixes (`stage_a_colmap_4d/`,
+`stage_b_localdygs/`) for legacy reasons — those are *MVS-family* vs
+*Gaussian-family* groupings, not the same as this pipeline's
+numbered stages. Use the numbers in any new doc; treat the `_a`/`_b`
+dirs as implementation backends.
+
 ```
-Multi-view 30-fps RGB  +  calibration (intri.yml, extri.yml)
+Multi-view 30-fps RGB + calibration (intri.yml, extri.yml)
                           │
         ┌─────────────────▼──────────────────┐
-        │ SAM3 foreground masks              │  per-frame, per-camera cow
-        │ preprocess_segment_sam3.py         │  → data/masks/<cam>/<frame>.png
-        │ (--frames START:END[:STEP])        │
-        └─────────────────┬──────────────────┘
+        │ STAGE 0: foreground segmentation   │  Per-frame, per-camera
+        │ preprocess_segment_sam3.py         │  cow masks via SAM3.
+        │ (--frames START:END[:STEP])        │  Output: data/masks/<cam>/
+        └─────────────────┬──────────────────┘  <frame>.png
                           │
         ┌─────────────────▼──────────────────┐
-        │ STAGE 1: per-frame dense MVS       │  N independent 3D clouds, one
-        │ stage_a_colmap_4d/                 │  per time frame. Each is partial
-        │ (NB: "_4d" naming refers to the    │  (only the rig-visible side of the
-        │  output dataset structure          │  cow). NO temporal modeling at
-        │  3D-points × time, NOT to the      │  this stage — see §5 lesson on
-        │  reconstruction method, which is   │  why per-frame is correct here.
-        │  per-frame independent COLMAP MVS) │
-        │   sparse:  full image (no mask)    │
-        │   dense:   masked, cow-only        │  Sparse uses unmasked: tight cow
-        │                                    │  mask leaves <100 SIFT pts and
-        │                                    │  breaks COLMAP depth bounds.
-        │ Output: <out>/human/, work/        │
-        │   frame_<NNNNNN>_fused.ply         │
-        │   frame_<NNNNNN>_sparse.ply        │
-        │   frame_<NNNNNN>_thumb.jpg         │
-        │   work/frame_<NNNNNN>/{sparse,     │
-        │     dense, dense_unmasked,         │
-        │     dense_masks}/                  │
+        │ STAGE 1: per-frame 3D MVS          │  N independent 3D clouds,
+        │ stage_a_colmap_4d/                 │  one per time frame. Each
+        │                                    │  is partial — only the
+        │ ┌─ 1.1 Sparse reconstruction ────┐ │  rig-visible side of cow.
+        │ │ SIFT (full image, --no-mask-   │ │  NO temporal modeling at
+        │ │   sparse) → matching → bundle  │ │  this stage — see §5.
+        │ │   adjust → poses + 3D points   │ │
+        │ │ Out: work/frame_*/sparse/0/    │ │
+        │ └────────────────────────────────┘ │
+        │ ┌─ 1.2 Dense reconstruction ─────┐ │
+        │ │ image_undistorter (PINHOLE) →  │ │  Sparse must be unmasked
+        │ │   apply_masks (cow-only) →     │ │  (tight cow mask leaves
+        │ │   PatchMatch → stereo_fusion   │ │  <100 SIFT pts → breaks
+        │ │ Out: work/frame_*/dense/       │ │  COLMAP depth bounds).
+        │ │   {fused.ply, images/}         │ │  Dense IS masked → fused
+        │ │   human/frame_*_fused.ply      │ │  is cow-only.
+        │ └────────────────────────────────┘ │
+        │ ┌─ 1.3 Undistort for Stage 2 ────┐ │  Stage 1.2's dense/images/
+        │ │ run_undistort_unmasked.sh →    │ │  is mask-blackened — bad
+        │ │   work/frame_*/dense_unmasked/ │ │  Stage 2 input (collapses
+        │ │   images/                      │ │  loss to render-zero). So
+        │ │ run_undistort_masks.sh →       │ │  re-run image_undistorter
+        │ │   work/frame_*/dense_masks/    │ │  on the raw images and on
+        │ │   images/                      │ │  the masks separately.
+        │ └────────────────────────────────┘ │
         └─────────────────┬──────────────────┘
                           │
         ┌─────────────────▼──────────────────┐
         │ STAGE 2: LocalDyGS canonical       │  ✓ IMPLEMENTED + RUN
-        │ deformable model (foundational)    │  Multi-view dynamic 3DGS with
-        │ stage_b_localdygs/                 │  seed-anchored local spaces +
-        │                                    │  static/dynamic decoupling.
-        │ Driver:                            │  Best result on cow_1/9148_10581:
-        │   prepare_localdygs_data.py →      │  136fr (stride-mixed full
-        │   LocalDyGS train.py →             │  rotation) + mask-aware loss
-        │   LocalDyGS render.py              │  → train PSNR 22.49,
-        │ +  6 patches in patches/           │     test  PSNR 12.14 (best).
-        │                                    │
-        │ Output: stage_b/train_<name>/      │  See §6 for results table; see
-        │   point_cloud/iteration_30000/     │  STATUS.md for the live state of
-        │   {train,test}/ours_30000/         │  any in-flight retrains.
-        │     {renders,gt}/                  │
+        │ deformable model (foundational)    │  Multi-view dynamic 3DGS
+        │ stage_b_localdygs/                 │  with seed-anchored local
+        │                                    │  spaces + static/dynamic
+        │ ┌─ 2.1 Prep ─────────────────────┐ │  feature decoupling.
+        │ │ prepare_localdygs_data.py      │ │
+        │ │ (CPU; cleanply venv)           │ │  Stage 1 work/ →
+        │ │ - renumber cameras 0..10       │ │  LocalDyGS scene layout +
+        │ │ - symlink images + masks       │ │  voxel-downsampled init
+        │ │ - voxel-downsample init pcd    │ │  pcd. ~30 s wall.
+        │ │ Out: stage_b/scene_<name>/     │ │
+        │ └────────────────────────────────┘ │
+        │ ┌─ 2.2 Train ────────────────────┐ │  Best on cow_1/9148_10581:
+        │ │ LocalDyGS train.py + 6 patches │ │  136fr (full rotation) +
+        │ │ (1× A100, 30K iters, ~2 h)     │ │  mask-aware loss
+        │ │ Out: stage_b/train_<name>/     │ │  → train PSNR 22.49,
+        │ │   point_cloud/iter_30000/      │ │     test PSNR 12.14.
+        │ └────────────────────────────────┘ │  Results table in §6.
+        │ ┌─ 2.3 Render ───────────────────┐ │
+        │ │ LocalDyGS render.py +          │ │  ~12 min for 60-fr scene,
+        │ │ postprocess_render.py          │ │  ~2 h for 136-fr scene
+        │ │ Out: train,test/ours_30000/    │ │  (real Gaussian splat
+        │ │   {renders,gt,renamed}/        │ │  work at 4K dominates).
+        │ └────────────────────────────────┘ │
         └─────────────────┬──────────────────┘
                           │
         ┌─────────────────▼──────────────────┐
         │ STAGE 3: articulation discovery    │  ⚠ FUTURE (research)
-        │ (cluster per-Gaussian trajectories │  Cluster trajectories from
-        │  → fit skeleton, no priors)        │  Stage 2 output into rigid
-        │                                    │  parts; fit joint graph by
-        │                                    │  RANSAC over part-pair offsets.
-        │                                    │  Deferred until Stage 2 is
-        │ See §6.                            │  producing something to mine.
+        │ (cluster per-Gaussian trajectories │  Concrete TODOs in §9.
+        │  → fit skeleton, no priors)        │  Deferred until Stage 2
+        │                                    │  is producing something
+        │                                    │  worth mining.
         └────────────────────────────────────┘
 ```
 
 ## 4. Stage 1 — per-frame COLMAP MVS
+
+Sub-stages: **1.1 Sparse** (SIFT + matching + bundle adjust →
+camera poses + sparse 3D points), **1.2 Dense** (undistort +
+apply_masks + PatchMatch + fusion → cow-only fused.ply), and **1.3
+Undistort for Stage 2** (re-run undistort on raw images + masks
+separately so Stage 2 has unmasked training inputs and undistorted
+masks for mask-aware loss).
 
 **Status: complete** for `cow_1/9148_10581`. 136 frames reconstructed
 end-to-end (60 stride-5 over 0..295 + 76 stride-15 over 300..1425; the
@@ -234,7 +263,9 @@ The `masked` policy fails when too few SIFT points survive the mask
 ### Stage 1 / classical MVS
 
 - **Plane-sweep MVS produces 2× more points than COLMAP but they are
-  visually noisier.** COLMAP MVS is the default Stage A backend.
+  visually noisier.** COLMAP MVS is the default Stage 1 backend
+  (`stage_a_colmap_4d/`; the legacy `stage_a_plane_sweep/` lives
+  alongside but is unused).
 - **Auto-derived depth bounds from camera centroid are unreliable** for
   rigs with asymmetric camera placement. Use per-frame triangulation
   (gives COLMAP per-camera bounds) or pass explicit bounds.
@@ -250,15 +281,16 @@ The `masked` policy fails when too few SIFT points survive the mask
 
 ### Why Stage 1 is per-frame, not temporal
 
-**Temporal optimization at Stage A is not worth it for a deforming
+**Temporal optimization at Stage 1 is not worth it for a deforming
 subject.** The cow surface deforms, so cross-frame depth smoothing
 *blurs out* exactly the deformation Stage 2 needs to capture. The
 background, where temporal smoothing would help, is masked out anyway.
-Stage A produces independent per-frame clouds; all temporal work
+Stage 1 produces independent per-frame clouds; all temporal work
 belongs in Stage 2 (canonical deformable model that learns its own
 per-frame deformation field). Possible exception worth considering
 later: temporally consistent SAM masks (SAM2 with track propagation)
-— that's a *pre-Stage-A input* improvement, not Stage A reconstruction.
+— that's a *Stage 0 input* improvement, not a Stage 1 reconstruction
+change.
 
 ### LocalDyGS / Stage 2 — six upstream patches
 
@@ -391,18 +423,18 @@ apps/reconstruction/
 ├── PROJECT.md                       ← this file (architecture, decisions, lessons)
 ├── STATUS.md                        ← live state (jobs, latest checkpoints, next step)
 ├── README.md                        ← user-facing technical docs
-├── STAGES_EXPLAINED.md              ← deep dive on Stage A internals
-├── preprocess_segment_sam3.py       ← SAM3 masking (single frame OR --frames)
-├── run_stage_a.py                   ← Stage A dispatcher (--backend colmap|plane_sweep)
-├── run_stage_b.py                   ← NeuS Stage B driver (legacy, not used)
-├── run_pipeline.py                  ← Stage A → Stage B in one shot (legacy)
+├── STAGES_EXPLAINED.md              ← deep dive on Stage 1 internals
+├── preprocess_segment_sam3.py       ← Stage 0: SAM3 masking (single frame OR --frames)
+├── run_stage_a.py                   ← MVS-family dispatcher (--backend colmap|plane_sweep)
+├── run_stage_b.py                   ← Gaussian-family driver (legacy, not used)
+├── run_pipeline.py                  ← MVS → Gaussian in one shot (legacy)
 ├── common/                          ← shared utilities (cameras, images, IO)
-├── stage_a_plane_sweep/             ← hand-rolled MVS backend (CPU)
-├── stage_a_colmap/                  ← COLMAP MVS backend (default)
-├── stage_a_colmap_4d/               ← per-frame loop driver — Stage 1 of this project
-├── stage_b_neus/                    ← NeuS implicit surface (legacy, not used)
+├── stage_a_plane_sweep/             ← MVS backend (legacy, not used)
+├── stage_a_colmap/                  ← COLMAP MVS backend (used by stage_a_colmap_4d)
+├── stage_a_colmap_4d/               ← THE Stage 1 driver (per-frame loop)
+├── stage_b_neus/                    ← NeuS implicit surface (legacy)
 ├── stage_b_3dgs/                    ← 3D Gaussian Splatting (one-shot, legacy)
-├── stage_b_localdygs/               ← Stage 2 driver (THE active Stage 2)
+├── stage_b_localdygs/               ← THE Stage 2 driver
 │   ├── SETUP.md                     ← reproducible env-build recipe + 6 patches
 │   ├── prepare_localdygs_data.py    ← Stage 1 → LocalDyGS scene layout
 │   ├── postprocess_render.py        ← rename + JPEG-compress GT for review
@@ -447,7 +479,7 @@ Data (Narval — being migrated to Rorqual):
 
 | ID | Path | Use |
 |---|---|---|
-| `cow_1/10465` | `/scratch/yubo/cow_1/10465/` | Single-frame, 11 cams @ 4K. Validated single-frame Stage A. |
+| `cow_1/10465` | `/scratch/yubo/cow_1/10465/` | Single-frame, 11 cams @ 4K. Validated Stage 1.1 / 1.2 on a single frame before scaling to a sequence. |
 | `cow_1/9148_10581` | `/scratch/yubo/cow_1/9148_10581/` | 1434-frame sequence, 30 fps, 11 cams @ 4K. Same calibration as `10465` (symlinked). The primary dataset for Stage 1 + Stage 2. Stage 1 done on 136 stride-mixed frames (60 stride-5 over 0..295 + 76 stride-15 over 300..1425). Stage 2 has four trained models (Plan A + Plan B Exp 1/2/3); see §6 results table. |
 
 Detailed dataset properties — L-shaped 11-cam rig, non-uniform cow
@@ -533,6 +565,8 @@ inherit them without copy-paste.
 
 ## 11. Update log
 
+> Append a row when you change pipeline, layout, or a decision.
+
 | Date | Change | By |
 |---|---|---|
 | 2026-04-26 | Initial draft. Documents Stage 1 (working) + Stage 2 (open). | Claude |
@@ -546,6 +580,7 @@ inherit them without copy-paste.
 | 2026-04-28 | yubo-brain integration: bidirectional ingestion workflow + per-machine canonical install via `bin/install-claude-md.sh`. Motion-Capture lessons distilled into 8 wiki pages (entities, concepts, analyses). | Claude |
 | 2026-04-28 | Onboard Rorqual (H100-80G) via yubo-brain's "Onboard a new machine" workflow; data migration via Globus in flight. PROJECT.md now references both clusters. | Claude |
 | 2026-04-28 | **PROJECT.md cleanup**: refresh Stage 1 narrative (was "10-frame sweep", now 136-frame stride-mixed); promote Stage 2 from "design space" to "chosen, built, run" with results table; expand §5 lessons to all 6 patches; trim §9 TODOs (refer to STATUS.md); add §11 entry note about cleanup. | Claude |
+| 2026-04-28 | **Pipeline naming consistency** (per Yubo): SAM3 masking promoted to "Stage 0" so it has a stage label like the others; sub-stages within Stage 1 split into 1.1 sparse / 1.2 dense / 1.3 undistort-for-Stage-2 (was lumped together; sparse step was missing from the diagram entirely); sub-stages within Stage 2 split into 2.1 prep / 2.2 train / 2.3 render. Drop "Stage A / Stage B" terminology from prose (those refer to directory names — MVS-family vs Gaussian-family — not numbered project stages). | Claude |
 
 > When you change the pipeline, the layout, or a decision: add a row here
 > with the date and a one-line description of what changed.
