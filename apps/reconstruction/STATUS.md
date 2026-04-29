@@ -25,7 +25,7 @@ complete. As of 2026-04-29 morning:
 | Globus transfer: Stage 1 `stage_a/colmap_4d/` (189 GB on disk) | ✅ done (task `59d80354-...`) |
 | Globus transfer: Stage 2 `train_planB_e3/` (6.1 GB on disk) | ✅ done (task `5a79c04e-...`) |
 | Phase 1 — H100 verify (full H100 import + tinycudann SM 9.0 fwd) | ✅ done (job `11093921`) |
-| Phase 3 — `export_3dgs_ply.py` + 3 cow PLYs at t={0, 0.5, 1.0} | ⏳ in flight (job `11097919`) |
+| Phase 3 — `export_3dgs_ply.py` + 3 cow PLYs at t={0, 0.5, 1.0} | ✅ done (job `11097919`, 1:46) — see below |
 | Render R1 + R2 on Narval (Plan B Exp 1, Exp 2) | ⚠️ status unknown — last known in-flight on Narval |
 
 What's NOT on Rorqual yet (deliberate, for now):
@@ -34,6 +34,30 @@ What's NOT on Rorqual yet (deliberate, for now):
   not needed for the export script which loads `GaussianModel` directly without `Scene`)
 
 **Next decisions (Phase 2 / Phase 4)**: see open questions below.
+
+### Phase 3 results — exported PLYs ready to view
+
+`/scratch/yubo/cow_1/9148_10581_output/stage_b/train_planB_e3/exported/`:
+
+| t | active gauss. | kept (AABB) | file |
+|---|---|---|---|
+| 0.00 | 545,585 | 543,201 (99.6%) | `cow_t000.ply` 128.5 MB |
+| 0.50 | 490,006 | 487,649 (99.5%) | `cow_t050.ply` 115.3 MB |
+| 1.00 | 563,477 | 561,037 (99.6%) | `cow_t100.ply` 132.7 MB |
+
+PLY uses the standard 3DGS schema (62 properties incl. SH degree 3
+with 45 zero `f_rest` fields), binary little-endian, plyfile-verified.
+Opacity / scale ranges sane. Drop these into SuperSplat
+(https://playcanvas.com/supersplat/editor) to rotate around the cow.
+
+Caveats:
+- Trained on Plan B Exp 3 (60 frames stride-5 over 0..295, mask-aware loss);
+  test PSNR was 11.82, not the best model. The best model is `train_planB_e1`
+  (136 frames + mask-aware, test PSNR 12.14) — currently still on Narval.
+- Coordinate frame is Colmap (Y-down). SuperSplat is Y-up, so the cow may
+  display upside-down at first; rotate in the viewer.
+- File sizes are ~120 MB (full SH-degree-3 schema). If you prefer smaller
+  PLYs (~35 MB), I can add a `--no-sh-rest` flag that drops `f_rest_*`.
 
 ## Plan: continue on Rorqual
 
@@ -216,6 +240,7 @@ help.
 
 | Date | Event |
 |---|---|
+| 2026-04-29 | **Phase 3 deliverable shipped** — `cow_t{000,050,100}.ply` (115–133 MB each, 487K–561K Gaussians) at `train_planB_e3/exported/`, ready for SuperSplat. PLYs verified with plyfile, schema is standard 3DGS SH-deg-3, opacity/scale ranges sane. |
 | 2026-04-29 | Phase 1 verified on Rorqual: data sizes correct (27 / 189 / 6.1 GB), localdygs venv imports OK on H100 (job `11093921`, last session), all 3 Globus transfers SUCCEEDED. Phase 3 exporter `apps/reconstruction/stage_b_localdygs/export_3dgs_ply.py` written; submitted as job `11097919` for first test (cow_t000/050/100.ply at iter 30000). |
 | 2026-04-28 | PROJECT.md cleanup: stage naming consistency (Stage 0 / 1.x / 2.x), sparse-masking description corrected (`auto` policy default, not always-unmasked) |
 | 2026-04-28 | yubo-brain: globus-cli-on-alliance cheatsheet committed; install-claude-md.sh made cluster-aware; "Onboard a new machine" workflow added; Motion-Capture lessons ingested as 8 new wiki pages |
