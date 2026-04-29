@@ -87,18 +87,22 @@ Multi-view 30-fps RGB + calibration (intri.yml, extri.yml)
         │ stage_a_colmap_4d/                 │  one per time frame. Each
         │                                    │  is partial — only the
         │ ┌─ 1.1 Sparse reconstruction ────┐ │  rig-visible side of cow.
-        │ │ SIFT (full image, --no-mask-   │ │  NO temporal modeling at
-        │ │   sparse) → matching → bundle  │ │  this stage — see §5.
-        │ │   adjust → poses + 3D points   │ │
+        │ │ SIFT → matching → bundle       │ │  NO temporal modeling at
+        │ │ adjust → poses + 3D points     │ │  this stage — see §5.
+        │ │ Default policy: `auto`         │ │
+        │ │   try SIFT WITH mask first →   │ │  See §4 "Masking
+        │ │   if <100 SIFT pts (too tight  │ │  semantics" for the
+        │ │   on a given frame), fall      │ │  per-policy details.
+        │ │   back to SIFT WITHOUT mask    │ │
         │ │ Out: work/frame_*/sparse/0/    │ │
         │ └────────────────────────────────┘ │
         │ ┌─ 1.2 Dense reconstruction ─────┐ │
-        │ │ image_undistorter (PINHOLE) →  │ │  Sparse must be unmasked
-        │ │   apply_masks (cow-only) →     │ │  (tight cow mask leaves
-        │ │   PatchMatch → stereo_fusion   │ │  <100 SIFT pts → breaks
-        │ │ Out: work/frame_*/dense/       │ │  COLMAP depth bounds).
-        │ │   {fused.ply, images/}         │ │  Dense IS masked → fused
-        │ │   human/frame_*_fused.ply      │ │  is cow-only.
+        │ │ image_undistorter (PINHOLE) →  │ │  Dense ALWAYS applies
+        │ │   apply_masks (cow-only) →     │ │  masks regardless of
+        │ │   PatchMatch → stereo_fusion   │ │  sparse policy →
+        │ │ Out: work/frame_*/dense/       │ │  fused.ply is cow-only
+        │ │   {fused.ply, images/}         │ │  in all cases.
+        │ │   human/frame_*_fused.ply      │ │
         │ └────────────────────────────────┘ │
         │ ┌─ 1.3 Undistort for Stage 2 ────┐ │  Stage 1.2's dense/images/
         │ │ run_undistort_unmasked.sh →    │ │  is mask-blackened — bad
@@ -167,8 +171,10 @@ mixed stride spans the cow's full 360° rotation, ~48 s of capture).
 ### Driver
 `apps/reconstruction/stage_a_colmap_4d/run_stage_a_colmap_4d.py` —
 loops over frames; per-frame calls the proven single-frame
-`stage_a_colmap.run_stage_a_colmap` with `--no-mask-sparse` (essential —
-see §5 lesson on sparse vs dense masking).
+`stage_a_colmap.run_stage_a_colmap`. Sparse-masking policy is `auto`
+by default (see §4 "Masking semantics"): each frame independently
+tries masked SIFT first, falls back to unmasked SIFT if the mask
+leaves too few SIFT points to triangulate.
 
 The directory name `stage_a_colmap_4d` is misleading: the "_4d" refers
 to the 4D output dataset structure (per-frame 3D clouds × time), NOT
@@ -581,6 +587,7 @@ inherit them without copy-paste.
 | 2026-04-28 | Onboard Rorqual (H100-80G) via yubo-brain's "Onboard a new machine" workflow; data migration via Globus in flight. PROJECT.md now references both clusters. | Claude |
 | 2026-04-28 | **PROJECT.md cleanup**: refresh Stage 1 narrative (was "10-frame sweep", now 136-frame stride-mixed); promote Stage 2 from "design space" to "chosen, built, run" with results table; expand §5 lessons to all 6 patches; trim §9 TODOs (refer to STATUS.md); add §11 entry note about cleanup. | Claude |
 | 2026-04-28 | **Pipeline naming consistency** (per Yubo): SAM3 masking promoted to "Stage 0" so it has a stage label like the others; sub-stages within Stage 1 split into 1.1 sparse / 1.2 dense / 1.3 undistort-for-Stage-2 (was lumped together; sparse step was missing from the diagram entirely); sub-stages within Stage 2 split into 2.1 prep / 2.2 train / 2.3 render. Drop "Stage A / Stage B" terminology from prose (those refer to directory names — MVS-family vs Gaussian-family — not numbered project stages). | Claude |
+| 2026-04-28 | **Fix Stage 1.1 masking description** (per Yubo): the §3 diagram and §4 driver description both implied "sparse always uses unmasked SIFT", which contradicts the §4 "Masking semantics" section that documents the actual `auto` default (try masked first, per-frame fallback to unmasked only when <100 SIFT pts survive the mask). Diagram and driver paragraph now reflect the auto policy. | Claude |
 
 > When you change the pipeline, the layout, or a decision: add a row here
 > with the date and a one-line description of what changed.
