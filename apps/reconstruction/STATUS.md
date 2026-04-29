@@ -27,6 +27,13 @@ complete. As of 2026-04-29 morning:
 | Phase 1 — H100 verify (full H100 import + tinycudann SM 9.0 fwd) | ✅ done (job `11093921`) |
 | Phase 3 — `export_3dgs_ply.py` + 3 cow PLYs at t={0, 0.5, 1.0} | ✅ done (job `11097919`, 1:46) — see below |
 | Render R1 + R2 on Narval (Plan B Exp 1, Exp 2) | ⚠️ status unknown — last known in-flight on Narval |
+| Phase 2 — Globus transfer e1 (best model) | ✅ landed; PLY export auto-triggered (`11098033`) |
+| Phase 2 — Globus transfer e2 | 🔄 in flight |
+| Phase 4a (Exp 4) — bigger init pcd 250K, **no** mask-aware, 136 fr | ⏳ prep `11098010` ✅ → train `11098011` PD |
+| Phase 4a' (Exp 5) — bigger init pcd 250K + **mask-aware**, 136 fr | ⏳ chained on fixed undistort_masks `11098045` → prep `11098046` → train `11098047` |
+| Phase 4b (Exp 6) — stride-5 over full seq (286 fr), mask-aware, 60K iters | ⏳ Stage 1 array `11097995` (150 missing fr) → orchestrator chains undistort_unmasked + undistort_masks + prep + train |
+| Phase 5 — trajectory extractor (`extract_trajectories.py`) | ⏳ test on e3 `11098019` PD |
+| Bug — undistort_masks symlinks `.png` instead of `.jpg` | 🐛 → ✅ fixed in `38159ca` and resubmitted (`11098045`) |
 
 What's NOT on Rorqual yet (deliberate, for now):
 - `train_planB_e1` (best 136-fr mask-aware model; test PSNR 12.14) and `train_planB_e2`
@@ -240,6 +247,7 @@ help.
 
 | Date | Event |
 |---|---|
+| 2026-04-29 | **Overnight push** — 4 experiments in flight: e4 (bigger pcd, no-mask, 136fr), e5 (bigger pcd + mask, 136fr), e6 (stride-5 + mask, 286fr, 60K iters); plus Phase 5 trajectory extractor + e1 PLY export. Found + fixed long-standing undistort_masks bug (symlinked masks as `.png` but COLMAP looks for `.jpg`; result: `dense_masks/images/` empty for all 136 frames since the original Narval run, mask-aware loss silently fell back to standard L1+SSIM). Fix in `38159ca`. |
 | 2026-04-29 | **Phase 3 deliverable shipped** — `cow_t{000,050,100}.ply` (115–133 MB each, 487K–561K Gaussians) at `train_planB_e3/exported/`, ready for SuperSplat. PLYs verified with plyfile, schema is standard 3DGS SH-deg-3, opacity/scale ranges sane. |
 | 2026-04-29 | Phase 1 verified on Rorqual: data sizes correct (27 / 189 / 6.1 GB), localdygs venv imports OK on H100 (job `11093921`, last session), all 3 Globus transfers SUCCEEDED. Phase 3 exporter `apps/reconstruction/stage_b_localdygs/export_3dgs_ply.py` written; submitted as job `11097919` for first test (cow_t000/050/100.ply at iter 30000). |
 | 2026-04-28 | PROJECT.md cleanup: stage naming consistency (Stage 0 / 1.x / 2.x), sparse-masking description corrected (`auto` policy default, not always-unmasked) |
@@ -260,6 +268,39 @@ help.
 `scripts/check_planB_status.sh` — prints state of all Plan B SLURM
 jobs. Useful if you re-open a Narval session before the migration is
 fully done.
+
+## ⚠️ Mask-aware loss results may be invalid — investigation needed
+
+The undistort_masks bug discovered tonight (`.png` filenames vs sparse
+model's `.jpg` references — see `38159ca`) means COLMAP image_undistorter
+silently failed to write `dense_masks/images/` for ALL 136 frames during
+the original Narval run. Patch 0006's logic when `<scene>/frame<N>/masks/`
+exists-but-is-empty falls back to None mask → standard L1+SSIM loss.
+
+If this also held on Narval at training time (likely — the bug pattern
+matches the .log files transferred over, where Narval also got
+"Cannot read image at path .../01.jpg"), then:
+
+- Plan B Exp 1 ("136 fr + mask-aware", test 12.14) — actually no-mask
+- Plan B Exp 2 (136 fr no-mask, test 11.99)
+- Plan B Exp 3 ("60 fr + mask-aware", test 11.82) — actually no-mask
+- Plan A (60 fr no-mask, test 11.46)
+
+Then Exp 1 ≈ Exp 2 (both 136 fr no-mask) and the 0.15 dB difference is
+just init/seed variance or a config detail I haven't spotted. The
+"+0.36 dB mask-aware help" attributed to Exp 3 vs Plan A would also be
+unrelated to mask-aware.
+
+**e5 and e6 (queued tonight) are the first TRUE mask-aware runs.** If
+they outperform e4 / Exp 1 / Exp 2 by a meaningful margin, we'll have
+actual mask-aware evidence. If they don't, the masking lever may simply
+not help on the cow-on-uniform-floor data (the no-mask loss was already
+focusing on cow signal because the floor is roughly constant
+brightness).
+
+To confirm, after e5 finishes: spot-check that
+`scene_planB_e5/frame000000/masks/` actually contains 11 PNG files (not
+empty) — if so, mask-aware was genuinely active for that run.
 
 ## Open questions to resolve eventually
 
