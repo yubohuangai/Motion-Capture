@@ -10,261 +10,233 @@
 
 ---
 
-## Current stage
+## Current state
 
-**Stage 1 → Stage 2 handoff.** Stage 1 (per-frame COLMAP MVS) is complete on
-the 60-frame `cow_1/9148_10581` sweep. Stage 2 (LocalDyGS) is fully set up:
-env built, both upstream patches landed, prep script written. The remaining
-hop is **executing `prepare_localdygs_data.py` on real Stage 1 outputs for
-the first time**, then a smoke-test LocalDyGS training run.
+**Migrating from Narval to Rorqual.** Yubo decided to continue work on
+Rorqual (H100-80G) for the better GPU. Ongoing as of 2026-04-28
+evening:
 
-## Last completed
+| Track | Status |
+|---|---|
+| Code repos (Motion-Capture, LocalDyGS, tiny-cuda-nn, yubo-brain) | ✅ cloned on Rorqual |
+| 6 LocalDyGS patches applied | ✅ done by rorqual2 Claude |
+| Venvs (`localdygs/`, `cleanply/`, `globus-cli/`) | ✅ built on Rorqual |
+| `globus-cli` install + login + data_access consent | ✅ done both clusters |
+| Globus transfer: raw `cow_1/9148_10581/` (29 GB) | 🔄 in flight (task `59078659-...`) |
+| Globus transfer: Stage 1 `stage_a/colmap_4d/` (200 GB) | 🔄 in flight (task `59d80354-...`) |
+| Globus transfer: Stage 2 `train_planB_e3/` (6.4 GB) | ✅ done (task `5a79c04e-...`) |
+| Render R1 + R2 on Narval (Plan B Exp 1, Exp 2) | 🔄 in flight (jobs `60027658`, `60027659`; ~1 h left) |
 
-**Render job `59965124` completed** (12:27 wall, with patch 0005 OOM
-fix). All 660 PNGs written to `train_20260427_190608/{train,test}/ours_30000/`
-(540 train + 120 test). Job exit was SIGPIPE (13:0) from a post-render
-shell pipe, but the render itself succeeded.
+**The next session opens on rorqual2** (`[yubo@rorqual2 ~]$`); pick
+up from "Plan: continue on Rorqual" below.
 
-**Critical finding from inspection**: renders are **completely black**.
-- GT images: 3840×2160, 7.7 MB, pixel mean 174.7 (cow on background)
-- Renders: 3840×2160 ✓, 25 KB, pixel min=0 max=1 mean=0.0
+## Plan: continue on Rorqual
 
-The model converged to render-pure-black for every view and frame.
+After R1 / R2 finish on Narval and the in-flight Globus transfers
+complete, the resumption checklist:
 
-## Root cause (high confidence)
+### Phase 1 — verify the migration landed cleanly (~15 min on Rorqual)
 
-Stage 1's `dense/images/` are **mask-blackened** (post-`apply_masks`,
-the COLMAP image_undistorter input has cow regions only; background
-pixels are zeroed). Our prep script symlinked these into the LocalDyGS
-scene. So LocalDyGS sees images that are ~95% black background + ~5%
-cow.
-
-L1+SSIM loss treats every pixel equally. With 95% of pixels at value 0,
-a model rendering all-zeros achieves MSE = (cow_region_area) × (cow_pixel_variance)
-≈ 0.05 × 150² ≈ 1125 → PSNR ≈ 17, matching observed test PSNR 13.66.
-
-The model has zero pressure to learn the cow — "render black" is the
-trivial-minimum solution. The plateau in metrics across 15K iters
-confirms convergence to this minimum.
-
-## Plan A — COMPLETE ✓ (model exists at `train_20260427_220326/`)
-
-Train PSNR 22.94 / Test PSNR 11.46. Renders match GT closely on train cams,
-fuzzy on test cams. The L-shape rig + cow-stays-still-or-walks-only in the
-first 60 frames means the model didn't see meaningful 360° rotation.
-
-## Plan B/C — overnight 3-way parallel experiment (in flight)
-
-**Goal**: span the cow's full 48-second rotation AND make loss/metrics
-cow-only (so background pixels don't dominate).
-
-### Overnight chain results (2026-04-28 morning)
-
-```
-STAGE1=59976202   COMPLETED ✓  10 min
-U1=59976487       COMPLETED ✓  10 sec
-M1=59976488       COMPLETED ✓  11 sec
-
-# Exp 3 — 60fr + mask-aware                  ← FULLY COMPLETE
-P3=59976511       COMPLETED ✓  24 sec
-T3=59976512       COMPLETED ✓  1:55:47   train PSNR 23.09, test PSNR 11.82
-R3=59976514       COMPLETED ✓  57 min    (exit 13 = SIGPIPE; all 660 PNGs OK)
-
-# Exp 1/2 — 136 frames                       ← FAILED & FIXED, re-running
-P1=59976492       COMPLETED ✓
-P2=59976489       COMPLETED ✓
-T1=59976496       FAILED 20s    bug: train sbatch hardcoded `--frames_start_end 0 60`
-T2=59976490       FAILED 20s    bug: same
-                  Fix in commit 37ec5f2 — sbatch now takes FRAMES_END env var
-T1 RESUBMIT=60009011  RUNNING (eta ~5h, started ~15:32 EDT)
-R1 RESUBMIT=60009012  PENDING (depends on T1)
-T2 RESUBMIT=60009013  RUNNING (eta ~5h)
-R2 RESUBMIT=60009014  PENDING (depends on T2)
-```
-
-Chain state file: `/scratch/yubo/jobs/planB_chain.txt` (env-var format).
-
-### Output paths (predictable, no timestamps in dir names)
-
-| Exp | Scene dir | Train output dir |
-|---|---|---|
-| 1 | `stage_b/scene_planB_e1/` | `stage_b/train_planB_e1/` |
-| 2 | `stage_b/scene_planB_e2/` | `stage_b/train_planB_e2/` |
-| 3 | `stage_b/scene_planB_e3/` | `stage_b/train_planB_e3/` |
-
-All under `/scratch/yubo/cow_1/9148_10581_output/`.
-
-Each `train_planB_e?/` will end up with:
-- `point_cloud/iteration_30000/` — the trained model checkpoints
-- `train/ours_30000/{renders,gt}/` — training-cam renders (~540-1224 imgs)
-- `test/ours_30000/{renders,gt}/` — held-out cam renders (~120-272 imgs)
-- `outputs.log` — train/test L1+PSNR at every eval iteration
-
-### Expected timeline (rough)
-
-```
-NOW (00:54)  Stage 1 array running (~30 min total, 30 tasks running parallel)
-+30 min      Stage 1 done → U1 + M1 start (parallel, ~2 min each)
-+35 min      Both undistorts done → P1, P2, P3 start (parallel, ~30 s each)
-+36 min      All preps done → T1, T2, T3 start (parallel, on 3 A100s)
-+~5 hr       Trainings finish → R1, R2, R3 start (parallel renders)
-+~6 hr       Renders done — wake-up state, all results ready
-```
-
-So you should see results by ~07:00 EDT. May vary based on rrg-vislearn
-queue depth.
-
-## Exp 3 results — viewable now
-
-**Path**: `/scratch/yubo/cow_1/9148_10581_output/stage_b/train_planB_e3/`
-
-| | Plan A (60fr, no mask) | Exp 3 (60fr, mask-aware) | Δ |
-|---|---|---|---|
-| Train PSNR | 22.94 | **23.09** | +0.15 |
-| Test PSNR | 11.46 | **11.82** | +0.36 |
-
-Mask-aware loss alone gave a marginal ~0.4 dB test improvement on the
-60-frame setup. The interesting comparison is whether the 136-frame
-runs (T1/T2 in flight) do dramatically better — they're the ones with
-the cow's full rotation in view.
-
-Postprocess running on Exp 3: adds `renamed/cam<NN>_frame_<NNNNNN>.png`
-symlinks + compresses GTs PNG → JPEG (saves ~4 GB).
-
-Pull renders to Mac:
 ```bash
-rsync -avz narval2:/scratch/yubo/cow_1/9148_10581_output/stage_b/train_planB_e3/{train,test}/ours_30000/renamed/ ~/cow_e3/
+# 1. Pull latest yubo-brain (PROJECT.md updates, the new install-claude-md.sh, etc.)
+cd ~/github/yubo-brain && git pull
+cd ~/github/Motion-Capture && git pull
+
+# 2. Confirm transferred data is on /scratch
+du -sh /scratch/yubo/cow_1/9148_10581/ \
+       /scratch/yubo/cow_1/9148_10581_output/stage_a/ \
+       /scratch/yubo/cow_1/9148_10581_output/stage_b/train_planB_e3/
+
+# 3. Smoke-test localdygs venv on a GPU node (verify CUDA exts work on H100)
+salloc --account=rrg-vislearn --gres=gpu:h100_3g.40gb:1 --cpus-per-task=4 --mem=16G --time=0:30:00
+module load StdEnv/2023 gcc/12.3 cuda/12.9 python/3.11 opencv/4.13.0
+source ~/envs/localdygs/bin/activate
+python -c "
+import torch, simple_knn, tinycudann, diff_gaussian_rasterization, cv2
+print(f'GPU: {torch.cuda.get_device_name(0)}')
+print('CUDA exts: simple_knn, tinycudann, dgr, cv2 — all import OK')
+"
 ```
 
-## Wake-up checklist (for fresh session tomorrow)
+If tinycudann fails with "Unknown compute capability", it was built for
+SM 8.0 (A100) and needs a rebuild for SM 9.0 (H100). Per
+`apps/reconstruction/stage_b_localdygs/SETUP.md`:
 
-Run this single command:
 ```bash
-bash /home/yubo/github/Motion-Capture/scripts/check_planB_status.sh
+cd ~/github/tiny-cuda-nn
+TCNN_CUDA_ARCHITECTURES=90 pip install bindings/torch --force-reinstall
 ```
 
-It prints state of every job, current train metrics, and render output counts.
+### Phase 2 — fetch the e1 / e2 trained models from Narval if you want them
 
-If any job FAILED/CANCELLED, the script prints them under "Failed/cancelled".
-Investigate via `cat /scratch/yubo/jobs/logs/<jobname>_<jobid>.{out,err}`.
+Once R1 + R2 finish on Narval (~1 h after this STATUS.md was written),
+add a Globus transfer for the new outputs:
 
-If everything succeeded:
-- Compare `outputs.log` final-iter PSNR across the 3 experiments
-- `train_planB_e?/test/ours_30000/renders/` are 4K PNGs to inspect on Mac
-- Render naming: see `apps/reconstruction/STATUS.md` index→cam mapping
-- Best experiment by metric is your "real Stage 2 baseline" going forward
+```bash
+# (on rorqual2 or Narval — globus is server-side)
+NARVAL=a1713da6-098f-40e6-b3aa-034efe8b6e5b
+RORQUAL=f19f13f5-5553-40e3-ba30-6c151b9d35d4
 
-## Quick-win utilities (running tonight, low priority)
+# train_planB_e1 = best model (test PSNR 12.14)
+globus transfer \
+    $NARVAL:/scratch/yubo/cow_1/9148_10581_output/stage_b/train_planB_e1/ \
+    $RORQUAL:/scratch/yubo/cow_1/9148_10581_output/stage_b/train_planB_e1/ \
+    --recursive --label "train_planB_e1 (post-R1)"
 
-- Render rename + GT compression for the existing `train_20260427_220326/`
-  model — add cam/frame names + JPEG-compress GTs to save ~10 GB.
+globus transfer \
+    $NARVAL:/scratch/yubo/cow_1/9148_10581_output/stage_b/train_planB_e2/ \
+    $RORQUAL:/scratch/yubo/cow_1/9148_10581_output/stage_b/train_planB_e2/ \
+    --recursive --label "train_planB_e2 (post-R2)"
+```
 
-**Plan A worked** — model now actually learns training views.
+If you'd rather just retrain on H100 (faster), skip — see Phase 4.
 
-| Metric | Iter 30000, before (masked) | Iter 30000, after (unmasked) |
-|---|---|---|
-| Train L1 | 0.391 | **0.047** (8× better) |
-| Train PSNR | 8.94 | **22.94** (+14 dB) |
-| Test L1 | 0.143 | 0.217 |
-| Test PSNR | 13.66 | 11.46 |
+### Phase 3 — interactive 3D viewer (cow only, no scene)
 
-Train metrics now make sense (train < test L1, train > test PSNR — normal
-overfitting). Test PSNR dropped because the previous "render all black"
-scored coincidentally well against masked GT; with unmasked GT, all-black
-gets 0 PSNR. Generalization to held-out cams 0/10 is genuinely hard
-(half-circle rig, novel viewpoints), but that's a model-quality issue
-not a pipeline-broken issue.
+User-facing deliverable: a standalone `.ply` you can open in
+[SuperSplat](https://playcanvas.com/supersplat/editor) (browser) or
+any 3DGS viewer to rotate around the cow.
 
-**Validation: Plan A is materially different** (sampled across 4 frames × 3 cams):
+This needs a **converter** from LocalDyGS's anchor-based representation
+to standard 3DGS PLY format at a chosen time `t ∈ [0, 1]`. To be
+written as
+`apps/reconstruction/stage_b_localdygs/export_3dgs_ply.py`. Logic:
 
-| Frame | Cam | Masked mean / black% | Unmasked mean / black% |
-|---|---|---|---|
-| 0 | 01/05/11 | ~144-165 / 0% | ~144-165 / 0% (frame 0 was already unmasked — coincidence; cow filled frame) |
-| 100 | 01/05/11 | 7-16 / **84-95%** | 158-170 / 0% |
-| 200 | 01/05/11 | 6-17 / **87-95%** | 162-170 / 0% |
-| 295 | 01/05/11 | 4-13 / **89-97%** | 161-170 / 0% |
+1. Load LocalDyGS scene + `iteration_30000` checkpoint (anchor +
+   FDHash + MLPs + time embedding).
+2. For chosen time `t`, replicate LocalDyGS's render forward pass to
+   compute per-anchor active Gaussians: position, scale, rotation,
+   opacity, RGB.
+3. Filter to "cow only" via the init-pcd bounding box (since
+   `position_lr=0`, anchors are fixed at their cow-only init pcd
+   locations — likely already cow-only, but bbox-clip for safety).
+4. Convert to standard 3DGS PLY schema:
+   - x, y, z (position)
+   - nx, ny, nz (zeros)
+   - f_dc_0..2 (RGB at SH order 0)
+   - f_rest_0..44 (zeros)
+   - opacity (logit-space)
+   - scale_0..2 (log-space)
+   - rot_0..3 (quaternion)
+5. Write binary little-endian PLY for SuperSplat compatibility.
 
-Confirms: the previous training was seeing 87-97% black images for
-most frames, drove the model to "render zero" minimum. With unmasked
-images, the loss landscape now has the cow + background actually
-visible — model has a normal multi-view scene to fit.
+Reference: `~/github/gaussian-splatting/scene/gaussian_model.py:save_ply`
+for the target schema. Estimated ~1 evening of work; can be done on
+Rorqual after Phase 1 verifies.
 
-## Next concrete step
+Output: `train_planB_e1/exported/cow_t<TT>.ply` for several `t` values.
 
-Watcher will fire on retrain completion → submit render → inspect rendered
-PNGs (expecting actual cow content this time).
+### Phase 4 — improvement experiments (see "How results would improve" below)
 
-## Recent activity
+Pick one or more based on what's interesting:
 
-Newest first.
+- **Stride-1 over the full sequence** = 1434 frames × 9 cams = 12,906
+  train images. Iters need to scale: 30K → ~150K. Wall on H100: ~10 h.
+  Biggest expected improvement (more angular coverage of cow).
+- **Stride-5 over the full sequence** = 287 frames; 60K iters; ~4 h
+  on H100. Sweet spot — 5× more data than current 136-fr.
+- **Bigger init pcd** (`--target-points 250000`): cheap, may help
+  spatial coverage for fine cow features (face, legs).
+- **Enable densification** (lower `start_stat = 1500000` to e.g.
+  `5000`): lets model spawn new Gaussians during training; risk of
+  memory growth.
+- **Fairer test split** (cams 04 + 09 instead of 01 + 11): re-prep +
+  retrain so test PSNR is interpretable as actual generalization.
 
-| Date | Event | Detail |
-|---|---|---|
-| 2026-04-28 | T1+T2 RESUBMITTED with FRAMES_END=136 | T1=60009011, T2=60009013, RUNNING |
-| 2026-04-28 | Train sbatch FRAMES_END parametric | `37ec5f2` — fixes the hardcoded `--frames_start_end 0 60` that broke 136-frame runs |
-| 2026-04-28 | T1+T2 (136fr) FAILED at startup | bug: pcds/downsample_0_60.ply mismatch; both crashed in 20 sec |
-| 2026-04-28 | Postprocess utility committed | `d2451f8` — rename + GT compress for human review |
-| 2026-04-28 | **Exp 3 fully complete overnight** | T3+R3 both done; train PSNR 23.09, test PSNR 11.82, 660 4K renders at train_planB_e3/ |
-| 2026-04-28 | **Plan B chain submitted (12 jobs total)** | All deps queued: U1=59976487, M1=59976488, P/T/R for e1/e2/e3 (see Plan B section) |
-| 2026-04-28 | Patch 0006 + mask undistort + prep flag landed | `f58b13e` — mask-aware loss, scripts/run_undistort_masks.sh, --mask-subdir flag |
-| 2026-04-28 | **Plan B Stage 1 array `59976202` submitted** | 76 frames stride-15 over 300..1425, ~30 min wall expected |
-| 2026-04-28 | PROJECT.md rig correction | `4e4531f` — L-shaped rig (not half-circle); cow rotates over full 48s |
-| 2026-04-28 | **Plan A render 59972470 DONE** | 57 min wall, all 660 PNGs (5.7-8.7 MB each). Train L1 ~0.05, test L1 ~0.20. Model produces real cow renders. |
-| 2026-04-28 | Render 59972470 resubmitted | walltime 90 min |
-| 2026-04-28 | Render 59971560 timed out @ 30 min | 372/540 train rendered before kill. **Renders contain real cow content** (mean ~175 matches GT, vs old all-black mean 0). Slower because non-trivial Gaussian splat work. |
-| 2026-04-28 | Plan A render 59971560 submitted | for the new train output dir |
-| 2026-04-28 | **Plan A retrain 59967435 DONE** | 1:59:18 wall. Train PSNR 22.94 (vs 8.94 before). Pipeline works. |
-| 2026-04-27 | Plan A retrain 59967435 submitted | with unmasked images |
-| 2026-04-27 | Plan A prep DONE | scene rebuilt with `--image-subdir dense_unmasked/images` |
-| 2026-04-27 | Plan A undistort 59967114 DONE | 12 s wall, 60×11 unmasked images, validated cross-frame |
-| 2026-04-27 | Plan A undistort job 59967114 submitted | xargs -P 16 over 60 frames |
-| 2026-04-27 | Plan A landed | `32b2379` — `run_undistort_unmasked.sh` + `--image-subdir` flag in prep |
-| 2026-04-27 | **Render diagnosis: renders are pure black** | Pixel mean 0.0 vs GT 174.7. Root cause: training fed masked images (95% black bg) → trivial minimum. Decision needed before retraining. |
-| 2026-04-27 | Render job 59965124 completed | 540+120 PNGs at 3840×2160, but pixel content all-zero |
-| 2026-04-27 | Render job 59965124 resubmitted | with patch 0005, mem=32G |
-| 2026-04-27 | Patch 0005 + render OOM lesson | `2a8fa30` — incremental save in render.py; SETUP #6c |
-| 2026-04-27 | Render job 59964986 OOM-killed | 191/540 train views, CPU 25 GB / 24 GB. Render buffers all tensors before writing. |
-| 2026-04-27 | Render job 59964986 submitted | iter 30000, MODEL_DIR env override |
-| 2026-04-27 | Patch 0004 + render sbatch landed | `bc0f4f8` — render.py hardcoded CUDA_VISIBLE_DEVICES=2; SETUP lesson #6b |
-| 2026-04-27 | **Full training 59960861 COMPLETED** | 1:46:01, 30K iters @ 4.75 it/s. Test PSNR 13.66, train PSNR 8.94 — flat across iters, concerning |
-| 2026-04-27 | Full training job 59960861 submitted | 30K iters, 4h walltime, basketball.py config, A100 |
-| 2026-04-27 | Full training sbatch committed | `3838825` — `scripts/slurm/run_localdygs_train.sh` |
-| 2026-04-27 | **Smoke job 59960670 SUCCEEDED** | 3:10 wall, 500/500 iters, loss 0.53→0.17, PSNR 6.83→16.87. Stage 2 pipeline validated end-to-end. |
-| 2026-04-27 | Smoke job 59960670 resubmitted | with patch 0003 applied |
-| 2026-04-27 | Patch 0003 landed | commit `1e53592` — bounds test_num to in-range indices; SETUP lesson #2c |
-| 2026-04-27 | Smoke job 59960468 FAILED | 25 s, IndexError in Colmap_Dataset.load_images_path — upstream test_num=[0,10,20,30] assumes ≥31 cams; ours has 11 |
-| 2026-04-27 | Smoke job 59960468 resubmitted | with VGG16 + LPIPS weights pre-cached |
-| 2026-04-27 | LPIPS/VGG16 weights pre-cached + fail-fast guard | commit `b1304d4`. VGG16 ~528 MB to ~/.cache; lpips bundled weights wget'd from upstream GitHub (wheelhouse lpips missing them) |
-| 2026-04-27 | Smoke job 59960152 FAILED | 9 min wall on `URLError [Errno 101]` — train.py downloads VGG16 at import; compute node no internet |
-| 2026-04-27 | Smoke job submitted | `59960152` — single A100, 500 iters, cow_smoke.py config |
-| 2026-04-27 | Smoke artifacts committed | `51b985b` — `configs/cow_smoke.py` + `scripts/slurm/run_localdygs_smoke.sh` |
-| 2026-04-27 | Prep job 59959992 SUCCEEDED | 17 s, 60 frames, 73,784-pt init pcd, 4K cameras |
-| 2026-04-27 | Prep resubmitted | job 59959992, uses cleanply venv (no torch deps) |
-| 2026-04-27 | Stale scene wiped | `/scratch/.../localdygs_scene/` from 16:51 (mystery origin) removed |
-| 2026-04-27 | localdygs venv restored | `pip install --force-reinstall torch==2.10.0 torchvision`; simple_knn import OK; tinycudann OK only on GPU node |
-| 2026-04-27 | Prep env fix committed | `fbaf6a4` — prep sbatch uses ~/envs/cleanply/, SETUP.md lesson #6 |
-| 2026-04-27 | Prep job 59959671 FAILED | `ModuleNotFoundError: No module named 'open3d'` in localdygs venv (4 s) |
-| 2026-04-27 | Visual review approved | `aggregated_4d.ply` cleared on Mac; proceed to Stage 2 prep |
-| 2026-04-27 | STATUS.md created + first prep submitted | commit `c2ce86d` |
-| 2026-04-27 | Round-2 patches landed | commit `ec9e3be` — patch 0002 (downsample 2.0→1.0) + finalized SETUP.md |
-| 2026-04-27 | Round-1 stage_b scaffolding landed | commit `362781b` — env recipe + Stage 1→LocalDyGS data prep + simple_knn cfloat patch |
-| 2026-04-27 | Stage 1 60-frame sweep complete | 60/60 frames, 8.6 M aggregated points |
-| 2026-04-27 | LocalDyGS env built | ~/envs/localdygs/, torch 2.10+CUDA 12.9, tinycudann@SM 8.0 |
+### Phase 5 — Stage 3 (articulation discovery, research)
 
-## Recent activity
+Once a model is in good shape, start extracting per-Gaussian
+trajectories and clustering them into rigid parts. See PROJECT.md §6
+"Stage 3 (deferred)" for the breakdown. This is the project's actual
+research contribution.
 
-Newest first.
+## How results would improve (Yubo's question)
 
-| Date | Event | Detail |
-|---|---|---|
-| 2026-04-27 | Prep resubmitted | job 59959992, uses cleanply venv (no torch deps) |
-| 2026-04-27 | Stale scene wiped | `/scratch/.../localdygs_scene/` from 16:51 (mystery origin) removed |
-| 2026-04-27 | localdygs venv restored | `pip install --force-reinstall torch==2.10.0 torchvision`; simple_knn import OK; tinycudann OK only on GPU node |
-| 2026-04-27 | Prep env fix committed | `fbaf6a4` — prep sbatch uses ~/envs/cleanply/, SETUP.md lesson #6 |
-| 2026-04-27 | Prep job 59959671 FAILED | `ModuleNotFoundError: No module named 'open3d'` in localdygs venv (4 s) |
-| 2026-04-27 | Visual review approved | `aggregated_4d.ply` cleared on Mac; proceed to Stage 2 prep |
-| 2026-04-27 | STATUS.md created + first prep submitted | commit `c2ce86d` |
-| 2026-04-27 | Round-2 patches landed | commit `ec9e3be` — patch 0002 (downsample 2.0→1.0) + finalized SETUP.md |
-| 2026-04-27 | Round-1 stage_b scaffolding landed | commit `362781b` — env recipe + Stage 1→LocalDyGS data prep + simple_knn cfloat patch |
-| 2026-04-27 | Stage 1 60-frame sweep complete | 60/60 frames, 8.6 M aggregated points |
-| 2026-04-27 | LocalDyGS env built | ~/envs/localdygs/, torch 2.10+CUDA 12.9, tinycudann@SM 8.0 |
+**More frames over the full sequence is the biggest lever.** The
+current 136 frames span the cow's full 48 s of motion at mixed stride
+(stride-5 in first 10 s, stride-15 thereafter). Increasing density:
+
+| Frame strategy | Train imgs | Iters needed | H100 wall | Expected gain |
+|---|---|---|---|---|
+| Current 136 (mixed) | 1224 | 30K | ~1 h | (baseline: test PSNR 12.14) |
+| Stride-15 over 0..1425 (96 fr, uniform) | 864 | 30K | ~50 min | ~same as current |
+| **Stride-5 over 0..1425** (287 fr) | 2583 | 60K | ~4 h | **+1 to +2 PSNR** likely |
+| Stride-1 over 0..1434 (1434 fr) | 12906 | 150K | ~10 h | +1 to +2 over stride-5 (diminishing) |
+
+Smaller stride helps mostly because the cow's motion isn't uniform
+(per Yubo: stops, walks, rotates at varying speeds). With stride-15
+some rotation transitions are crossed in a single jump, leaving the
+deformation MLP to interpolate across larger time gaps. Stride-5 over
+the full range gives consistent ~6 fps temporal sampling throughout
+the rotation.
+
+**Other levers** (ranked by my expected impact, from yubo-brain
+[[3dgs-scaffold-fixed-anchors]] and the cow_1 experiments):
+
+1. **More frames at finer stride** ⭐ (above table)
+2. **Bigger init pcd** (250K points instead of 90K). LocalDyGS's
+   `position_lr = 0` design means anchors are fixed at init pcd
+   locations and never move. More anchors = finer surface coverage
+   = potentially sharper cow detail. Cheap to try (re-prep is 30 s).
+3. **Enable densification** (lower `start_stat` from 1.5M to ~5K).
+   Lets the model spawn new Gaussians where the loss says it needs
+   more capacity. Risk: memory growth at 4K resolution.
+4. **More iterations at same data** (60K instead of 30K). Gradual
+   improvement, diminishing returns past ~80K typically.
+5. **Better test split** (cams 04 + 09 instead of extremes 01 + 11)
+   — doesn't improve the model, but makes the test PSNR
+   interpretable as actual generalization, not "extreme extrapolation."
+
+The user's intuition (more images, smaller stride) aligns with #1
+exactly. That's the right first experiment on Rorqual.
+
+## Plan A / Plan B results so far (durable record)
+
+Test PSNR is generalization to held-out cams 01 + 11 (rig extremes —
+unfair "extremes" split; see [[3dgs-train-test-evaluation-semantics]]).
+Train PSNR is fit to the training cams.
+
+| Run | Frames | Loss | Train PSNR | Test PSNR | Output dir |
+|---|---|---|---|---|---|
+| Plan A | 60 (stride-5 over 0..295) | standard | 22.94 | 11.46 | `train_20260427_220326/` |
+| Plan B Exp 3 | same 60 | mask-aware | 23.09 | 11.82 | `train_planB_e3/` |
+| Plan B Exp 2 | 136 (stride-mixed full rot.) | standard | 22.49 | 11.99 | `train_planB_e2/` |
+| **Plan B Exp 1** | **136** | **mask-aware** | 22.49 | **12.14** ⭐ | `train_planB_e1/` |
+
+All checkpoints at iter 30000 with the same basketball.py preset.
+Mask-aware loss + full-rotation frames compound; both interventions
+help.
+
+## Recent activity (newest first)
+
+| Date | Event |
+|---|---|
+| 2026-04-28 | PROJECT.md cleanup: stage naming consistency (Stage 0 / 1.x / 2.x), sparse-masking description corrected (`auto` policy default, not always-unmasked) |
+| 2026-04-28 | yubo-brain: globus-cli-on-alliance cheatsheet committed; install-claude-md.sh made cluster-aware; "Onboard a new machine" workflow added; Motion-Capture lessons ingested as 8 new wiki pages |
+| 2026-04-28 | Rorqual onboarded via yubo-brain workflow; per-machine canonical at `wiki/claude-code-rorqual-instructions.md` |
+| 2026-04-28 | Globus transfers: raw + stage_a + train_planB_e3 in flight from Narval to Rorqual |
+| 2026-04-28 | T1, T2 (136-frame Plan B) completed: best test PSNR 12.14 (Exp 1, mask-aware). R1 + R2 (renders) had hardcoded-frames bug, fixed `9c5bd02`, resubmitted with FRAMES_END=136 + 3h walltime |
+| 2026-04-28 | Plan B chain submitted (Stage 1 array → undistorts → 3 prep → 3 train → 3 render); Exp 3 fully completed (train PSNR 23.09 / test PSNR 11.82) |
+| 2026-04-27 | Plan A completed end-to-end (60-frame, no mask-aware): train PSNR 22.94 / test PSNR 11.46 |
+| 2026-04-27 | Patch 0006 (mask-aware loss) landed; postprocess_render.py written |
+| 2026-04-27 | Patches 0001-0005 landed (cfloat, downsample, test_num bounds, render GPU, render incremental save) |
+| 2026-04-27 | LocalDyGS env built; STATUS.md introduced |
+| 2026-04-26 | Stage 1 60-frame stride-5 sweep completed |
+| 2026-04-26 | Initial PROJECT.md draft |
+
+## Wake-up helper (Narval-side)
+
+`scripts/check_planB_status.sh` — prints state of all Plan B SLURM
+jobs. Useful if you re-open a Narval session before the migration is
+fully done.
+
+## Open questions to resolve eventually
+
+- Visual quality of the trained models — pending Phase 3 viewer or
+  pending Phase 1 inspection of existing renders on Mac.
+- Stage 1 work/ contents are 200 GB; ~95% is `dense/` PatchMatch
+  state that's not used downstream. Could `rm -rf
+  /scratch/yubo/cow_1/9148_10581_output/stage_a/colmap_4d/work/frame_*/dense/`
+  on Rorqual after data lands to save 160+ GB.
+- Whether to rename `stage_a_colmap_4d/` → `stage_a_colmap_perframe/`
+  (PROJECT.md §9 cleanup TODO). Defer until other work settles.
