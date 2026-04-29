@@ -12,23 +12,28 @@
 
 ## Current state
 
-**Migrating from Narval to Rorqual.** Yubo decided to continue work on
-Rorqual (H100-80G) for the better GPU. Ongoing as of 2026-04-28
-evening:
+**On Rorqual (H100-80G).** Migration from Narval is functionally
+complete. As of 2026-04-29 morning:
 
 | Track | Status |
 |---|---|
 | Code repos (Motion-Capture, LocalDyGS, tiny-cuda-nn, yubo-brain) | ✅ cloned on Rorqual |
-| 6 LocalDyGS patches applied | ✅ done by rorqual2 Claude |
+| 6 LocalDyGS patches applied | ✅ done |
 | Venvs (`localdygs/`, `cleanply/`, `globus-cli/`) | ✅ built on Rorqual |
 | `globus-cli` install + login + data_access consent | ✅ done both clusters |
-| Globus transfer: raw `cow_1/9148_10581/` (29 GB) | 🔄 in flight (task `59078659-...`) |
-| Globus transfer: Stage 1 `stage_a/colmap_4d/` (200 GB) | 🔄 in flight (task `59d80354-...`) |
-| Globus transfer: Stage 2 `train_planB_e3/` (6.4 GB) | ✅ done (task `5a79c04e-...`) |
-| Render R1 + R2 on Narval (Plan B Exp 1, Exp 2) | 🔄 in flight (jobs `60027658`, `60027659`; ~1 h left) |
+| Globus transfer: raw `cow_1/9148_10581/` (27 GB on disk) | ✅ done (task `59078659-...`) |
+| Globus transfer: Stage 1 `stage_a/colmap_4d/` (189 GB on disk) | ✅ done (task `59d80354-...`) |
+| Globus transfer: Stage 2 `train_planB_e3/` (6.1 GB on disk) | ✅ done (task `5a79c04e-...`) |
+| Phase 1 — H100 verify (full H100 import + tinycudann SM 9.0 fwd) | ✅ done (job `11093921`) |
+| Phase 3 — `export_3dgs_ply.py` + 3 cow PLYs at t={0, 0.5, 1.0} | ⏳ in flight (job `11097919`) |
+| Render R1 + R2 on Narval (Plan B Exp 1, Exp 2) | ⚠️ status unknown — last known in-flight on Narval |
 
-**The next session opens on rorqual2** (`[yubo@rorqual2 ~]$`); pick
-up from "Plan: continue on Rorqual" below.
+What's NOT on Rorqual yet (deliberate, for now):
+- `train_planB_e1` (best 136-fr mask-aware model; test PSNR 12.14) and `train_planB_e2`
+- `scene_planB_e3` and other LocalDyGS scene-prep dirs (the Stage 1 → 2 prep output;
+  not needed for the export script which loads `GaussianModel` directly without `Scene`)
+
+**Next decisions (Phase 2 / Phase 4)**: see open questions below.
 
 ## Plan: continue on Rorqual
 
@@ -211,6 +216,7 @@ help.
 
 | Date | Event |
 |---|---|
+| 2026-04-29 | Phase 1 verified on Rorqual: data sizes correct (27 / 189 / 6.1 GB), localdygs venv imports OK on H100 (job `11093921`, last session), all 3 Globus transfers SUCCEEDED. Phase 3 exporter `apps/reconstruction/stage_b_localdygs/export_3dgs_ply.py` written; submitted as job `11097919` for first test (cow_t000/050/100.ply at iter 30000). |
 | 2026-04-28 | PROJECT.md cleanup: stage naming consistency (Stage 0 / 1.x / 2.x), sparse-masking description corrected (`auto` policy default, not always-unmasked) |
 | 2026-04-28 | yubo-brain: globus-cli-on-alliance cheatsheet committed; install-claude-md.sh made cluster-aware; "Onboard a new machine" workflow added; Motion-Capture lessons ingested as 8 new wiki pages |
 | 2026-04-28 | Rorqual onboarded via yubo-brain workflow; per-machine canonical at `wiki/claude-code-rorqual-instructions.md` |
