@@ -1,0 +1,37 @@
+#!/bin/bash
+# Rorqual variant of run_4d_array.sh.template — H100 MIG slice instead of
+# Narval's full A100. Stage 1 (COLMAP per-frame MVS) is GPU-light (PatchMatch
+# fits comfortably in 40 GB), so a 3g.40gb slice queues much faster.
+#
+# Same env-var protocol as the original template (FRAMES_FILE + DATA set by
+# launch_4d_array.sh).
+
+#SBATCH --account=rrg-vislearn
+#SBATCH --gres=gpu:nvidia_h100_80gb_hbm3_3g.40gb:1
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=32G
+#SBATCH --time=1:00:00
+#SBATCH --job-name=cow_4d_array
+#SBATCH --output=/scratch/yubo/jobs/logs/%x_%A_%a.out
+#SBATCH --error=/scratch/yubo/jobs/logs/%x_%A_%a.err
+
+set -euo pipefail
+mkdir -p /scratch/yubo/jobs/logs
+
+mapfile -t FRAME_ARR < "$FRAMES_FILE"
+FRAME=${FRAME_ARR[$SLURM_ARRAY_TASK_ID]}
+echo "[array task $SLURM_ARRAY_TASK_ID] frame=$FRAME data=$DATA"
+
+module load StdEnv/2023 gcc/12.3 openmpi/4.1.5 cuda/12.6 \
+            python/3.11 opencv/4.9.0 colmap/3.12.6
+
+cd /home/yubo/github/Motion-Capture
+virtualenv --no-download "$SLURM_TMPDIR/env"
+source "$SLURM_TMPDIR/env/bin/activate"
+pip install --no-index --upgrade pip >/dev/null
+pip install --no-index numpy scipy tqdm pyyaml plyfile tabulate termcolor >/dev/null
+
+echo "=== starting frame $FRAME at $(date) ==="
+time python -m apps.reconstruction.stage_a_colmap_4d.run_stage_a_colmap_4d \
+    "$DATA" --frames "$FRAME" --neighbor 6
+echo "=== finished frame $FRAME at $(date) ==="
