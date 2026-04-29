@@ -59,7 +59,14 @@ do_frame() {
         return 0
     fi
 
-    # Build flat mask-images dir for this frame: 01.png, 02.png, ..., 11.png
+    # Build flat mask-images dir for this frame: 01.jpg .. 11.jpg.
+    # The COLMAP sparse model references the per-camera training images
+    # with .jpg filenames; image_undistorter looks them up by name in
+    # --image_path, so the mask symlinks must use the same .jpg names
+    # (the bytes are still PNG; cv::imread auto-detects format from
+    # content, not extension). Using .png filenames silently fails with
+    # "Cannot read image at path .../01.jpg" (the previous bug that left
+    # dense_masks/images/ empty for all 136 frames after a Narval run).
     local raw_in=${SLURM_TMPDIR:-/tmp}/masks_${frame_pad}
     rm -rf "$raw_in"
     mkdir -p "$raw_in"
@@ -67,7 +74,7 @@ do_frame() {
     for cam in 01 02 03 04 05 06 07 08 09 10 11; do
         local src=$DATA/masks/${cam}/${frame_pad}.png
         if [ -f "$src" ]; then
-            ln -sf "$src" "$raw_in/${cam}.png"
+            ln -sf "$src" "$raw_in/${cam}.jpg"
             found=$((found+1))
         else
             echo "[frame $frame] WARN: missing mask $src"
