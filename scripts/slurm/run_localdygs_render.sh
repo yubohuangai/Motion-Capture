@@ -30,11 +30,14 @@ if [ -z "${MODEL_DIR:-}" ]; then
 fi
 ITERATION="${ITERATION:--1}"
 CONFIG="${CONFIG:-/home/yubo/github/LocalDyGS/arguments/vrugz/basketball.py}"
+FRAMES_START="${FRAMES_START:-0}"
+FRAMES_END="${FRAMES_END:-60}"
 
 echo "=== localdygs render starting at $(date) ==="
 echo "model:     $MODEL_DIR"
 echo "iteration: $ITERATION"
 echo "config:    $CONFIG"
+echo "frames:    [$FRAMES_START, $FRAMES_END)"
 echo
 
 module --force purge
@@ -51,7 +54,7 @@ cd ~/github/LocalDyGS
 time python render.py \
     -m "$MODEL_DIR" \
     --iteration "$ITERATION" \
-    --frames_start_end 0 60 \
+    --frames_start_end "$FRAMES_START" "$FRAMES_END" \
     --configs "$CONFIG" \
     --skip_video
 
